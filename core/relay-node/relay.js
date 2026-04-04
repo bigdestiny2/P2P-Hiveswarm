@@ -31,8 +31,11 @@ export class Relay extends EventEmitter {
     this.maxCircuitDuration = opts.maxCircuitDuration || MAX_CIRCUIT_DURATION_MS
     this.maxCircuitBytes = opts.maxCircuitBytes || MAX_CIRCUIT_BYTES
 
-    // Active circuits: circuitId -> { source, dest, bytesRelayed, startedAt, timer }
+    // Active circuits: circuitId -> { source, dest, bytesRelayed, startedAt, timer, sourcePeerKey }
     this.circuits = new Map()
+    // Per-peer circuit tracking: peer pubkey hex -> count
+    this.circuitsPerPeer = new Map()
+    this.maxCircuitsPerPeer = opts.maxCircuitsPerPeer || 5
     this.totalBytesRelayed = 0
     this.totalCircuitsServed = 0
     this.running = false
@@ -52,15 +55,24 @@ export class Relay extends EventEmitter {
    * @param {object} dest - Destination duplex stream (to target peer)
    * @returns {object} Circuit info
    */
-  createCircuit (circuitId, source, dest) {
+  createCircuit (circuitId, source, dest, sourcePeerKey) {
     if (this.circuits.size >= this.maxConnections) {
       throw new Error('RELAY_AT_CAPACITY')
+    }
+
+    if (sourcePeerKey) {
+      const current = this.circuitsPerPeer.get(sourcePeerKey) || 0
+      if (current >= this.maxCircuitsPerPeer) {
+        throw new Error('PEER_AT_CAPACITY')
+      }
+      this.circuitsPerPeer.set(sourcePeerKey, current + 1)
     }
 
     const circuit = {
       id: circuitId,
       source,
       dest,
+      sourcePeerKey: sourcePeerKey || null,
       bytesRelayed: 0,
       startedAt: Date.now(),
       timer: null
@@ -98,11 +110,26 @@ export class Relay extends EventEmitter {
     const circuit = this.circuits.get(circuitId)
     if (!circuit) return
 
-    // Delete first to prevent re-entrant calls from event handlers
+    // Cancel timer FIRST to prevent re-entrant calls
+    if (circuit.timer) {
+      clearTimeout(circuit.timer)
+      circuit.timer = null
+    }
+
+    // Then remove from map
     this.circuits.delete(circuitId)
 
-    if (circuit.timer) clearTimeout(circuit.timer)
+    // Decrement per-peer count
+    if (circuit.sourcePeerKey) {
+      const count = this.circuitsPerPeer.get(circuit.sourcePeerKey) || 0
+      if (count <= 1) {
+        this.circuitsPerPeer.delete(circuit.sourcePeerKey)
+      } else {
+        this.circuitsPerPeer.set(circuit.sourcePeerKey, count - 1)
+      }
+    }
 
+    // Then clean up streams
     try { circuit.source.destroy() } catch {}
     try { circuit.dest.destroy() } catch {}
 
@@ -119,7 +146,8 @@ export class Relay extends EventEmitter {
       activeCircuits: this.circuits.size,
       totalCircuitsServed: this.totalCircuitsServed,
       totalBytesRelayed: this.totalBytesRelayed,
-      capacityUsedPct: Math.round((this.circuits.size / this.maxConnections) * 100)
+      capacityUsedPct: Math.round((this.circuits.size / this.maxConnections) * 100),
+      peersWithCircuits: this.circuitsPerPeer.size
     }
   }
 
@@ -128,6 +156,7 @@ export class Relay extends EventEmitter {
     for (const circuitId of [...this.circuits.keys()]) {
       this._closeCircuit(circuitId, 'SHUTDOWN')
     }
+    this.circuitsPerPeer.clear()
     this.emit('stopped')
   }
 }

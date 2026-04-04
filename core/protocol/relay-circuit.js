@@ -160,15 +160,24 @@ export class CircuitRelay extends EventEmitter {
 
   _bridgeCircuit (sourceChannel, destChannel, sourcePubkey, destPubkey) {
     const circuitId = b4a.toString(b4a.concat([sourcePubkey, destPubkey]).slice(0, 16), 'hex')
+    const sourcePeerKey = b4a.toString(sourcePubkey, 'hex')
 
     if (this.relay) {
-      // Use the Relay class to manage the circuit lifecycle
-      this.relay.createCircuit(circuitId, sourceChannel.stream, destChannel.stream)
+      try {
+        // Use the Relay class to manage the circuit lifecycle
+        this.relay.createCircuit(circuitId, sourceChannel.stream, destChannel.stream, sourcePeerKey)
+      } catch (err) {
+        if (err.message === 'PEER_AT_CAPACITY') {
+          this._sendStatus(sourceChannel, ERR.CAPACITY_FULL, 'Max circuits per peer reached')
+          return
+        }
+        throw err
+      }
     }
 
     this.emit('circuit-bridged', {
       circuitId,
-      source: b4a.toString(sourcePubkey, 'hex').slice(0, 8),
+      source: sourcePeerKey.slice(0, 8),
       dest: b4a.toString(destPubkey, 'hex').slice(0, 8)
     })
   }

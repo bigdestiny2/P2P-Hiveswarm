@@ -7,8 +7,17 @@ export default {
   storage: './hiverelay-storage',
 
   // Network
-  bootstrapNodes: null, // null = use HyperDHT defaults (node1-3.hyperdht.org:49737)
+  // When null, uses HyperDHT defaults (node1-3.hyperdht.org:49737).
+  // The bootstrap cache merges cached peers with these nodes so that
+  // new nodes can still join the network if the hardcoded bootstrap
+  // nodes are unreachable.
+  bootstrapNodes: null,
   maxConnections: 256,
+
+  // Bootstrap cache — persists DHT peers to disk so nodes can rejoin
+  // the network even when the default bootstrap servers are down.
+  bootstrapCacheEnabled: true,
+  bootstrapCachePeers: 50,
 
   // Seeding
   enableSeeding: true,

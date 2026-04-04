@@ -484,6 +484,64 @@ Environment variables:
 
 ---
 
+## FAQ
+
+### Do P2P relays have redundancy if DHT bootstrap nodes get DDoSed?
+
+Bootstrap nodes are only needed for the initial DHT join. Once a node is connected to the network, it maintains its own routing table and operates independently of bootstrap nodes.
+
+HiveRelay implements a persistent routing table cache. After a node's first successful connection, it stores enough routing state to rejoin the DHT without contacting any bootstrap node. Even if every bootstrap node goes down simultaneously, all currently running nodes continue operating normally.
+
+Operators can configure custom bootstrap lists in `config/default.js` (the `bootstrapNodes` field), including other HiveRelay nodes. Since any HiveRelay node can serve as a bootstrap node for others, the network forms a self-healing mesh -- there is no single point of failure for discovery.
+
+The DHT itself is distributed across thousands of nodes globally. Only the initial entry points are centralized, and that centralization is eliminated once you have a cached routing table.
+
+### Will relays free client devices from being constantly online? What are the time and size constraints?
+
+Yes -- that is the core purpose. You publish once, go offline, and relay nodes keep your data available to anyone with the key.
+
+Default constraints (configurable per node):
+
+- **50 GB** max storage per relay node
+- **500 MB** max per app
+- **30-day** seed TTL (renewable)
+- **64 MB** per circuit relay session, **10 minutes** max duration
+
+Relay nodes eagerly download all content the moment they accept a seed request, so data is available immediately when the publisher goes offline.
+
+For messaging, relays hold Hypercores -- append-only logs. Messages accumulate while a device is offline and sync automatically when it reconnects. For files, full Hyperdrive replication means any file up to the storage limit is served to peers on demand.
+
+Realistic estimates: a typical Pear app (HTML, JS, JSON assets) is under 10 MB and loads in under 1 second from a relay. A chat history of 10,000 messages is roughly 5 MB. Both fit comfortably within the default constraints.
+
+### Could incentives cause infrastructure hoarding and centralization?
+
+This is a real concern, and it is the primary reason Phase 1 has no payments -- reputation only.
+
+Several mechanisms work against centralization:
+
+- **Held-amount schedule**: 75% of earnings are held for the first 3 months, decreasing to 0% at month 10. This discourages hit-and-run operators but also limits ROI for speculators.
+- **Proof-of-relay challenges**: Reputation requires actually serving data. You cannot earn score without passing cryptographic hash challenges on random blocks.
+- **Geographic diversity bonus**: Nodes in underserved regions earn +50 reputation points, counteracting geographic concentration.
+- **Daily score decay**: Scores decay at 0.5% per day. Large operators cannot rest on accumulated reputation -- they must keep serving.
+- **Low barrier to entry**: The system is designed to run on a $5/month VPS or a Raspberry Pi. There are no economies of scale that reward heavy infrastructure investment.
+- **Break-even payment rates**: When payments are enabled in Phase 2, rates (100 sats/GB/month storage, 50 sats/GB bandwidth) are designed to cover costs, not generate profit. This is infrastructure, not a business.
+
+Worst case: if centralization happens anyway, any user can run their own relay for their own apps at zero cost. The relay software is open source and requires no permission to operate.
+
+### How does HiveRelay compare to Session, SimpleX, and similar projects?
+
+**Session (Oxen)**: Blockchain-based, requires OXEN token staking to run a service node, focused on encrypted messaging. HiveRelay has no blockchain, no token requirement, and serves any data type -- not just messages.
+
+**SimpleX**: Focuses on metadata-privacy messaging with its own protocol stack. HiveRelay is infrastructure for the existing Holepunch/Hyperswarm ecosystem. It does not replace messaging protocols; it makes them always-available by keeping data online when devices go offline.
+
+**Key difference**: HiveRelay is not a messaging app. It is invisible relay infrastructure that sits below user-facing applications. Session and SimpleX are end-user products. HiveRelay sits below apps like Keet, which already provides E2E encrypted messaging on Hyperswarm.
+
+**HiveRelay's unique position**: It is the only relay network native to the Holepunch stack. It speaks Hyperswarm, replicates Hypercores, and integrates with zero code changes to existing Pear apps. No other relay solution offers this.
+
+**Philosophy**: HiveRelay avoids blockchain and token dependencies entirely. Incentives come from reputation scoring and (optionally) Lightning micropayments. No new token, no staking requirement, no governance overhead.
+
+---
+
 ## License
 
 [Apache 2.0](LICENSE)

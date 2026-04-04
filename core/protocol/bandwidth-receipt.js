@@ -19,6 +19,13 @@ export class BandwidthReceipt extends EventEmitter {
     this.maxReceipts = opts.maxReceipts || 10_000
     this.issuedReceipts = [] // Receipts we've issued to relays
     this.collectedReceipts = [] // Receipts relays have collected from peers
+
+    // Receipt aggregation: accumulate small transfers into fewer signed receipts
+    this._pendingReceipts = new Map() // relayPubkeyHex -> { bytes, startTime, chunks }
+    this._aggregateThresholdBytes = opts.aggregateThresholdBytes || 10 * 1024 * 1024 // 10MB
+    this._aggregateWindowMs = opts.aggregateWindowMs || 10_000 // 10 seconds
+    this._flushInterval = setInterval(() => this._flushStale(), this._aggregateWindowMs)
+    if (this._flushInterval.unref) this._flushInterval.unref()
   }
 
   /**
@@ -92,6 +99,93 @@ export class BandwidthReceipt extends EventEmitter {
     }
     this.emit('receipt-collected', receipt)
     return true
+  }
+
+  /**
+   * Accumulate bytes for a relay and flush when thresholds are reached.
+   * This is an optimization layer on top of createReceipt() -- it batches
+   * many small transfers into fewer signed receipts.
+   *
+   * @param {Buffer} relayPubkey - public key of the relay
+   * @param {number} bytesTransferred - bytes to accumulate
+   * @param {Buffer} sessionId - session identifier for receipt creation
+   * @returns {Object|null} receipt if flushed, null if still accumulating
+   */
+  aggregateReceipt (relayPubkey, bytesTransferred, sessionId) {
+    const keyHex = b4a.toString(relayPubkey, 'hex')
+    let entry = this._pendingReceipts.get(keyHex)
+
+    if (!entry) {
+      entry = { bytes: 0, startTime: Date.now(), chunks: 0, relayPubkey, sessionId }
+      this._pendingReceipts.set(keyHex, entry)
+    }
+
+    entry.bytes += bytesTransferred
+    entry.chunks++
+
+    // Flush if byte threshold or time window exceeded
+    if (entry.bytes >= this._aggregateThresholdBytes ||
+        Date.now() - entry.startTime >= this._aggregateWindowMs) {
+      return this._flushReceipt(keyHex, entry)
+    }
+
+    return null
+  }
+
+  /**
+   * Create a single signed receipt for the aggregated amount and reset.
+   */
+  _flushReceipt (keyHex, entry) {
+    this._pendingReceipts.delete(keyHex)
+
+    const receipt = this.createReceipt(entry.relayPubkey, entry.bytes, entry.sessionId)
+
+    this.emit('receipt-flushed', {
+      relayPubkey: keyHex,
+      bytes: entry.bytes,
+      chunks: entry.chunks,
+      receipt
+    })
+
+    return receipt
+  }
+
+  /**
+   * Flush all pending receipts. Call on shutdown to ensure nothing is lost.
+   *
+   * @returns {Object[]} array of flushed receipts
+   */
+  flushAll () {
+    const flushed = []
+    for (const [keyHex, entry] of this._pendingReceipts) {
+      flushed.push(this._flushReceipt(keyHex, entry))
+    }
+    return flushed
+  }
+
+  /**
+   * Flush entries that have exceeded the time window.
+   * Called periodically by _flushInterval.
+   */
+  _flushStale () {
+    const now = Date.now()
+    for (const [keyHex, entry] of this._pendingReceipts) {
+      if (now - entry.startTime >= this._aggregateWindowMs) {
+        this._flushReceipt(keyHex, entry)
+      }
+    }
+  }
+
+  /**
+   * Stop the aggregation flush interval. Call on shutdown.
+   */
+  stop () {
+    if (this._flushInterval) {
+      clearInterval(this._flushInterval)
+      this._flushInterval = null
+    }
+    // Flush any remaining pending receipts
+    this.flushAll()
   }
 
   /**

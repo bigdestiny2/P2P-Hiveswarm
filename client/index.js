@@ -36,6 +36,7 @@ import Protomux from 'protomux'
 import c from 'compact-encoding'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
+import { BootstrapCache } from '../core/bootstrap-cache.js'
 import {
   seedRequestEncoding,
   seedAcceptEncoding,
@@ -100,6 +101,8 @@ export class HiveRelayClient extends EventEmitter {
 
     this._started = false
     this._discoveryTopic = null
+    this._reconnect = { timer: null, delay: 5000, attempt: 0 }
+    this._relayHealthInterval = null
   }
 
   /**
@@ -116,9 +119,18 @@ export class HiveRelayClient extends EventEmitter {
 
     // Create swarm if we own it
     if (this._ownsSwarm && !this.swarm) {
+      let bootstrap = this.bootstrap
+      if (this._storagePath) {
+        this._bootstrapCache = new BootstrapCache(this._storagePath)
+        await this._bootstrapCache.load()
+        bootstrap = this._bootstrapCache.merge(bootstrap)
+      }
       this.swarm = new Hyperswarm({
-        bootstrap: this.bootstrap
+        bootstrap
       })
+      if (this._bootstrapCache) {
+        this._bootstrapCache.start(this.swarm)
+      }
     }
 
     if (!this.keyPair && this.swarm.keyPair) {
@@ -141,6 +153,8 @@ export class HiveRelayClient extends EventEmitter {
     }
 
     this._started = true
+    this._startReconnectLoop()
+    this._startRelayHealthChecks()
     this.emit('ready')
     this.emit('started')
     return this
@@ -522,7 +536,9 @@ export class HiveRelayClient extends EventEmitter {
       seedChannel._hiverelay = { requestMsg, acceptMsg }
       channels.seed = { channel: seedChannel, requestMsg, acceptMsg }
       seedChannel.open(b4a.from(JSON.stringify({ major: 1, minor: 0 })))
-    } catch {}
+    } catch (err) {
+      this.emit('protocol-error', { relay: pubkeyHex, protocol: 'seed', error: err })
+    }
 
     try {
       const circuitChannel = mux.createChannel({
@@ -575,6 +591,8 @@ export class HiveRelayClient extends EventEmitter {
           }
         },
         onmessage: (msg) => {
+          const relay = this.relays.get(pubkeyHex)
+          if (relay) relay.lastSeen = Date.now()
           this.emit('_circuit-status-' + pubkeyHex, msg)
           this.emit('relay-status', { relay: pubkeyHex, ...msg })
         }
@@ -582,29 +600,96 @@ export class HiveRelayClient extends EventEmitter {
 
       channels.circuit = { channel: circuitChannel, reserveMsg, connectMsg, statusMsg }
       circuitChannel.open()
-    } catch {}
+    } catch (err) {
+      this.emit('protocol-error', { relay: pubkeyHex, protocol: 'circuit', error: err })
+    }
+
+    if (!channels.seed && !channels.circuit) return
 
     this.relays.set(pubkeyHex, {
       conn,
       info,
       channels,
-      connectedAt: Date.now()
+      connectedAt: Date.now(),
+      lastSeen: Date.now()
     })
 
     conn.on('close', () => {
       this.relays.delete(pubkeyHex)
       this.reservations.delete(pubkeyHex)
       this.emit('relay-disconnected', { pubkey: pubkeyHex })
+      if (this.relays.size === 0 && this._started) {
+        this._attemptReconnect()
+      }
     })
 
     conn.on('error', () => {
       this.relays.delete(pubkeyHex)
     })
 
+    this._resetReconnect()
     this.emit('relay-connected', { pubkey: pubkeyHex })
   }
 
+  _startReconnectLoop () {
+    this._reconnect.timer = setInterval(() => {
+      if (this.relays.size === 0 && this.autoDiscover && this._started) {
+        this._attemptReconnect()
+      }
+    }, 30_000)
+    if (this._reconnect.timer.unref) this._reconnect.timer.unref()
+  }
+
+  _attemptReconnect () {
+    if (!this.autoDiscover || !this._started) return
+
+    const { delay, attempt } = this._reconnect
+    const nextAttempt = attempt + 1
+
+    this.emit('reconnecting', { attempt: nextAttempt, delay })
+
+    this._discoveryTopic = this.swarm.join(RELAY_DISCOVERY_TOPIC, {
+      server: false,
+      client: true
+    })
+    this.swarm.flush().catch(() => {})
+
+    const nextDelay = Math.min(delay * 2, 60_000)
+    this._reconnect.delay = nextDelay
+    this._reconnect.attempt = nextAttempt
+  }
+
+  _startRelayHealthChecks () {
+    const HEALTH_CHECK_INTERVAL = 60_000
+    const STALE_THRESHOLD = 3 * 60 * 1000
+
+    this._relayHealthInterval = setInterval(() => {
+      const now = Date.now()
+      for (const [pubkey, relay] of this.relays) {
+        if (now - relay.lastSeen > STALE_THRESHOLD) {
+          this.relays.delete(pubkey)
+          this.reservations.delete(pubkey)
+          this.emit('relay-stale', { pubkey })
+          try { relay.conn.destroy() } catch {}
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL)
+    if (this._relayHealthInterval.unref) this._relayHealthInterval.unref()
+  }
+
+  _resetReconnect () {
+    const wasReconnecting = this._reconnect.attempt > 0
+    this._reconnect.delay = 5000
+    this._reconnect.attempt = 0
+    if (wasReconnecting) {
+      this.emit('reconnected')
+    }
+  }
+
   _onSeedAccept (relayPubkeyHex, msg) {
+    const relay = this.relays.get(relayPubkeyHex)
+    if (relay) relay.lastSeen = Date.now()
+
     const appKeyHex = b4a.toString(msg.appKey, 'hex')
     const entry = this.seedRequests.get(appKeyHex)
 
@@ -642,6 +727,20 @@ export class HiveRelayClient extends EventEmitter {
   async destroy () {
     if (!this._started) return
 
+    // Clean up health check timer
+    if (this._relayHealthInterval) {
+      clearInterval(this._relayHealthInterval)
+      this._relayHealthInterval = null
+    }
+
+    // Clean up reconnect timer
+    if (this._reconnect.timer) {
+      clearInterval(this._reconnect.timer)
+      this._reconnect.timer = null
+    }
+    this._reconnect.delay = 5000
+    this._reconnect.attempt = 0
+
     // Close all drives
     for (const [keyHex, drive] of this.drives) {
       try { await this.swarm.leave(drive.discoveryKey) } catch {}
@@ -658,6 +757,13 @@ export class HiveRelayClient extends EventEmitter {
     this.relays.clear()
     this.seedRequests.clear()
     this.reservations.clear()
+
+    // Stop and persist bootstrap cache
+    if (this._bootstrapCache) {
+      this._bootstrapCache.stop()
+      try { await this._bootstrapCache.save() } catch {}
+      this._bootstrapCache = null
+    }
 
     // Only destroy things we created
     if (this._ownsSwarm && this.swarm) {

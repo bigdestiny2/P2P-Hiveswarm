@@ -9,6 +9,7 @@ import { Relay } from './relay.js'
 import { Metrics } from './metrics.js'
 import { RelayAPI } from './api.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
+import { BootstrapCache } from '../bootstrap-cache.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -57,6 +58,12 @@ export class RelayNode extends EventEmitter {
     this.paymentManager = null
     this.settlementInterval = null
     this.seededApps = new Map() // appKey hex -> { drive, discovery keys }
+    this.connections = new Map() // conn -> { lastActivity }
+    this._healthCheckInterval = null
+    this.bootstrapCache = new BootstrapCache(this.config.storage, {
+      enabled: this.config.bootstrapCacheEnabled !== false,
+      maxPeers: this.config.bootstrapCachePeers || 50
+    })
     this.running = false
   }
 
@@ -66,11 +73,15 @@ export class RelayNode extends EventEmitter {
     try {
       await this.store.ready()
 
+      await this.bootstrapCache.load()
+      const bootstrap = this.bootstrapCache.merge(this.config.bootstrapNodes)
+
       this.swarm = new Hyperswarm({
-        bootstrap: this.config.bootstrapNodes,
+        bootstrap,
         maxConnections: this.config.maxConnections
       })
 
+      this.bootstrapCache.start(this.swarm)
       this.swarm.on('connection', (conn, info) => this._onConnection(conn, info))
 
       // Announce on well-known discovery topic so clients can find us
@@ -127,10 +138,12 @@ export class RelayNode extends EventEmitter {
         }, interval)
       }
 
+      this._startHealthChecks()
       this.running = true
       this.emit('started', { publicKey: this.swarm.keyPair.publicKey })
     } catch (err) {
       // Rollback in reverse order
+      this.bootstrapCache.stop()
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
       if (this.wsTransport) { try { await this.wsTransport.stop() } catch {} this.wsTransport = null }
       if (this.api) { try { await this.api.stop() } catch {} this.api = null }
@@ -207,11 +220,19 @@ export class RelayNode extends EventEmitter {
     // Replicate all cores in our store over this connection
     this.store.replicate(conn)
 
+    const entry = { lastActivity: Date.now() }
+    this.connections.set(conn, entry)
+
+    conn.on('data', () => {
+      entry.lastActivity = Date.now()
+    })
+
     conn.on('error', (err) => {
       this.emit('connection-error', { error: err, info })
     })
 
     conn.on('close', () => {
+      this.connections.delete(conn)
       this.emit('connection-closed', { info })
     })
 
@@ -233,12 +254,32 @@ export class RelayNode extends EventEmitter {
     }
   }
 
+  _startHealthChecks () {
+    const HEALTH_CHECK_INTERVAL = 60_000
+    const STALE_THRESHOLD = 5 * 60 * 1000
+
+    this._healthCheckInterval = setInterval(() => {
+      const now = Date.now()
+      for (const [conn, entry] of this.connections) {
+        if (now - entry.lastActivity > STALE_THRESHOLD) {
+          this.emit('connection-stale', { conn, lastActivity: entry.lastActivity })
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL)
+    if (this._healthCheckInterval.unref) this._healthCheckInterval.unref()
+  }
+
   async stop () {
     if (!this.running) return
 
     const timeout = this.config.shutdownTimeoutMs
 
-    // Stop settlement, WebSocket, API, and metrics first
+    // Stop bootstrap cache and persist peers
+    this.bootstrapCache.stop()
+    try { await this.bootstrapCache.save() } catch {}
+
+    // Stop health checks, settlement, WebSocket, API, and metrics first
+    if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
     if (this.wsTransport) {
       try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch {}

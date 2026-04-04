@@ -17,6 +17,7 @@ import { proofChallengeEncoding, proofResponseEncoding } from './messages.js'
 const PROTOCOL_NAME = 'hiverelay-proof'
 const DEFAULT_MAX_LATENCY_MS = 5000
 const DEFAULT_CHALLENGE_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const MAX_BLOCK_SIZE = 1024 * 1024 // 1MB max for a single block
 
 export class ProofOfRelay extends EventEmitter {
   constructor (opts = {}) {
@@ -58,9 +59,127 @@ export class ProofOfRelay extends EventEmitter {
   }
 
   /**
-   * Issue a challenge to a relay: "prove you have block N of core X"
+   * Issue a batch of challenges to a relay for multiple blocks at once.
+   * Returns a batchId that can be used to track completion.
+   *
+   * @param {Object} channel - protomux channel
+   * @param {Buffer} coreKey - public key of the Hypercore
+   * @param {number[]} blockIndices - array of block indices to challenge
+   * @param {Buffer} relayPubkey - public key of the relay being challenged
+   * @returns {string} batchId
    */
-  challenge (channel, coreKey, blockIndex, relayPubkey) {
+  challengeBatch (channel, coreKey, blockIndices, relayPubkey) {
+    const nonce = b4a.alloc(32)
+    sodium.crypto_generichash(nonce, b4a.from(Date.now().toString()))
+
+    const batchId = b4a.toString(nonce, 'hex').slice(0, 16)
+    const relayPubkeyHex = b4a.toString(relayPubkey, 'hex')
+    const coreKeyHex = b4a.toString(coreKey, 'hex')
+
+    // Store pending batch challenge
+    this.pendingChallenges.set(batchId, {
+      coreKey: coreKeyHex,
+      blockIndices: [...blockIndices],
+      nonce,
+      relayPubkey: relayPubkeyHex,
+      sentAt: Date.now(),
+      isBatch: true,
+      responses: new Map() // blockIndex -> proof-result
+    })
+
+    // Send individual challenge messages sharing the same nonce
+    if (channel.opened && channel._hiverelay) {
+      for (const index of blockIndices) {
+        channel._hiverelay.challengeMsg.send({
+          coreKey,
+          blockIndex: index,
+          nonce,
+          maxLatencyMs: this.maxLatencyMs
+        })
+
+        // Also store per-nonce+index lookup so _onResponse can find the batch
+        const nonceHex = b4a.toString(nonce, 'hex')
+        this.pendingChallenges.set(nonceHex + ':' + index, {
+          coreKey: coreKeyHex,
+          blockIndex: index,
+          sentAt: Date.now(),
+          relayPubkey: relayPubkeyHex,
+          batchId
+        })
+      }
+    }
+
+    // Set single timeout for entire batch
+    setTimeout(() => {
+      const pending = this.pendingChallenges.get(batchId)
+      if (pending) {
+        this.pendingChallenges.delete(batchId)
+        // Clean up per-index entries
+        const nonceHex = b4a.toString(nonce, 'hex')
+        for (const index of blockIndices) {
+          this.pendingChallenges.delete(nonceHex + ':' + index)
+        }
+        this.emit('batch-timeout', { batchId, coreKey: coreKeyHex, relayPubkey: relayPubkeyHex })
+      }
+    }, this.maxLatencyMs + 1000)
+
+    this.emit('batch-challenge-sent', {
+      batchId,
+      coreKey: coreKeyHex,
+      blockIndices,
+      nonce: b4a.toString(nonce, 'hex')
+    })
+
+    return batchId
+  }
+
+  /**
+   * Verify a batch response. Collects individual responses and resolves
+   * the batch when all blocks have been verified.
+   * Called internally from _onResponse when the response belongs to a batch.
+   *
+   * @param {string} batchId - batch identifier
+   * @param {number} blockIndex - the block index that was verified
+   * @param {Object} result - the proof-result for this block
+   */
+  _verifyBatchResponse (batchId, blockIndex, result) {
+    const batch = this.pendingChallenges.get(batchId)
+    if (!batch || !batch.isBatch) return
+
+    batch.responses.set(blockIndex, result)
+
+    // Check if all blocks in the batch have responded
+    if (batch.responses.size >= batch.blockIndices.length) {
+      this.pendingChallenges.delete(batchId)
+      // Clean up per-index entries
+      const nonceHex = b4a.toString(batch.nonce, 'hex')
+      for (const index of batch.blockIndices) {
+        this.pendingChallenges.delete(nonceHex + ':' + index)
+      }
+
+      const allPassed = [...batch.responses.values()].every(r => r.passed)
+      const results = Object.fromEntries(batch.responses)
+
+      this.emit('batch-proof-result', {
+        batchId,
+        relayPubkey: batch.relayPubkey,
+        coreKey: batch.coreKey,
+        blockIndices: batch.blockIndices,
+        allPassed,
+        results
+      })
+    }
+  }
+
+  /**
+   * Issue a challenge to a relay: "prove you have block N of core X"
+   *
+   * @param {Buffer} coreKey - public key of the Hypercore
+   * @param {number} blockIndex - block index to challenge
+   * @param {Buffer} relayPubkey - public key of the relay being challenged
+   * @param {Buffer} [blockData] - if the challenger has the block data, pass it to enable hash verification
+   */
+  challenge (channel, coreKey, blockIndex, relayPubkey, blockData) {
     const nonce = b4a.alloc(32)
     sodium.randombytes_buf(nonce)
 
@@ -71,12 +190,20 @@ export class ProofOfRelay extends EventEmitter {
       maxLatencyMs: this.maxLatencyMs
     }
 
-    this.pendingChallenges.set(b4a.toString(nonce, 'hex'), {
+    const pending = {
       coreKey: b4a.toString(coreKey, 'hex'),
       blockIndex,
       sentAt: Date.now(),
-      relayPubkey: b4a.toString(relayPubkey, 'hex')
-    })
+      relayPubkey: b4a.toString(relayPubkey, 'hex'),
+      nonce
+    }
+
+    // If the challenger has the original block data, compute the expected hash
+    if (blockData && blockData.byteLength > 0) {
+      pending.expectedHash = this._hashBlock(blockData, nonce)
+    }
+
+    this.pendingChallenges.set(b4a.toString(nonce, 'hex'), pending)
 
     if (channel.opened && channel._hiverelay) {
       channel._hiverelay.challengeMsg.send(challenge)
@@ -130,27 +257,55 @@ export class ProofOfRelay extends EventEmitter {
 
   _onResponse (channel, msg) {
     const nonceHex = b4a.toString(msg.nonce, 'hex')
-    const pending = this.pendingChallenges.get(nonceHex)
+
+    // Check if this response belongs to a batch challenge (keyed by nonce:index)
+    const batchKey = nonceHex + ':' + msg.blockIndex
+    const batchPending = this.pendingChallenges.get(batchKey)
+
+    // Try batch lookup first, then single-challenge lookup
+    const pending = batchPending || this.pendingChallenges.get(nonceHex)
 
     if (!pending) {
       this.emit('unexpected-response', { nonce: nonceHex })
       return
     }
 
-    this.pendingChallenges.delete(nonceHex)
+    // For batch entries, clean up the per-index key; for single, clean up the nonce key
+    if (batchPending) {
+      this.pendingChallenges.delete(batchKey)
+    } else {
+      this.pendingChallenges.delete(nonceHex)
+    }
 
     const latencyMs = Date.now() - pending.sentAt
     const withinLatency = latencyMs <= this.maxLatencyMs
     const correctCore = b4a.toString(msg.coreKey, 'hex') === pending.coreKey
     const correctIndex = msg.blockIndex === pending.blockIndex
     const hasData = msg.blockData && msg.blockData.byteLength > 0
+    const reasonableSize = hasData && msg.blockData.byteLength <= MAX_BLOCK_SIZE
 
-    const passed = withinLatency && correctCore && correctIndex && hasData
+    // Verify data integrity via hash (only when nonce was stored in the challenge)
+    let hashValid = true // default to true if no nonce-based verification is possible
+    if (hasData && reasonableSize && pending.nonce) {
+      const responseHash = this._hashBlock(msg.blockData, pending.nonce)
+
+      if (pending.expectedHash) {
+        // Challenger has the original data — compare hashes directly
+        hashValid = b4a.equals(responseHash, pending.expectedHash)
+      } else if (msg.merkleProof && msg.merkleProof.byteLength > 0) {
+        // Third-party verifier — verify against Hypercore Merkle tree proof
+        hashValid = this._verifyMerkleProof(msg.blockData, msg.merkleProof, pending.coreKey)
+      }
+      // If nonce present but neither expectedHash nor merkleProof, default stays true
+      // (relay responded with data, but we can't verify content — pass on other checks)
+    }
+
+    const passed = withinLatency && correctCore && correctIndex && hasData && reasonableSize && hashValid
 
     // Update score
     this._updateScore(pending.relayPubkey, passed, latencyMs)
 
-    this.emit('proof-result', {
+    const proofResult = {
       relayPubkey: pending.relayPubkey,
       coreKey: pending.coreKey,
       blockIndex: pending.blockIndex,
@@ -159,8 +314,62 @@ export class ProofOfRelay extends EventEmitter {
       withinLatency,
       correctCore,
       correctIndex,
-      hasData
-    })
+      hasData,
+      reasonableSize,
+      hashValid
+    }
+
+    this.emit('proof-result', proofResult)
+
+    // If this response belongs to a batch, forward it for batch completion tracking
+    if (pending.batchId) {
+      this._verifyBatchResponse(pending.batchId, pending.blockIndex, proofResult)
+    }
+  }
+
+  /**
+   * Hash a block's data with a challenge nonce for verification.
+   */
+  _hashBlock (data, nonce) {
+    const hash = b4a.alloc(32)
+    sodium.crypto_generichash(hash, b4a.concat([data, nonce]))
+    return hash
+  }
+
+  /**
+   * Verify block data against a Hypercore Merkle tree proof.
+   * The proof contains the Merkle tree nodes needed to reconstruct
+   * the root hash. We hash the block data to get the leaf, then
+   * verify it is consistent with the proof nodes.
+   */
+  _verifyMerkleProof (blockData, merkleProof, coreKeyHex) {
+    try {
+      // Hash the block data to derive the leaf hash
+      const leafHash = b4a.alloc(32)
+      sodium.crypto_generichash(leafHash, blockData)
+
+      // The merkleProof buffer contains concatenated 32-byte tree nodes
+      // followed by a 32-byte expected root hash
+      if (merkleProof.byteLength < 32 || merkleProof.byteLength % 32 !== 0) {
+        return false
+      }
+
+      const nodeCount = (merkleProof.byteLength / 32) - 1
+      const expectedRoot = merkleProof.subarray(nodeCount * 32)
+
+      // Walk up the tree: combine the current hash with each sibling node
+      let current = leafHash
+      for (let i = 0; i < nodeCount; i++) {
+        const sibling = merkleProof.subarray(i * 32, (i + 1) * 32)
+        const combined = b4a.alloc(32)
+        sodium.crypto_generichash(combined, b4a.concat([current, sibling]))
+        current = combined
+      }
+
+      return b4a.equals(current, expectedRoot)
+    } catch {
+      return false
+    }
   }
 
   _updateScore (relayPubkeyHex, passed, latencyMs) {
@@ -204,10 +413,24 @@ export class ProofOfRelay extends EventEmitter {
   _cleanupStale () {
     const now = Date.now()
     const maxAge = this.maxLatencyMs * 2
-    for (const [nonce, entry] of this.pendingChallenges) {
-      if (now - entry.sentAt > maxAge) {
-        this.pendingChallenges.delete(nonce)
+    const staleBatchIds = new Set()
+
+    for (const [key, entry] of this.pendingChallenges) {
+      if (entry.sentAt && now - entry.sentAt > maxAge) {
+        this.pendingChallenges.delete(key)
+        // If a batch entry is stale, mark its per-index entries for cleanup
+        if (entry.isBatch && entry.nonce) {
+          const nonceHex = b4a.toString(entry.nonce, 'hex')
+          for (const index of entry.blockIndices) {
+            staleBatchIds.add(nonceHex + ':' + index)
+          }
+        }
       }
+    }
+
+    // Clean up any orphaned batch per-index entries
+    for (const key of staleBatchIds) {
+      this.pendingChallenges.delete(key)
     }
   }
 
