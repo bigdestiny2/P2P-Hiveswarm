@@ -1,0 +1,69 @@
+/**
+ * Default configuration for HiveRelay nodes
+ */
+
+export default {
+  // Node identity
+  storage: './hiverelay-storage',
+
+  // Network
+  bootstrapNodes: null, // null = use HyperDHT defaults (node1-3.hyperdht.org:49737)
+  maxConnections: 256,
+
+  // Seeding
+  enableSeeding: true,
+  maxStorageBytes: 50 * 1024 * 1024 * 1024, // 50 GB
+  announceInterval: 15 * 60 * 1000, // 15 minutes
+
+  // Circuit relay
+  enableRelay: true,
+  maxRelayBandwidthMbps: 100,
+  maxCircuitDuration: 10 * 60 * 1000, // 10 minutes
+  maxCircuitBytes: 64 * 1024 * 1024, // 64 MB per circuit
+  maxCircuitsPerPeer: 5,
+  reservationTTL: 60 * 60 * 1000, // 1 hour
+
+  // Proof of relay
+  proofMaxLatencyMs: 5000,
+  proofChallengeInterval: 5 * 60 * 1000, // 5 minutes
+
+  // Reputation
+  reputationDecayRate: 0.995, // Daily
+  minChallengesForRanking: 10,
+
+  // Metrics & API
+  enableMetrics: true,
+  enableAPI: true,
+  apiPort: 9100,
+
+  // Regions
+  regions: [], // Empty = accept from all regions
+
+  // Transports
+  transports: {
+    udp: true, // Always on (HyperDHT default)
+    tor: false,
+    i2p: false,
+    websocket: false
+  },
+  wsPort: 8765,
+
+  // Lightning payments
+  lightning: {
+    enabled: false,
+    rpcUrl: 'localhost:10009',
+    macaroonPath: null,
+    certPath: null,
+    network: 'mainnet'
+  },
+
+  // Payment settlement
+  payment: {
+    enabled: false,
+    settlementInterval: 24 * 60 * 60 * 1000, // daily
+    minSettlementSats: 1000
+  },
+
+  // Shutdown
+  shutdownTimeoutMs: 10_000
+}

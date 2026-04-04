@@ -1,0 +1,11 @@
+{
+  "name": "@hiverelay/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for HiveRelay P2P relay node control",
+  "type": "module",
+  "main": "index.ts",
+  "keywords": ["openclaw", "plugin", "hiverelay", "p2p", "hyperswarm"],
+  "peerDependencies": {
+    "hiverelay": ">=0.1.0"
+  }
+}

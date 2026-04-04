@@ -1,0 +1,9 @@
+node_modules
+.git
+.github
+test
+scripts
+docs
+*.md
+!package.json
+.env*

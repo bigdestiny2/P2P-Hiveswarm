@@ -1,0 +1,43 @@
+[Unit]
+Description=HiveRelay — P2P Relay Backbone
+Documentation=https://github.com/hiverelay/hiverelay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hiverelay
+Group=hiverelay
+
+# Paths — adjust to your installation
+ExecStart=/usr/bin/node /opt/hiverelay/cli/index.js start --storage /var/lib/hiverelay
+WorkingDirectory=/opt/hiverelay
+
+# Environment
+Environment=NODE_ENV=production
+Environment=HIVERELAY_LOG_LEVEL=info
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/hiverelay
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Logging — stdout/stderr go to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hiverelay
+
+[Install]
+WantedBy=multi-user.target

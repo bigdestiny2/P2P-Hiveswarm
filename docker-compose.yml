@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  relay:
+    build: .
+    container_name: hiverelay
+    restart: unless-stopped
+    volumes:
+      - hiverelay-data:/data
+    ports:
+      - "9100:9100"   # API (health checks, metrics)
+    environment:
+      - NODE_ENV=production
+      - HIVERELAY_LOG_LEVEL=info
+    command: ["start", "--storage", "/data", "--region", "NA"]
+    # Network mode host gives direct UDP access for HyperDHT
+    # Comment out 'ports' above if using host networking
+    # network_mode: host
+
+volumes:
+  hiverelay-data:
