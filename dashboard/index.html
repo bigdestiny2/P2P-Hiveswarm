@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveSwarm Relay Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,5 93,27.5 93,72.5 50,95 7,72.5 7,27.5' fill='%230af' stroke='%230f0' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;--card:#16213e;--card-border:#1e2d50;
+  --green:#0f0;--orange:#f90;--cyan:#0af;--red:#f44;
+  --text:#e0e0e0;--text-dim:#7a8ba0;--text-bright:#fff;
+  --mono:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:1rem}
+
+/* Header */
+.header{display:flex;align-items:center;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--card-border);margin-bottom:1.5rem;flex-wrap:wrap}
+.hex-icon{width:36px;height:36px;position:relative;flex-shrink:0}
+.hex-icon::before{
+  content:'';position:absolute;inset:0;
+  background:var(--cyan);
+  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
+  opacity:.85;
+}
+.hex-icon::after{
+  content:'';position:absolute;inset:6px;
+  background:var(--card);
+  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
+}
+.header-text h1{font-size:1.4rem;color:var(--text-bright);font-weight:600;letter-spacing:.5px}
+.header-meta{font-size:.8rem;color:var(--text-dim);font-family:var(--mono);margin-top:2px}
+.uptime-badge{
+  margin-left:auto;background:rgba(0,255,0,.1);color:var(--green);
+  padding:.3rem .8rem;border-radius:20px;font-size:.75rem;font-family:var(--mono);
+  border:1px solid rgba(0,255,0,.25);white-space:nowrap;
+}
+.uptime-badge.warn{background:rgba(255,153,0,.1);color:var(--orange);border-color:rgba(255,153,0,.25)}
+
+/* Stats Row */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem}
+.stat-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;transition:border-color .2s;
+}
+.stat-card:hover{border-color:var(--cyan)}
+.stat-label{font-size:.7rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:.5rem}
+.stat-value{font-size:2rem;font-weight:700;font-family:var(--mono);color:var(--text-bright);line-height:1}
+.stat-sub{font-size:.7rem;color:var(--text-dim);margin-top:.4rem;font-family:var(--mono)}
+.stat-value.cyan{color:var(--cyan)}
+.stat-value.green{color:var(--green)}
+.stat-value.orange{color:var(--orange)}
+
+/* Charts */
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+.chart-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;overflow:hidden;
+}
+.chart-card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem}
+.chart-wrap{position:relative;width:100%;height:200px}
+.chart-wrap canvas{width:100%!important;height:100%!important;display:block}
+.chart-empty{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);font-size:.85rem;font-style:italic;
+}
+
+/* Table */
+.table-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;margin-bottom:1.5rem;overflow-x:auto;
+}
+.table-card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{
+  text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--card-border);
+  color:var(--text-dim);font-weight:500;cursor:pointer;user-select:none;
+  white-space:nowrap;font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;
+}
+th:hover{color:var(--cyan)}
+th .sort-arrow{margin-left:4px;font-size:.65rem;opacity:.5}
+th.sorted .sort-arrow{opacity:1;color:var(--cyan)}
+td{padding:.5rem .8rem;border-bottom:1px solid rgba(30,45,80,.5);font-family:var(--mono);font-size:.78rem}
+tr:hover td{background:rgba(0,170,255,.03)}
+.empty-state{text-align:center;padding:2rem;color:var(--text-dim);font-style:italic}
+
+/* Bottom grid */
+.bottom-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+
+/* System Info */
+.sys-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:1.2rem;
+}
+.sys-card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:1rem}
+.sys-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem}
+.sys-row:last-child{margin-bottom:0}
+.sys-label{font-size:.78rem;color:var(--text-dim)}
+.sys-val{font-family:var(--mono);font-size:.82rem;color:var(--text-bright)}
+.progress-wrap{width:100%;margin-top:.3rem}
+.progress-bar{
+  height:6px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;
+}
+.progress-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.progress-fill.green{background:linear-gradient(90deg,#0a0,#0f0)}
+.progress-fill.cyan{background:linear-gradient(90deg,#08a,#0af)}
+.progress-fill.orange{background:linear-gradient(90deg,#c70,#f90)}
+.progress-fill.red{background:linear-gradient(90deg,#a00,#f44)}
+
+/* Peers */
+.peers-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:1.2rem;
+}
+.peers-card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem}
+.peers-list{max-height:220px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--card-border) transparent}
+.peers-list::-webkit-scrollbar{width:5px}
+.peers-list::-webkit-scrollbar-thumb{background:var(--card-border);border-radius:3px}
+.peer-item{
+  padding:.4rem .6rem;font-family:var(--mono);font-size:.75rem;color:var(--cyan);
+  border-bottom:1px solid rgba(30,45,80,.4);display:flex;align-items:center;gap:.5rem;
+}
+.peer-item::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
+.peer-count{font-size:.7rem;color:var(--text-dim);margin-bottom:.5rem}
+
+/* Connection indicator */
+.conn-status{
+  position:fixed;bottom:1rem;right:1rem;padding:.35rem .7rem;border-radius:6px;
+  font-size:.7rem;font-family:var(--mono);z-index:100;
+  background:rgba(0,255,0,.1);color:var(--green);border:1px solid rgba(0,255,0,.2);
+}
+.conn-status.error{background:rgba(255,68,68,.1);color:var(--red);border-color:rgba(255,68,68,.2)}
+
+/* Responsive */
+@media(max-width:900px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .charts-row,.bottom-row{grid-template-columns:1fr}
+}
+@media(max-width:500px){
+  .stats-row{grid-template-columns:1fr}
+  .stat-value{font-size:1.6rem}
+  .header{flex-direction:column;align-items:flex-start}
+  .uptime-badge{margin-left:0}
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="hex-icon"></div>
+  <div class="header-text">
+    <h1>HiveSwarm Relay</h1>
+    <div class="header-meta" id="headerMeta">Loading...</div>
+  </div>
+  <div class="uptime-badge" id="uptimeBadge">--</div>
+</div>
+
+<!-- Stats Row -->
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">Connections</div>
+    <div class="stat-value cyan" id="statConnections">--</div>
+    <div class="stat-sub" id="statConnectionsSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Seeded Apps</div>
+    <div class="stat-value green" id="statApps">--</div>
+    <div class="stat-sub" id="statAppsSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Data Stored</div>
+    <div class="stat-value" id="statStored">--</div>
+    <div class="stat-sub" id="statStoredSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Data Relayed</div>
+    <div class="stat-value orange" id="statRelayed">--</div>
+    <div class="stat-sub" id="statRelayedSub">&nbsp;</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="charts-row">
+  <div class="chart-card">
+    <h3>Connections Over Time</h3>
+    <div class="chart-wrap">
+      <canvas id="chartConnections"></canvas>
+      <div class="chart-empty" id="chartConnEmpty">Waiting for data...</div>
+    </div>
+  </div>
+  <div class="chart-card">
+    <h3>Traffic Over Time</h3>
+    <div class="chart-wrap">
+      <canvas id="chartTraffic"></canvas>
+      <div class="chart-empty" id="chartTrafficEmpty">Waiting for data...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Seeded Apps Table -->
+<div class="table-card">
+  <h3>Seeded Apps</h3>
+  <table id="appsTable">
+    <thead>
+      <tr>
+        <th data-col="key">App Key <span class="sort-arrow"></span></th>
+        <th data-col="discoveryKey">Discovery Key <span class="sort-arrow"></span></th>
+        <th data-col="started">Started <span class="sort-arrow"></span></th>
+        <th data-col="uptime">Uptime <span class="sort-arrow"></span></th>
+        <th data-col="bytesServed">Bytes Served <span class="sort-arrow"></span></th>
+      </tr>
+    </thead>
+    <tbody id="appsBody">
+      <tr><td colspan="5" class="empty-state">No apps seeded yet</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Bottom Row -->
+<div class="bottom-row">
+  <!-- System Info -->
+  <div class="sys-card">
+    <h3>System Info</h3>
+    <div id="sysInfo">
+      <div class="sys-row"><span class="sys-label">Heap Memory</span><span class="sys-val" id="sysHeap">--</span></div>
+      <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill cyan" id="sysHeapBar" style="width:0"></div></div></div>
+      <div class="sys-row" style="margin-top:.8rem"><span class="sys-label">RSS Memory</span><span class="sys-val" id="sysRss">--</span></div>
+      <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill cyan" id="sysRssBar" style="width:0"></div></div></div>
+      <div class="sys-row" style="margin-top:.8rem"><span class="sys-label">Storage</span><span class="sys-val" id="sysStorage">--</span></div>
+      <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill green" id="sysStorageBar" style="width:0"></div></div></div>
+      <div class="sys-row" style="margin-top:.8rem"><span class="sys-label">Circuits</span><span class="sys-val" id="sysCircuits">--</span></div>
+      <div class="sys-row"><span class="sys-label">Errors</span><span class="sys-val" id="sysErrors" style="color:var(--red)">--</span></div>
+    </div>
+  </div>
+
+  <!-- Active Peers -->
+  <div class="peers-card">
+    <h3>Active Peers</h3>
+    <div class="peer-count" id="peerCount">0 connected</div>
+    <div class="peers-list" id="peersList"></div>
+  </div>
+</div>
+
+<!-- Connection Status -->
+<div class="conn-status" id="connStatus">LIVE</div>
+
+<script>
+/* ===== Helpers ===== */
+function formatBytes(b) {
+  if (b == null || isNaN(b)) return '--';
+  if (b === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
+  const v = b / Math.pow(1024, i);
+  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+}
+
+function formatUptime(ms) {
+  if (ms == null || isNaN(ms) || ms < 0) return '--';
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts = [];
+  if (d) parts.push(d + 'd');
+  if (h || d) parts.push(h + 'h');
+  parts.push(m + 'm');
+  return parts.join(' ');
+}
+
+function truncateKey(hex, len) {
+  len = len || 12;
+  if (!hex) return '--';
+  return hex.length > len ? hex.slice(0, len) + '...' : hex;
+}
+
+function formatTime(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+function progressColor(pct) {
+  if (pct > 90) return 'red';
+  if (pct > 70) return 'orange';
+  return 'green';
+}
+
+/* ===== Chart Renderer ===== */
+function drawChart(canvas, datasets, opts) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const pad = { top: 10, right: 15, bottom: 30, left: 55 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  if (!datasets || datasets.every(function(ds) { return !ds.data || ds.data.length < 2; })) {
+    return false; // signal empty
+  }
+
+  // Compute global min/max
+  var allTimes = [];
+  var allVals = [];
+  datasets.forEach(function(ds) {
+    ds.data.forEach(function(p) {
+      allTimes.push(p.t);
+      allVals.push(p.v);
+    });
+  });
+
+  var tMin = Math.min.apply(null, allTimes);
+  var tMax = Math.max.apply(null, allTimes);
+  var vMin = 0;
+  var vMax = Math.max.apply(null, allVals);
+  if (vMax === 0) vMax = 1;
+  // Add 10% headroom
+  vMax *= 1.1;
+
+  if (tMin === tMax) { tMax = tMin + 60000; }
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,.04)';
+  ctx.lineWidth = 1;
+  var yTicks = 5;
+  for (var i = 0; i <= yTicks; i++) {
+    var y = pad.top + ch - (i / yTicks) * ch;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + cw, y);
+    ctx.stroke();
+  }
+
+  // Y labels
+  ctx.fillStyle = '#5a6a80';
+  ctx.font = '10px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (var i = 0; i <= yTicks; i++) {
+    var y = pad.top + ch - (i / yTicks) * ch;
+    var val = vMin + (i / yTicks) * (vMax - vMin);
+    var label = opts && opts.formatY ? opts.formatY(val) : Math.round(val).toString();
+    ctx.fillText(label, pad.left - 8, y);
+  }
+
+  // X labels
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  var xTicks = Math.min(6, Math.floor(cw / 70));
+  for (var i = 0; i <= xTicks; i++) {
+    var t = tMin + (i / xTicks) * (tMax - tMin);
+    var x = pad.left + (i / xTicks) * cw;
+    ctx.fillText(formatTime(t), x, pad.top + ch + 10);
+  }
+
+  // Draw lines
+  datasets.forEach(function(ds) {
+    if (!ds.data || ds.data.length < 2) return;
+    var sorted = ds.data.slice().sort(function(a, b) { return a.t - b.t; });
+
+    ctx.beginPath();
+    ctx.strokeStyle = ds.color || '#0af';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    sorted.forEach(function(p, idx) {
+      var x = pad.left + ((p.t - tMin) / (tMax - tMin)) * cw;
+      var y = pad.top + ch - ((p.v - vMin) / (vMax - vMin)) * ch;
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Area fill
+    var lastPt = sorted[sorted.length - 1];
+    var lastX = pad.left + ((lastPt.t - tMin) / (tMax - tMin)) * cw;
+    ctx.lineTo(lastX, pad.top + ch);
+    var firstPt = sorted[0];
+    var firstX = pad.left + ((firstPt.t - tMin) / (tMax - tMin)) * cw;
+    ctx.lineTo(firstX, pad.top + ch);
+    ctx.closePath();
+    ctx.fillStyle = (ds.color || '#0af') + '12';
+    ctx.fill();
+  });
+
+  return true; // has data
+}
+
+/* ===== Sorting ===== */
+var sortState = { col: null, asc: true };
+var currentApps = [];
+
+function sortApps(col) {
+  if (sortState.col === col) sortState.asc = !sortState.asc;
+  else { sortState.col = col; sortState.asc = true; }
+
+  document.querySelectorAll('#appsTable th').forEach(function(th) {
+    th.classList.remove('sorted');
+    th.querySelector('.sort-arrow').textContent = '';
+  });
+  var activeTh = document.querySelector('#appsTable th[data-col="' + col + '"]');
+  if (activeTh) {
+    activeTh.classList.add('sorted');
+    activeTh.querySelector('.sort-arrow').textContent = sortState.asc ? '\u25B2' : '\u25BC';
+  }
+
+  currentApps.sort(function(a, b) {
+    var av = a[col], bv = b[col];
+    if (typeof av === 'string') return sortState.asc ? av.localeCompare(bv) : bv.localeCompare(av);
+    return sortState.asc ? (av - bv) : (bv - av);
+  });
+
+  renderAppsTable();
+}
+
+function renderAppsTable() {
+  var tbody = document.getElementById('appsBody');
+  if (!currentApps.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No apps seeded yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = currentApps.map(function(app) {
+    var uptime = app.started ? Date.now() - new Date(app.started).getTime() : app.uptime || 0;
+    return '<tr>' +
+      '<td>' + truncateKey(app.key) + '</td>' +
+      '<td>' + truncateKey(app.discoveryKey) + '</td>' +
+      '<td>' + (app.started ? formatTime(app.started) : '--') + '</td>' +
+      '<td>' + formatUptime(uptime) + '</td>' +
+      '<td>' + formatBytes(app.bytesServed || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+document.querySelectorAll('#appsTable th').forEach(function(th) {
+  th.addEventListener('click', function() { sortApps(th.dataset.col); });
+});
+
+/* ===== Dashboard Update ===== */
+function updateDashboard(overview, history, apps) {
+  // Header
+  var pk = overview.publicKey || overview.pubKey || '';
+  var region = overview.region || '';
+  document.getElementById('headerMeta').textContent = truncateKey(pk) + (region ? ' \u00B7 ' + region : '');
+
+  // Uptime badge
+  var badge = document.getElementById('uptimeBadge');
+  var ut = overview.uptime || 0;
+  badge.textContent = '\u25CF UP ' + formatUptime(ut);
+  badge.className = 'uptime-badge' + (ut < 60000 ? ' warn' : '');
+
+  // Stats
+  document.getElementById('statConnections').textContent = overview.connections != null ? overview.connections : '--';
+  document.getElementById('statConnectionsSub').textContent = overview.maxConnections ? 'max ' + overview.maxConnections : '';
+  document.getElementById('statApps').textContent = Array.isArray(apps) ? apps.length : (overview.seededApps || '--');
+  document.getElementById('statStored').textContent = formatBytes(overview.bytesStored || overview.dataStored || 0);
+  document.getElementById('statStoredSub').textContent = overview.storageMax ? formatBytes(overview.storageMax) + ' max' : '';
+  document.getElementById('statRelayed').textContent = formatBytes(overview.bytesRelayed || overview.dataRelayed || 0);
+
+  // Charts
+  renderCharts(history);
+
+  // Apps table
+  currentApps = Array.isArray(apps) ? apps : [];
+  if (sortState.col) sortApps(sortState.col);
+  else renderAppsTable();
+
+  // System info
+  var mem = overview.memory || {};
+  var heapUsed = mem.heapUsed || 0;
+  var heapTotal = mem.heapTotal || 1;
+  var rss = mem.rss || 0;
+  var heapPct = Math.min(100, Math.round((heapUsed / heapTotal) * 100));
+  var rssPct = Math.min(100, Math.round((rss / (heapTotal * 2 || 1)) * 100));
+
+  document.getElementById('sysHeap').textContent = formatBytes(heapUsed) + ' / ' + formatBytes(heapTotal);
+  document.getElementById('sysHeapBar').style.width = heapPct + '%';
+  document.getElementById('sysHeapBar').className = 'progress-fill ' + progressColor(heapPct);
+
+  document.getElementById('sysRss').textContent = formatBytes(rss);
+  document.getElementById('sysRssBar').style.width = rssPct + '%';
+  document.getElementById('sysRssBar').className = 'progress-fill ' + progressColor(rssPct);
+
+  var stUsed = overview.storageUsed || 0;
+  var stMax = overview.storageMax || 1;
+  var stPct = Math.min(100, Math.round((stUsed / stMax) * 100));
+  document.getElementById('sysStorage').textContent = formatBytes(stUsed) + ' / ' + formatBytes(stMax);
+  document.getElementById('sysStorageBar').style.width = stPct + '%';
+  document.getElementById('sysStorageBar').className = 'progress-fill ' + progressColor(stPct);
+
+  document.getElementById('sysCircuits').textContent =
+    (overview.activeCircuits || 0) + ' active / ' + (overview.totalCircuits || 0) + ' total';
+  document.getElementById('sysErrors').textContent = overview.errors || 0;
+
+  // Peers
+  var peers = overview.peers || [];
+  document.getElementById('peerCount').textContent = peers.length + ' connected';
+  var pl = document.getElementById('peersList');
+  if (peers.length) {
+    pl.innerHTML = peers.map(function(p) {
+      var key = typeof p === 'string' ? p : (p.publicKey || p.key || '');
+      return '<div class="peer-item">' + truncateKey(key, 16) + '</div>';
+    }).join('');
+  } else {
+    pl.innerHTML = '<div class="empty-state" style="padding:1rem;font-size:.8rem">No peers connected</div>';
+  }
+}
+
+/* ===== Chart Rendering ===== */
+var chartAnimFrame = null;
+function renderCharts(history) {
+  if (chartAnimFrame) cancelAnimationFrame(chartAnimFrame);
+  chartAnimFrame = requestAnimationFrame(function() {
+    var connData = [];
+    var servedData = [];
+    var relayedData = [];
+
+    if (history && Array.isArray(history.points)) {
+      history.points.forEach(function(p) {
+        var t = p.timestamp || p.time || p.t;
+        if (p.connections != null) connData.push({ t: t, v: p.connections });
+        if (p.bytesServed != null) servedData.push({ t: t, v: p.bytesServed });
+        if (p.bytesRelayed != null) relayedData.push({ t: t, v: p.bytesRelayed });
+      });
+    } else if (history && Array.isArray(history)) {
+      history.forEach(function(p) {
+        var t = p.timestamp || p.time || p.t;
+        if (p.connections != null) connData.push({ t: t, v: p.connections });
+        if (p.bytesServed != null) servedData.push({ t: t, v: p.bytesServed });
+        if (p.bytesRelayed != null) relayedData.push({ t: t, v: p.bytesRelayed });
+      });
+    }
+
+    var c1 = document.getElementById('chartConnections');
+    var hasConn = drawChart(c1, [{ data: connData, color: '#0af' }]);
+    document.getElementById('chartConnEmpty').style.display = hasConn ? 'none' : 'flex';
+
+    var c2 = document.getElementById('chartTraffic');
+    var hasTraffic = drawChart(c2, [
+      { data: servedData, color: '#0f0' },
+      { data: relayedData, color: '#f90' }
+    ], { formatY: function(v) { return formatBytes(v); } });
+    document.getElementById('chartTrafficEmpty').style.display = hasTraffic ? 'none' : 'flex';
+  });
+}
+
+/* ===== Data Fetching ===== */
+var connStatusEl = document.getElementById('connStatus');
+var fetchErrors = 0;
+
+async function fetchData() {
+  try {
+    var results = await Promise.all([
+      fetch('/api/overview').then(function(r) { return r.json(); }),
+      fetch('/api/history?minutes=60').then(function(r) { return r.json(); }),
+      fetch('/api/apps').then(function(r) { return r.json(); })
+    ]);
+    fetchErrors = 0;
+    connStatusEl.textContent = '\u25CF LIVE';
+    connStatusEl.className = 'conn-status';
+    updateDashboard(results[0], results[1], results[2]);
+  } catch (e) {
+    fetchErrors++;
+    connStatusEl.textContent = '\u25CF DISCONNECTED';
+    connStatusEl.className = 'conn-status error';
+    if (fetchErrors <= 1) console.warn('Dashboard fetch failed:', e);
+  }
+}
+
+setInterval(fetchData, 5000);
+fetchData();
+
+/* Resize handler for charts */
+var resizeTimer;
+window.addEventListener('resize', function() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() {
+    renderCharts(null);
+  }, 200);
+});
+</script>
+</body>
+</html>

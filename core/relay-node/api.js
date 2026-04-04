@@ -10,7 +10,12 @@
  */
 
 import { createServer } from 'http'
+import { readFile } from 'fs/promises'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const DEFAULT_PORT = 9100
 
@@ -28,6 +33,7 @@ export class RelayAPI extends EventEmitter {
     // Per-IP request counts: ip -> { count, resetAt }
     this._rateLimits = new Map()
     this._rateLimitCleanup = null
+    this._dashboardHtml = null
   }
 
   async start () {
@@ -43,7 +49,7 @@ export class RelayAPI extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       this.server.on('error', reject)
-      this.server.listen(this.port, '127.0.0.1', () => {
+      this.server.listen(this.port, '0.0.0.0', () => {
         this.emit('started', { port: this.port })
         resolve()
       })
@@ -66,6 +72,9 @@ export class RelayAPI extends EventEmitter {
   async _handle (req, res) {
     const ip = req.socket.remoteAddress || '127.0.0.1'
 
+    // CORS headers on all responses
+    res.setHeader('Access-Control-Allow-Origin', '*')
+
     // Rate limit check
     if (!this._checkRateLimit(ip)) {
       res.setHeader('Content-Type', 'application/json')
@@ -75,7 +84,7 @@ export class RelayAPI extends EventEmitter {
       return
     }
 
-    const url = new URL(req.url, `http://127.0.0.1:${this.port}`)
+    const url = new URL(req.url, `http://0.0.0.0:${this.port}`)
     const path = url.pathname
 
     res.setHeader('Content-Type', 'application/json')
@@ -111,6 +120,96 @@ export class RelayAPI extends EventEmitter {
             for (const conn of this.node.swarm.connections) {
               peers.push({
                 remotePublicKey: conn.remotePublicKey ? Buffer.from(conn.remotePublicKey).toString('hex') : null
+              })
+            }
+          }
+          return this._json(res, { count: peers.length, peers })
+        }
+
+        // --- Dashboard endpoints ---
+
+        if (path === '/dashboard') {
+          if (!this._dashboardHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'index.html')
+            this._dashboardHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._dashboardHtml)
+          return
+        }
+
+        if (path === '/api/overview') {
+          const stats = this.node.getStats()
+          const mem = process.memoryUsage()
+          const uptimeMs = this.node.metrics ? Date.now() - this.node.metrics.startedAt : 0
+          const hours = Math.round(uptimeMs / 3600000 * 100) / 100
+          const days = Math.floor(uptimeMs / 86400000)
+          const h = Math.floor((uptimeMs % 86400000) / 3600000)
+          const m = Math.floor((uptimeMs % 3600000) / 60000)
+          const parts = []
+          if (days > 0) parts.push(`${days}d`)
+          if (h > 0) parts.push(`${h}h`)
+          parts.push(`${m}m`)
+
+          const config = this.node.config || {}
+          const maxStorage = config.maxStorageBytes || 5368709120
+          const bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+
+          return this._json(res, {
+            uptime: { ms: uptimeMs, hours, human: parts.join(' ') },
+            publicKey: stats.publicKey,
+            region: (config.regions && config.regions[0]) || null,
+            connections: stats.connections,
+            seededApps: stats.seededApps,
+            storage: {
+              used: bytesStored,
+              max: maxStorage,
+              pct: maxStorage > 0 ? Math.round(bytesStored / maxStorage * 10000) / 10000 : 0
+            },
+            relay: stats.relay || { activeCircuits: 0, totalCircuitsServed: 0, totalBytesRelayed: 0 },
+            seeder: stats.seeder || { coresSeeded: 0, totalBytesStored: 0, totalBytesServed: 0 },
+            memory: { heapUsed: mem.heapUsed, rss: mem.rss },
+            errors: this.node.metrics ? this.node.metrics._errorCount : 0
+          })
+        }
+
+        if (path === '/api/history') {
+          if (!this.node.metrics) {
+            return this._json(res, { error: 'Metrics not enabled' }, 503)
+          }
+          const minutes = parseInt(url.searchParams.get('minutes')) || 60
+          const cutoff = Date.now() - (minutes * 60_000)
+          const snapshots = this.node.metrics.snapshots
+            .filter(s => s.timestamp >= cutoff)
+          return this._json(res, snapshots)
+        }
+
+        if (path === '/api/apps') {
+          const apps = []
+          const now = Date.now()
+          for (const [appKey, entry] of this.node.seededApps) {
+            apps.push({
+              appKey,
+              discoveryKey: entry.discoveryKey ? Buffer.from(entry.discoveryKey).toString('hex') : null,
+              startedAt: entry.startedAt,
+              bytesServed: entry.bytesServed || 0,
+              uptimeMinutes: Math.round((now - entry.startedAt) / 60_000)
+            })
+          }
+          return this._json(res, apps)
+        }
+
+        if (path === '/api/peers') {
+          const peers = []
+          const now = Date.now()
+          if (this.node.swarm) {
+            for (const conn of this.node.swarm.connections) {
+              const entry = this.node.connections.get(conn)
+              peers.push({
+                remotePublicKey: conn.remotePublicKey ? Buffer.from(conn.remotePublicKey).toString('hex') : null,
+                type: conn.type || null,
+                connectedFor: entry ? now - entry.lastActivity : null
               })
             }
           }
