@@ -10,6 +10,8 @@ import { Metrics } from './metrics.js'
 import { RelayAPI } from './api.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
 import { BootstrapCache } from '../bootstrap-cache.js'
+import { SeedProtocol } from '../protocol/seed-request.js'
+import { CircuitRelay } from '../protocol/relay-circuit.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -104,6 +106,18 @@ export class RelayNode extends EventEmitter {
           maxConnections: this.config.maxConnections
         })
         startups.push(this.relay.start())
+      }
+
+      // Initialize protocol handlers for seed requests and circuit relay
+      this._seedProtocol = new SeedProtocol(this.swarm, {
+        keyPair: this.swarm.keyPair
+      })
+      this._seedProtocol.on('seed-request', (msg) => this._onSeedRequest(msg))
+
+      if (this.relay) {
+        this._circuitRelay = new CircuitRelay(this.swarm, this.relay, {
+          maxCircuitsPerPeer: this.config.maxCircuitsPerPeer || 5
+        })
       }
 
       if (this.config.enableMetrics) {
@@ -220,6 +234,18 @@ export class RelayNode extends EventEmitter {
     // Replicate all cores in our store over this connection
     this.store.replicate(conn)
 
+    // Attach protocol handlers so clients can negotiate seed/circuit channels
+    if (this._seedProtocol) {
+      try { this._seedProtocol.attach(conn) } catch (err) {
+        this.emit('protocol-error', { protocol: 'seed', error: err })
+      }
+    }
+    if (this._circuitRelay) {
+      try { this._circuitRelay.attach(conn) } catch (err) {
+        this.emit('protocol-error', { protocol: 'circuit', error: err })
+      }
+    }
+
     const entry = { lastActivity: Date.now() }
     this.connections.set(conn, entry)
 
@@ -237,6 +263,42 @@ export class RelayNode extends EventEmitter {
     })
 
     this.emit('connection', { info, remotePubKey: b4a.toString(info.publicKey, 'hex') })
+  }
+
+  _onSeedRequest (msg) {
+    if (!this.seeder) return
+
+    const appKeyHex = b4a.toString(msg.appKey, 'hex')
+    const availableBytes = this.config.maxStorageBytes - this.seeder.totalBytesStored
+
+    // Check capacity
+    if (availableBytes < msg.maxStorageBytes) {
+      this.emit('seed-rejected', { appKey: appKeyHex, reason: 'insufficient storage' })
+      return
+    }
+
+    // Accept and start seeding
+    this._seedProtocol.acceptSeedRequest(
+      msg.appKey,
+      this.swarm.keyPair.publicKey,
+      this.config.region || 'unknown',
+      availableBytes
+    )
+
+    // Actually seed the core(s)
+    for (const dk of (msg.discoveryKeys || [])) {
+      const keyHex = b4a.toString(dk, 'hex')
+      this.seeder.seedCore(keyHex).catch((err) => {
+        this.emit('seed-error', { appKey: appKeyHex, core: keyHex, error: err })
+      })
+    }
+
+    // Also seed the app key itself
+    this.seeder.seedCore(appKeyHex).catch((err) => {
+      this.emit('seed-error', { appKey: appKeyHex, error: err })
+    })
+
+    this.emit('seed-accepted', { appKey: appKeyHex })
   }
 
   async _runSettlements () {
@@ -290,6 +352,13 @@ export class RelayNode extends EventEmitter {
       this.api = null
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
+
+    // Destroy protocol handlers
+    if (this._seedProtocol) { this._seedProtocol.destroy(); this._seedProtocol = null }
+    if (this._circuitRelay) {
+      if (this._circuitRelay.destroy) this._circuitRelay.destroy()
+      this._circuitRelay = null
+    }
 
     // Unseed all apps
     for (const appKeyHex of this.seededApps.keys()) {
