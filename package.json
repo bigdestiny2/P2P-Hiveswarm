@@ -1,5 +1,5 @@
 {
-  "name": "hiverelay",
+  "name": "p2p-hiverelay",
   "version": "0.1.0",
   "description": "Shared P2P relay backbone for the Holepunch/Pear ecosystem",
   "type": "module",
@@ -51,7 +51,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hiverelay/hiverelay"
+    "url": "https://github.com/bigdestiny2/P2P-Hiveswarm"
   },
   "keywords": [
     "p2p",
