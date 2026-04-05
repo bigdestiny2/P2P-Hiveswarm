@@ -266,6 +266,11 @@ export class RelayNode extends EventEmitter {
         }
       }
 
+      // Re-seed apps from persistent log (survives restarts)
+      this._reseedFromLog().catch((err) => {
+        this.emit('reseed-error', { error: err })
+      })
+
       // Start network discovery — shares this node's swarm to discover other relays
       this.networkDiscovery = new NetworkDiscovery({ swarm: this.swarm })
       this.networkDiscovery.start().catch(() => {})
@@ -302,6 +307,44 @@ export class RelayNode extends EventEmitter {
     return this
   }
 
+  async _loadSeededAppsLog () {
+    const logPath = join(this.config.storage, 'seeded-apps.json')
+    try {
+      const data = JSON.parse(await readFile(logPath, 'utf8'))
+      return Array.isArray(data) ? data : []
+    } catch {
+      return []
+    }
+  }
+
+  async _saveSeededAppsLog () {
+    const logPath = join(this.config.storage, 'seeded-apps.json')
+    const entries = []
+    for (const [appKey, entry] of this.seededApps) {
+      entries.push({ appKey, startedAt: entry.startedAt })
+    }
+    try {
+      await writeFile(logPath, JSON.stringify(entries, null, 2))
+    } catch (err) {
+      this.emit('error', { context: 'seeded-apps-log', error: err })
+    }
+  }
+
+  async _reseedFromLog () {
+    const saved = await this._loadSeededAppsLog()
+    if (!saved.length) return
+
+    for (const entry of saved) {
+      if (this.seededApps.has(entry.appKey)) continue
+      try {
+        await this.seedApp(entry.appKey)
+        this.emit('reseeded', { appKey: entry.appKey })
+      } catch (err) {
+        this.emit('reseed-error', { appKey: entry.appKey, error: err })
+      }
+    }
+  }
+
   async seedApp (appKeyHex, opts = {}) {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
@@ -331,6 +374,7 @@ export class RelayNode extends EventEmitter {
       })
 
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
+      this._saveSeededAppsLog().catch(() => {})
       return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
       try { await drive.close() } catch {}
@@ -345,6 +389,7 @@ export class RelayNode extends EventEmitter {
     try { await this.swarm.leave(entry.discoveryKey) } catch {}
     try { await entry.drive.close() } catch {}
     this.seededApps.delete(appKeyHex)
+    this._saveSeededAppsLog().catch(() => {})
 
     this.emit('unseeded', { appKey: appKeyHex })
   }
@@ -461,7 +506,18 @@ export class RelayNode extends EventEmitter {
       // Check if we already accepted this one
       const relays = await this.seedingRegistry.getRelaysForApp(req.appKey)
       const alreadyAccepted = relays.some(r => r.relayPubkey === myPubkey)
-      if (alreadyAccepted) continue
+      if (alreadyAccepted) {
+        // If we accepted before but aren't currently seeding (e.g. after restart), re-seed
+        if (!this.seededApps.has(req.appKey)) {
+          try {
+            await this.seedApp(req.appKey)
+            this.emit('reseeded', { appKey: req.appKey, source: 'registry' })
+          } catch (err) {
+            this.emit('registry-error', { appKey: req.appKey, error: err })
+          }
+        }
+        continue
+      }
 
       // Check if replication factor is already met
       if (relays.length >= req.replicationFactor) continue

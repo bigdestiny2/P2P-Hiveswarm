@@ -246,6 +246,14 @@ async function start () {
     log.warn({ err: details.error || details }, 'registry error')
   })
 
+  node.on('reseeded', ({ appKey, source }) => {
+    log.info({ appKey: appKey.slice(0, 12), source: source || 'log' }, 'reseeded app from persistent log')
+  })
+
+  node.on('reseed-error', ({ appKey, error }) => {
+    log.warn({ appKey: appKey ? appKey.slice(0, 12) : 'unknown', err: error }, 'failed to reseed app')
+  })
+
   let statusInterval = null
 
   goodbye(async () => {
