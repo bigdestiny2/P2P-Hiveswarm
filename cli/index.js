@@ -154,6 +154,22 @@ async function start () {
   if (args.api === false) cliOverrides.enableAPI = false
   if (args.port) cliOverrides.apiPort = parseInt(args.port)
   if (args.region) cliOverrides.regions = [].concat(args.region)
+  if (args.tor) {
+    if (!cliOverrides.transports) cliOverrides.transports = {}
+    cliOverrides.transports.tor = true
+    if (typeof args.tor === 'string') {
+      if (!cliOverrides.tor) cliOverrides.tor = {}
+      cliOverrides.tor.controlPassword = args.tor
+    }
+  }
+  if (args['tor-socks-port']) {
+    if (!cliOverrides.tor) cliOverrides.tor = {}
+    cliOverrides.tor.socksPort = parseInt(args['tor-socks-port'])
+  }
+  if (args['tor-control-port']) {
+    if (!cliOverrides.tor) cliOverrides.tor = {}
+    cliOverrides.tor.controlPort = parseInt(args['tor-control-port'])
+  }
 
   const config = loadConfig(cliOverrides)
 
@@ -173,9 +189,17 @@ async function start () {
     console.log(`  Seeding:    ${config.enableSeeding ? 'enabled' : 'disabled'}`)
     console.log(`  API:        ${config.enableAPI ? 'http://127.0.0.1:' + config.apiPort : 'disabled'}`)
     console.log(`  Regions:    ${config.regions && config.regions.length ? config.regions.join(', ') : 'all'}`)
+    if (config.transports && config.transports.tor) {
+      console.log(`  Tor:        enabled (SOCKS ${config.tor ? config.tor.socksPort || 9050 : 9050})`)
+    }
     console.log()
     console.log('  Node is running. Press Ctrl+C to stop.')
     console.log()
+  })
+
+  node.on('tor-ready', ({ onionAddress }) => {
+    log.info({ onionAddress }, 'tor hidden service active')
+    console.log(`  Onion:      ${onionAddress}`)
   })
 
   node.on('connection', ({ remotePubKey }) => {
@@ -315,6 +339,9 @@ Start Options:
   --no-relay                    Disable circuit relay
   --no-seeding                  Disable app seeding
   --no-api                      Disable HTTP API
+  --tor [password]               Enable Tor hidden service transport
+  --tor-socks-port <n>           Tor SOCKS5 port (default: 9050)
+  --tor-control-port <n>         Tor control port (default: 9051)
   --quiet                       Suppress periodic status output
 
 Environment:
