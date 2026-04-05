@@ -161,6 +161,17 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/docs') {
+          if (!this._docsHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'docs.html')
+            this._docsHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._docsHtml)
+          return
+        }
+
         if (path === '/api/health-detail') {
           const healthStatus = this.node.getHealthStatus()
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []

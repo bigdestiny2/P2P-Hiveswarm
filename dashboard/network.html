@@ -242,7 +242,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <!-- Relay Nodes -->
   <div class="section-header">
     <h2>Relay Nodes</h2>
-    <div class="badge" id="lastUpdated">updating...</div>
+    <div style="display:flex;align-items:center;gap:1rem">
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:var(--text-dim);cursor:pointer;user-select:none">
+        <input type="checkbox" id="filterNoApi" checked style="accent-color:var(--cyan)">
+        Hide relays without API
+      </label>
+      <div class="badge" id="lastUpdated">updating...</div>
+    </div>
   </div>
 
   <div class="relay-grid" id="relayGrid">
@@ -287,6 +293,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <!-- Footer -->
 <div class="footer">
   HiveRelay Network &mdash; P2P relay backbone for the <a href="https://holepunch.to" target="_blank">Holepunch</a> ecosystem
+  &mdash; <a href="/docs">Docs</a>
+  &mdash; <a href="/dashboard">Node Dashboard</a>
   &mdash; <a href="https://github.com/bigdestiny2/P2P-Hiveswarm" target="_blank">GitHub</a>
 </div>
 
@@ -507,9 +515,22 @@ function connectWS() {
   };
 }
 
+var _lastNetwork = null;
+
+document.getElementById('filterNoApi').addEventListener('change', function() {
+  if (_lastNetwork) renderNetwork(_lastNetwork);
+});
+
 function renderNetwork(network) {
+  _lastNetwork = network;
   var summary = network.summary || {};
   var relays = network.relays || [];
+  var hideNoApi = document.getElementById('filterNoApi').checked;
+
+  // Filter out relays without API if toggle is on
+  if (hideNoApi) {
+    relays = relays.filter(function(r) { return r.apiPort != null; });
+  }
 
   // Normalize relay data for renderRelayCard
   var results = relays.map(function(r) {
@@ -532,11 +553,18 @@ function renderNetwork(network) {
     };
   });
 
-  var onlineCount = summary.onlineRelays || 0;
-  var totalCount = summary.totalRelays || results.length;
-  var totalConns = summary.totalConnections || 0;
-  var totalStored = summary.totalStorage || 0;
-  var totalStorageMax = summary.totalStorageMax || 0;
+  // Recompute summary from filtered results
+  var onlineCount = 0, totalConns = 0, totalStored = 0, totalStorageMax = 0;
+  results.forEach(function(r) {
+    if (r._online) onlineCount++;
+    totalConns += r.connections || 0;
+    if (r.storage) {
+      totalStored += r.storage.used || 0;
+      totalStorageMax += r.storage.max || 0;
+    }
+  });
+  var totalCount = results.length;
+  var unfilteredTotal = (network.relays || []).length;
 
   // Find longest uptime
   var maxUptime = 0;
@@ -550,7 +578,10 @@ function renderNetwork(network) {
 
   // Summary cards
   document.getElementById('sumRelays').textContent = onlineCount + ' / ' + totalCount;
-  document.getElementById('sumRelaysSub').textContent = (totalCount - onlineCount) > 0 ? (totalCount - onlineCount) + ' offline' : 'all healthy';
+  var hiddenCount = unfilteredTotal - totalCount;
+  var relaysSub = (totalCount - onlineCount) > 0 ? (totalCount - onlineCount) + ' offline' : 'all healthy';
+  if (hiddenCount > 0) relaysSub += ' (' + hiddenCount + ' hidden)';
+  document.getElementById('sumRelaysSub').textContent = relaysSub;
   document.getElementById('sumConns').textContent = totalConns;
   document.getElementById('sumConnsSub').textContent = 'across ' + onlineCount + ' nodes';
   document.getElementById('sumStorage').textContent = formatBytes(totalStored);

@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveRelay Docs</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,5 93,27.5 93,72.5 50,95 7,72.5 7,27.5' fill='%230af' stroke='%230f0' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--card:#161b22;--card-border:#21262d;--card-hover:#1c2333;
+  --green:#3fb950;--orange:#d29922;--cyan:#58a6ff;--red:#f85149;--purple:#bc8cff;
+  --text:#c9d1d9;--text-dim:#8b949e;--text-bright:#f0f6fc;
+  --mono:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --sidebar-w:260px;
+  --topbar-h:56px;
+  --code-bg:#0d1117;--code-border:#30363d;
+}
+html{font-size:14px;scroll-behavior:smooth;scroll-padding-top:calc(var(--topbar-h) + 1.5rem)}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:0;line-height:1.65}
+
+/* ── Top Bar ── */
+.topbar{
+  background:var(--card);border-bottom:1px solid var(--card-border);
+  padding:0 2rem;display:flex;align-items:center;gap:1rem;
+  position:fixed;top:0;left:0;right:0;height:var(--topbar-h);z-index:200;
+}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
+.hex{width:30px;height:30px;position:relative;flex-shrink:0}
+.hex::before{
+  content:'';position:absolute;inset:0;background:var(--cyan);
+  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);opacity:.85;
+}
+.hex::after{
+  content:'';position:absolute;inset:5px;background:var(--card);
+  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
+}
+.topbar h1{font-size:1.15rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-links{margin-left:auto;display:flex;gap:1.2rem;align-items:center}
+.topbar-links a{
+  color:var(--text-dim);text-decoration:none;font-size:.8rem;font-family:var(--mono);
+  transition:color .15s;
+}
+.topbar-links a:hover{color:var(--cyan)}
+.hamburger{
+  display:none;background:none;border:1px solid var(--card-border);border-radius:4px;
+  color:var(--text);font-size:1.2rem;padding:.25rem .5rem;cursor:pointer;margin-right:.5rem;
+}
+
+/* ── Layout ── */
+.layout{display:flex;margin-top:var(--topbar-h);min-height:calc(100vh - var(--topbar-h))}
+
+/* ── Sidebar ── */
+.sidebar{
+  width:var(--sidebar-w);flex-shrink:0;background:var(--card);
+  border-right:1px solid var(--card-border);
+  position:fixed;top:var(--topbar-h);bottom:0;left:0;
+  overflow-y:auto;padding:1.5rem 0;z-index:100;
+  transition:transform .25s ease;
+}
+.sidebar::-webkit-scrollbar{width:4px}
+.sidebar::-webkit-scrollbar-thumb{background:var(--card-border);border-radius:4px}
+.sidebar-section{margin-bottom:1.2rem}
+.sidebar-section-title{
+  font-size:.65rem;text-transform:uppercase;letter-spacing:1.8px;
+  color:var(--text-dim);padding:0 1.5rem;margin-bottom:.5rem;font-weight:600;
+}
+.sidebar a{
+  display:block;padding:.4rem 1.5rem;color:var(--text-dim);text-decoration:none;
+  font-size:.85rem;transition:all .15s;border-left:2px solid transparent;
+}
+.sidebar a:hover{color:var(--text-bright);background:rgba(88,166,255,.04);border-left-color:var(--cyan)}
+.sidebar a.active{color:var(--cyan);background:rgba(88,166,255,.08);border-left-color:var(--cyan)}
+
+/* ── Main Content ── */
+.main{
+  margin-left:var(--sidebar-w);flex:1;padding:2rem 3rem 4rem;
+  max-width:900px;min-width:0;
+}
+
+/* ── Typography ── */
+h2.section-title{
+  font-size:1.5rem;color:var(--text-bright);font-weight:700;
+  margin:3rem 0 1rem;padding-bottom:.6rem;
+  border-bottom:1px solid var(--card-border);
+}
+h2.section-title:first-of-type{margin-top:0}
+h3{font-size:1.1rem;color:var(--text-bright);font-weight:600;margin:2rem 0 .75rem}
+h4{font-size:.95rem;color:var(--cyan);font-weight:600;margin:1.5rem 0 .5rem}
+p{margin-bottom:1rem;color:var(--text)}
+p+ul,p+ol{margin-top:-.5rem}
+ul,ol{margin:0 0 1rem 1.5rem;color:var(--text)}
+li{margin-bottom:.4rem}
+li code,p code,td code,h4 code{
+  background:rgba(88,166,255,.08);color:var(--cyan);
+  padding:.15rem .4rem;border-radius:4px;font-family:var(--mono);font-size:.85em;
+}
+a{color:var(--cyan);text-decoration:none}
+a:hover{text-decoration:underline}
+strong{color:var(--text-bright)}
+hr{border:none;border-top:1px solid var(--card-border);margin:2rem 0}
+
+/* ── Code Blocks ── */
+.code-wrap{
+  position:relative;margin:1rem 0 1.5rem;
+  border:1px solid var(--code-border);border-radius:8px;
+  background:#0d1117;overflow:hidden;
+}
+.code-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.4rem .8rem;background:var(--card);border-bottom:1px solid var(--code-border);
+  font-size:.7rem;font-family:var(--mono);color:var(--text-dim);
+}
+.code-lang{text-transform:uppercase;letter-spacing:1px}
+.copy-btn{
+  background:none;border:1px solid var(--card-border);border-radius:4px;
+  color:var(--text-dim);font-size:.7rem;font-family:var(--mono);
+  padding:.2rem .6rem;cursor:pointer;transition:all .15s;
+}
+.copy-btn:hover{color:var(--cyan);border-color:var(--cyan)}
+.copy-btn.copied{color:var(--green);border-color:var(--green)}
+pre{padding:1rem 1.2rem;overflow-x:auto;margin:0;font-family:var(--mono);font-size:.82rem;line-height:1.6}
+pre code{background:none;padding:0;color:var(--text)}
+
+/* Syntax colours */
+.kw{color:var(--red)}           /* keywords: import, const, await, if */
+.fn{color:#d2a8ff}              /* function names */
+.str{color:#a5d6ff}             /* strings */
+.cm{color:var(--text-dim);font-style:italic}  /* comments */
+.num{color:var(--orange)}       /* numbers */
+.prop{color:var(--cyan)}        /* property names */
+.punct{color:var(--text-dim)}   /* punctuation */
+.bool{color:var(--orange)}      /* booleans */
+
+/* ── Tables ── */
+.api-table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.85rem}
+.api-table th{
+  text-align:left;padding:.6rem .8rem;background:var(--card);
+  border:1px solid var(--card-border);color:var(--text-bright);font-weight:600;
+  font-size:.75rem;text-transform:uppercase;letter-spacing:1px;
+}
+.api-table td{
+  padding:.6rem .8rem;border:1px solid var(--card-border);vertical-align:top;
+}
+.api-table tr:hover td{background:var(--card-hover)}
+.method{
+  font-family:var(--mono);font-size:.75rem;font-weight:700;
+  padding:.15rem .4rem;border-radius:3px;display:inline-block;
+}
+.method.get{background:rgba(63,185,80,.12);color:var(--green)}
+.method.post{background:rgba(88,166,255,.12);color:var(--cyan)}
+
+/* ── Info/Tip Boxes ── */
+.callout{
+  border-left:3px solid var(--cyan);background:rgba(88,166,255,.04);
+  padding:.8rem 1.2rem;border-radius:0 6px 6px 0;margin:1rem 0 1.5rem;
+  font-size:.9rem;
+}
+.callout.tip{border-left-color:var(--green);background:rgba(63,185,80,.04)}
+.callout.warn{border-left-color:var(--orange);background:rgba(210,153,34,.04)}
+.callout-label{font-weight:700;font-size:.75rem;text-transform:uppercase;letter-spacing:1px;margin-bottom:.3rem}
+.callout.tip .callout-label{color:var(--green)}
+.callout.warn .callout-label{color:var(--orange)}
+.callout .callout-label{color:var(--cyan)}
+
+/* ── Flow Diagram ── */
+.flow{
+  display:flex;align-items:center;gap:.3rem;flex-wrap:wrap;
+  margin:1rem 0 1.5rem;font-family:var(--mono);font-size:.82rem;
+}
+.flow-box{
+  padding:.4rem .8rem;border:1px solid var(--card-border);border-radius:6px;
+  background:var(--card);color:var(--text-bright);white-space:nowrap;
+}
+.flow-arrow{color:var(--cyan);font-size:1rem}
+
+/* ── Responsive ── */
+@media(max-width:900px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0);box-shadow:4px 0 20px rgba(0,0,0,.5)}
+  .main{margin-left:0;padding:1.5rem 1.2rem 3rem}
+  .hamburger{display:block}
+  .topbar-links{gap:.8rem}
+  .overlay{
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99;
+  }
+  .overlay.show{display:block}
+}
+@media(max-width:500px){
+  .topbar{padding:0 1rem}
+  .topbar-links a:not(:last-child){display:none}
+  .flow{font-size:.72rem}
+  .flow-box{padding:.3rem .5rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<header class="topbar">
+  <button class="hamburger" id="hamburger" aria-label="Toggle sidebar">&#9776;</button>
+  <a href="/docs" class="topbar-logo">
+    <div class="hex"></div>
+    <h1>HiveRelay Docs</h1>
+  </a>
+  <nav class="topbar-links">
+    <a href="https://github.com/bigdestiny2/P2P-Hiveswarm" target="_blank">GitHub</a>
+    <a href="/network">Network</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</header>
+
+<!-- Sidebar overlay for mobile -->
+<div class="overlay" id="overlay"></div>
+
+<!-- Layout -->
+<div class="layout">
+
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Getting Started</div>
+    <a href="#quick-start">Quick Start</a>
+    <a href="#install">Installation</a>
+    <a href="#cli">CLI Usage</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Node Operator</div>
+    <a href="#operator-guide">Operator Guide</a>
+    <a href="#config">Configuration</a>
+    <a href="#dashboards">Dashboards</a>
+    <a href="#api-endpoints">API Endpoints</a>
+    <a href="#systemd">Systemd Setup</a>
+    <a href="#multi-instance">Multi-Instance</a>
+    <a href="#auto-accept">Auto-Accept Mode</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Developer SDK</div>
+    <a href="#sdk-guide">SDK Guide</a>
+    <a href="#sdk-install">Install</a>
+    <a href="#sdk-publish">Publish Files</a>
+    <a href="#sdk-read">Read Back</a>
+    <a href="#sdk-seed">Seed Requests</a>
+    <a href="#sdk-events">Events</a>
+    <a href="#sdk-scores">Relay Scores</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Architecture</div>
+    <a href="#architecture">Overview</a>
+    <a href="#discovery-flow">Discovery Flow</a>
+    <a href="#dual-path">Dual-Path Seeding</a>
+    <a href="#protocol-stack">Protocol Stack</a>
+    <a href="#self-healing">Self-Healing</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Network</div>
+    <a href="#network-discovery">Network &amp; Discovery</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Reference</div>
+    <a href="#api-reference">API Reference</a>
+  </div>
+</aside>
+
+<!-- Main Content -->
+<main class="main">
+
+<!-- ════════════════════ QUICK START ════════════════════ -->
+<h2 class="section-title" id="quick-start">Quick Start</h2>
+
+<p>Get a HiveRelay node running in under a minute.</p>
+
+<h3 id="install">Installation</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code>npm install p2p-hiverelay</code></pre></div>
+
+<h3>Run a Relay Node</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">import</span> <span class="punct">{</span> <span class="fn">RelayNode</span> <span class="punct">}</span> <span class="kw">from</span> <span class="str">'p2p-hiverelay'</span>
+
+<span class="kw">const</span> node <span class="punct">=</span> <span class="kw">new</span> <span class="fn">RelayNode</span><span class="punct">({</span>
+  <span class="prop">storage</span><span class="punct">:</span> <span class="str">'./relay-data'</span><span class="punct">,</span>
+  <span class="prop">apiPort</span><span class="punct">:</span> <span class="num">9100</span><span class="punct">,</span>
+  <span class="prop">regions</span><span class="punct">:</span> <span class="punct">[</span><span class="str">'NA'</span><span class="punct">],</span>
+  <span class="prop">enableSeeding</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span>
+  <span class="prop">enableRelay</span><span class="punct">:</span> <span class="bool">true</span>
+<span class="punct">})</span>
+
+<span class="kw">await</span> node<span class="punct">.</span><span class="fn">start</span><span class="punct">()</span>
+console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Relay running! Public key:'</span><span class="punct">,</span> node<span class="punct">.</span>swarm<span class="punct">.</span>keyPair<span class="punct">.</span>publicKey<span class="punct">.</span><span class="fn">toString</span><span class="punct">(</span><span class="str">'hex'</span><span class="punct">))</span></code></pre></div>
+
+<h3 id="cli">Or via CLI</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code>npx hiverelay start --region NA --port 9100</code></pre></div>
+
+<div class="callout tip">
+  <div class="callout-label">Tip</div>
+  Once running, open <code>http://localhost:9100/dashboard</code> to see the node operator dashboard, or <code>/network</code> for the full network overview.
+</div>
+
+
+<!-- ════════════════════ NODE OPERATOR GUIDE ════════════════════ -->
+<h2 class="section-title" id="operator-guide">Node Operator Guide</h2>
+
+<h3 id="config">Configuration Options</h3>
+
+<p>Pass these options when creating a <code>RelayNode</code> instance or via CLI flags:</p>
+
+<table class="api-table">
+<thead><tr><th>Option</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>storage</code></td><td>string</td><td><code>'./relay-data'</code></td><td>Directory for Hypercore storage</td></tr>
+<tr><td><code>maxStorageBytes</code></td><td>number</td><td><code>10737418240</code></td><td>Maximum storage in bytes (default 10 GB)</td></tr>
+<tr><td><code>maxConnections</code></td><td>number</td><td><code>128</code></td><td>Maximum concurrent peer connections</td></tr>
+<tr><td><code>regions</code></td><td>string[]</td><td><code>['NA']</code></td><td>Geographic regions this relay serves</td></tr>
+<tr><td><code>apiPort</code></td><td>number</td><td><code>9100</code></td><td>HTTP API and dashboard port</td></tr>
+<tr><td><code>enableSeeding</code></td><td>boolean</td><td><code>true</code></td><td>Accept and persist seed requests</td></tr>
+<tr><td><code>enableRelay</code></td><td>boolean</td><td><code>true</code></td><td>Enable circuit relay for NAT traversal</td></tr>
+<tr><td><code>registryAutoAccept</code></td><td>boolean</td><td><code>true</code></td><td>Auto-accept incoming seed requests</td></tr>
+<tr><td><code>transports</code></td><td>object</td><td><code>{}</code></td><td>Transport config: <code>{ websocket: true, tor: false }</code></td></tr>
+</tbody>
+</table>
+
+<h3 id="dashboards">Dashboard Access</h3>
+<ul>
+  <li><strong>Node Operator Dashboard:</strong> <code>http://YOUR_IP:PORT/dashboard</code> &mdash; Local node stats, seeded apps, health monitor</li>
+  <li><strong>Network Overview:</strong> <code>http://YOUR_IP:PORT/network</code> &mdash; All discovered relays across the DHT</li>
+  <li><strong>Docs:</strong> <code>http://YOUR_IP:PORT/docs</code> &mdash; This page</li>
+</ul>
+
+<h3 id="api-endpoints">API Endpoints</h3>
+
+<table class="api-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><span class="method get">GET</span></td><td><code>/api/overview</code></td><td>Node stats (uptime, connections, storage, memory)</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/network</code></td><td>All discovered relays across the DHT</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/apps</code></td><td>Currently seeded applications</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/peers</code></td><td>Connected peers</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/health-detail</code></td><td>Health check results</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/registry</code></td><td>Seeding registry state</td></tr>
+<tr><td><span class="method get">GET</span></td><td><code>/api/registry/pending</code></td><td>Pending approval requests</td></tr>
+<tr><td><span class="method post">POST</span></td><td><code>/registry/publish</code></td><td>Publish a seed request to the registry</td></tr>
+<tr><td><span class="method post">POST</span></td><td><code>/registry/approve</code></td><td>Approve a pending seed request</td></tr>
+<tr><td><span class="method post">POST</span></td><td><code>/registry/reject</code></td><td>Reject a pending seed request</td></tr>
+<tr><td><span class="method post">POST</span></td><td><code>/registry/auto-accept</code></td><td>Toggle auto-accept mode</td></tr>
+</tbody>
+</table>
+
+<h3 id="systemd">Systemd Setup (Production)</h3>
+
+<p>For production Linux deployments, use a systemd unit file:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">ini</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="punct">[Unit]</span>
+<span class="prop">Description</span><span class="punct">=</span>HiveRelay P2P Relay Node
+<span class="prop">After</span><span class="punct">=</span>network-online.target
+
+<span class="punct">[Service]</span>
+<span class="prop">Type</span><span class="punct">=</span>simple
+<span class="prop">ExecStart</span><span class="punct">=</span>/usr/bin/node /opt/hiverelay/cli/index.js start --region NA --port 9100
+<span class="prop">WorkingDirectory</span><span class="punct">=</span>/opt/hiverelay
+<span class="prop">Restart</span><span class="punct">=</span>always
+<span class="prop">RestartSec</span><span class="punct">=</span><span class="num">5</span>
+<span class="prop">Environment</span><span class="punct">=</span>NODE_ENV=production
+<span class="prop">LimitNOFILE</span><span class="punct">=</span><span class="num">65535</span>
+
+<span class="punct">[Install]</span>
+<span class="prop">WantedBy</span><span class="punct">=</span>multi-user.target</code></pre></div>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm"># Install and enable the service</span>
+sudo cp hiverelay.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hiverelay</code></pre></div>
+
+<h3 id="multi-instance">Multi-Instance Setup</h3>
+
+<p>Run multiple relay instances on the same machine with separate ports and storage directories:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm"># Instance 1 - North America</span>
+npx hiverelay start --region NA --port <span class="num">9100</span> --storage ./relay-na
+
+<span class="cm"># Instance 2 - Europe</span>
+npx hiverelay start --region EU --port <span class="num">9101</span> --storage ./relay-eu
+
+<span class="cm"># Instance 3 - Asia Pacific</span>
+npx hiverelay start --region AP --port <span class="num">9102</span> --storage ./relay-ap</code></pre></div>
+
+<h3 id="auto-accept">Auto-Accept vs Approval Mode</h3>
+
+<p>By default, relays run in <strong>auto-accept</strong> mode &mdash; all incoming seed requests are accepted automatically. This is best for open community relays.</p>
+
+<p>For curated relays, switch to <strong>approval mode</strong>:</p>
+
+<ul>
+  <li>Set <code>registryAutoAccept: false</code> in config</li>
+  <li>Or toggle via the dashboard UI</li>
+  <li>Or call <code>POST /registry/auto-accept</code> with <code>{ "enabled": false }</code></li>
+</ul>
+
+<p>In approval mode, seed requests appear under <code>/api/registry/pending</code> and must be manually approved or rejected by the operator.</p>
+
+
+<!-- ════════════════════ SDK GUIDE ════════════════════ -->
+<h2 class="section-title" id="sdk-guide">Pear Developer SDK Guide</h2>
+
+<h3 id="sdk-install">Installation</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code>npm install p2p-hiverelay</code></pre></div>
+
+<h3>Basic Usage</h3>
+
+<p>Create a client, connect to the relay network, and publish content that will be seeded automatically:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">import</span> <span class="punct">{</span> <span class="fn">HiveRelayClient</span> <span class="punct">}</span> <span class="kw">from</span> <span class="str">'p2p-hiverelay/client'</span>
+
+<span class="kw">const</span> client <span class="punct">=</span> <span class="kw">new</span> <span class="fn">HiveRelayClient</span><span class="punct">(</span><span class="str">'./app-storage'</span><span class="punct">,</span> <span class="punct">{</span>
+  <span class="prop">maxRelays</span><span class="punct">:</span> <span class="num">5</span><span class="punct">,</span>
+  <span class="prop">seedReplicas</span><span class="punct">:</span> <span class="num">2</span><span class="punct">,</span>
+  <span class="prop">autoSeed</span><span class="punct">:</span> <span class="bool">true</span>
+<span class="punct">})</span>
+
+client<span class="punct">.</span><span class="fn">on</span><span class="punct">(</span><span class="str">'relay-connected'</span><span class="punct">,</span> <span class="punct">(</span>evt<span class="punct">)</span> <span class="punct">=&gt;</span> console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Connected to relay:'</span><span class="punct">,</span> evt<span class="punct">.</span>pubkey<span class="punct">.</span><span class="fn">slice</span><span class="punct">(</span><span class="num">0</span><span class="punct">,</span> <span class="num">12</span><span class="punct">)))</span>
+client<span class="punct">.</span><span class="fn">on</span><span class="punct">(</span><span class="str">'seeded'</span><span class="punct">,</span> <span class="punct">(</span>evt<span class="punct">)</span> <span class="punct">=&gt;</span> console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'App seeded by'</span><span class="punct">,</span> evt<span class="punct">.</span>acceptances<span class="punct">,</span> <span class="str">'relays'</span><span class="punct">))</span>
+
+<span class="kw">await</span> client<span class="punct">.</span><span class="fn">start</span><span class="punct">()</span></code></pre></div>
+
+<h3 id="sdk-publish">Publish Files to a Hyperdrive</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">const</span> drive <span class="punct">=</span> <span class="kw">await</span> client<span class="punct">.</span><span class="fn">publish</span><span class="punct">([</span>
+  <span class="punct">{</span> <span class="prop">path</span><span class="punct">:</span> <span class="str">'/index.html'</span><span class="punct">,</span> <span class="prop">content</span><span class="punct">:</span> <span class="str">'&lt;h1&gt;Hello World&lt;/h1&gt;'</span> <span class="punct">},</span>
+  <span class="punct">{</span> <span class="prop">path</span><span class="punct">:</span> <span class="str">'/app.js'</span><span class="punct">,</span> <span class="prop">content</span><span class="punct">:</span> <span class="str">'console.log("running")'</span> <span class="punct">}</span>
+<span class="punct">])</span>
+
+console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Drive key:'</span><span class="punct">,</span> drive<span class="punct">.</span>key<span class="punct">.</span><span class="fn">toString</span><span class="punct">(</span><span class="str">'hex'</span><span class="punct">))</span></code></pre></div>
+
+<h3 id="sdk-read">Read Back</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">const</span> data <span class="punct">=</span> <span class="kw">await</span> client<span class="punct">.</span><span class="fn">get</span><span class="punct">(</span>driveKey<span class="punct">,</span> <span class="str">'/index.html'</span><span class="punct">)</span>
+<span class="kw">const</span> files <span class="punct">=</span> <span class="kw">await</span> client<span class="punct">.</span><span class="fn">list</span><span class="punct">(</span>driveKey<span class="punct">,</span> <span class="str">'/'</span><span class="punct">)</span></code></pre></div>
+
+<h3 id="sdk-seed">Seed Requests</h3>
+
+<p>Request relays to persist your app across the network:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">await</span> client<span class="punct">.</span><span class="fn">seed</span><span class="punct">(</span>driveKey<span class="punct">,</span> <span class="punct">{</span> <span class="prop">replicas</span><span class="punct">:</span> <span class="num">3</span> <span class="punct">})</span></code></pre></div>
+
+<div class="callout">
+  <div class="callout-label">Note</div>
+  The client will find available relays via DHT discovery and request seeding from enough relays to satisfy the replica count. If a relay goes offline, the client will automatically find replacements.
+</div>
+
+<h3 id="sdk-events">Events</h3>
+
+<table class="api-table">
+<thead><tr><th>Event</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>ready</code></td><td>Client is initialized and connected to the swarm</td></tr>
+<tr><td><code>relay-connected</code></td><td>Successfully connected to a relay peer</td></tr>
+<tr><td><code>relay-disconnected</code></td><td>Lost connection to a relay peer</td></tr>
+<tr><td><code>published</code></td><td>Files written to Hyperdrive</td></tr>
+<tr><td><code>seeded</code></td><td>Seed request accepted by relay(s)</td></tr>
+<tr><td><code>seed-error</code></td><td>Seed request rejected or failed</td></tr>
+<tr><td><code>opened</code></td><td>Remote drive opened for reading</td></tr>
+<tr><td><code>reconnecting</code></td><td>Attempting to reconnect to the swarm</td></tr>
+<tr><td><code>reconnected</code></td><td>Successfully reconnected after disruption</td></tr>
+</tbody>
+</table>
+
+<h3 id="sdk-scores">Relay Scores</h3>
+
+<p>The client tracks relay performance and prefers the best-performing relays:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">const</span> scores <span class="punct">=</span> client<span class="punct">.</span><span class="fn">getRelayScores</span><span class="punct">()</span>
+
+<span class="cm">// Returns an array of relay score objects:</span>
+<span class="cm">// [</span>
+<span class="cm">//   {</span>
+<span class="cm">//     pubkey: 'a1b2c3...',</span>
+<span class="cm">//     latencyMs: 42,</span>
+<span class="cm">//     reliability: 0.98,</span>
+<span class="cm">//     successCount: 156,</span>
+<span class="cm">//     failCount: 3</span>
+<span class="cm">//   }</span>
+<span class="cm">// ]</span></code></pre></div>
+
+
+<!-- ════════════════════ ARCHITECTURE ════════════════════ -->
+<h2 class="section-title" id="architecture">Architecture</h2>
+
+<h3 id="discovery-flow">How Discovery Works</h3>
+
+<p>HiveRelay uses a <strong>fully decentralized</strong> discovery model. Clients and relays both join a well-known Hyperswarm DHT topic. No central registry or bootstrap server is needed.</p>
+
+<ul>
+  <li><strong>Relays</strong> announce themselves as servers on the discovery topic</li>
+  <li><strong>Clients</strong> join as clients and discover relays automatically</li>
+  <li>Once connected, a <strong>Protomux handshake</strong> establishes encrypted channels</li>
+</ul>
+
+<h4>Discovery Flow</h4>
+
+<div class="flow">
+  <span class="flow-box">Client</span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">DHT Lookup</span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Find Relay Peers</span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Protomux Handshake</span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Seed Request / Accept</span>
+</div>
+
+<h3 id="dual-path">Dual-Path Seeding</h3>
+
+<p>HiveRelay uses two complementary paths to ensure seed requests always reach relays:</p>
+
+<h4>Path 1: Protomux (Instant, Direct P2P)</h4>
+<p>Real-time seed requests sent directly over Protomux protocol channels. This is the fast path &mdash; if the relay is online, it gets the request immediately.</p>
+
+<h4>Path 2: Seeding Registry (Persistent)</h4>
+<p>A Hypercore-based append-only log that acts as a catch-up mechanism. If a client publishes while a relay is offline, the relay picks it up from the registry when it comes back online. This ensures no seed request is ever lost.</p>
+
+<div class="callout tip">
+  <div class="callout-label">Why dual-path?</div>
+  P2P networks are inherently unreliable &mdash; peers come and go. The dual-path design ensures that seed requests survive relay downtime. Protomux handles the happy path; the registry handles everything else.
+</div>
+
+<h3 id="protocol-stack">Protocol Stack</h3>
+
+<div class="flow">
+  <span class="flow-box">Hyperswarm<br><small style="color:var(--text-dim)">UDP hole-punching</small></span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Noise Encryption<br><small style="color:var(--text-dim)">End-to-end</small></span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Protomux<br><small style="color:var(--text-dim)">Multiplexed channels</small></span>
+  <span class="flow-arrow">&#10132;</span>
+  <span class="flow-box">Seed / Circuit / Proof<br><small style="color:var(--text-dim)">Application protocols</small></span>
+</div>
+
+<h3 id="self-healing">Self-Healing</h3>
+
+<p>Every relay node runs a continuous <strong>health monitor</strong> that checks:</p>
+
+<ul>
+  <li><strong>Memory usage</strong> &mdash; restarts subsystems if heap exceeds thresholds</li>
+  <li><strong>Connection state</strong> &mdash; detects and recovers from swarm disconnections</li>
+  <li><strong>Error rates</strong> &mdash; tracks error frequency and triggers self-heal if rates spike</li>
+  <li><strong>Swarm health</strong> &mdash; monitors DHT connectivity and re-announces if needed</li>
+</ul>
+
+<p>When issues are detected, the health monitor <strong>automatically restarts</strong> the affected subsystem without taking the entire node offline.</p>
+
+
+<!-- ════════════════════ NETWORK & DISCOVERY ════════════════════ -->
+<h2 class="section-title" id="network-discovery">Network &amp; Discovery</h2>
+
+<p>HiveRelay's network is fully decentralized. Here's how it works:</p>
+
+<h4>DHT Discovery Topic</h4>
+<p>All relays and clients share a well-known discovery topic: <code>hiverelay-discovery-v1</code>. This topic is derived deterministically, so every participant finds each other without any configuration.</p>
+
+<h4>Seeding Registry Topic</h4>
+<p>The persistent seeding registry uses the topic <code>hiverelay-seeding-registry-v1</code> for its Hypercore-based append-only log.</p>
+
+<h4>Key Properties</h4>
+<ul>
+  <li><strong>No manual peer configuration</strong> &mdash; relays announce, clients discover automatically</li>
+  <li><strong>No central server</strong> &mdash; the DHT is fully distributed across all participants</li>
+  <li><strong>NAT traversal</strong> &mdash; Hyperswarm handles UDP hole-punching for peers behind NATs</li>
+  <li><strong>Real-time network view</strong> &mdash; the <a href="/network">network dashboard</a> shows all discovered relays live</li>
+</ul>
+
+<div class="callout warn">
+  <div class="callout-label">Firewall Note</div>
+  For best connectivity, ensure your relay can accept inbound UDP and TCP connections. While Hyperswarm can hole-punch through most NATs, a publicly reachable relay provides the best experience for all peers.
+</div>
+
+
+<!-- ════════════════════ API REFERENCE ════════════════════ -->
+<h2 class="section-title" id="api-reference">API Reference</h2>
+
+<p>All endpoints are served by the relay node's built-in HTTP API on the configured <code>apiPort</code>.</p>
+
+<h4><span class="method get">GET</span> <code>/api/overview</code></h4>
+<p>Returns node stats including uptime, connections, storage, and memory.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"uptime"</span><span class="punct">:</span> <span class="num">86420</span><span class="punct">,</span>
+  <span class="str">"connections"</span><span class="punct">:</span> <span class="num">23</span><span class="punct">,</span>
+  <span class="str">"storageUsedBytes"</span><span class="punct">:</span> <span class="num">1073741824</span><span class="punct">,</span>
+  <span class="str">"memoryMB"</span><span class="punct">:</span> <span class="num">128</span><span class="punct">,</span>
+  <span class="str">"publicKey"</span><span class="punct">:</span> <span class="str">"a1b2c3d4..."</span><span class="punct">,</span>
+  <span class="str">"regions"</span><span class="punct">:</span> <span class="punct">[</span><span class="str">"NA"</span><span class="punct">],</span>
+  <span class="str">"version"</span><span class="punct">:</span> <span class="str">"1.0.0"</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/network</code></h4>
+<p>Returns all discovered relays across the DHT.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"relays"</span><span class="punct">:</span> <span class="punct">[</span>
+    <span class="punct">{</span>
+      <span class="str">"publicKey"</span><span class="punct">:</span> <span class="str">"a1b2c3d4..."</span><span class="punct">,</span>
+      <span class="str">"regions"</span><span class="punct">:</span> <span class="punct">[</span><span class="str">"NA"</span><span class="punct">],</span>
+      <span class="str">"connections"</span><span class="punct">:</span> <span class="num">15</span><span class="punct">,</span>
+      <span class="str">"uptime"</span><span class="punct">:</span> <span class="num">172800</span><span class="punct">,</span>
+      <span class="str">"seededApps"</span><span class="punct">:</span> <span class="num">42</span><span class="punct">,</span>
+      <span class="str">"status"</span><span class="punct">:</span> <span class="str">"online"</span>
+    <span class="punct">}</span>
+  <span class="punct">],</span>
+  <span class="str">"totalRelays"</span><span class="punct">:</span> <span class="num">8</span><span class="punct">,</span>
+  <span class="str">"onlineRelays"</span><span class="punct">:</span> <span class="num">6</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/apps</code></h4>
+<p>Returns the list of currently seeded applications.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"apps"</span><span class="punct">:</span> <span class="punct">[</span>
+    <span class="punct">{</span>
+      <span class="str">"driveKey"</span><span class="punct">:</span> <span class="str">"f9e8d7c6..."</span><span class="punct">,</span>
+      <span class="str">"files"</span><span class="punct">:</span> <span class="num">12</span><span class="punct">,</span>
+      <span class="str">"sizeBytes"</span><span class="punct">:</span> <span class="num">524288</span><span class="punct">,</span>
+      <span class="str">"seededAt"</span><span class="punct">:</span> <span class="num">1712380800000</span>
+    <span class="punct">}</span>
+  <span class="punct">]</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/peers</code></h4>
+<p>Returns currently connected peers.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"peers"</span><span class="punct">:</span> <span class="punct">[</span>
+    <span class="punct">{</span>
+      <span class="str">"publicKey"</span><span class="punct">:</span> <span class="str">"b2c3d4e5..."</span><span class="punct">,</span>
+      <span class="str">"type"</span><span class="punct">:</span> <span class="str">"relay"</span><span class="punct">,</span>
+      <span class="str">"connectedSince"</span><span class="punct">:</span> <span class="num">1712380800000</span>
+    <span class="punct">}</span>
+  <span class="punct">],</span>
+  <span class="str">"total"</span><span class="punct">:</span> <span class="num">23</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/health-detail</code></h4>
+<p>Returns detailed health check results from the self-healing monitor.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"status"</span><span class="punct">:</span> <span class="str">"healthy"</span><span class="punct">,</span>
+  <span class="str">"checks"</span><span class="punct">:</span> <span class="punct">{</span>
+    <span class="str">"memory"</span><span class="punct">:</span> <span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span> <span class="str">"heapMB"</span><span class="punct">:</span> <span class="num">128</span> <span class="punct">},</span>
+    <span class="str">"swarm"</span><span class="punct">:</span> <span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span> <span class="str">"connections"</span><span class="punct">:</span> <span class="num">23</span> <span class="punct">},</span>
+    <span class="str">"errors"</span><span class="punct">:</span> <span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span> <span class="str">"rate"</span><span class="punct">:</span> <span class="num">0.01</span> <span class="punct">}</span>
+  <span class="punct">},</span>
+  <span class="str">"lastCheck"</span><span class="punct">:</span> <span class="num">1712380800000</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/registry</code></h4>
+<p>Returns the current seeding registry state.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"autoAccept"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span>
+  <span class="str">"totalEntries"</span><span class="punct">:</span> <span class="num">156</span><span class="punct">,</span>
+  <span class="str">"pendingCount"</span><span class="punct">:</span> <span class="num">0</span><span class="punct">,</span>
+  <span class="str">"acceptedCount"</span><span class="punct">:</span> <span class="num">150</span><span class="punct">,</span>
+  <span class="str">"rejectedCount"</span><span class="punct">:</span> <span class="num">6</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method get">GET</span> <code>/api/registry/pending</code></h4>
+<p>Returns pending seed requests awaiting approval (only relevant in approval mode).</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Response</span>
+<span class="punct">{</span>
+  <span class="str">"pending"</span><span class="punct">:</span> <span class="punct">[</span>
+    <span class="punct">{</span>
+      <span class="str">"id"</span><span class="punct">:</span> <span class="str">"req_abc123"</span><span class="punct">,</span>
+      <span class="str">"driveKey"</span><span class="punct">:</span> <span class="str">"f9e8d7c6..."</span><span class="punct">,</span>
+      <span class="str">"requestedBy"</span><span class="punct">:</span> <span class="str">"c4d5e6f7..."</span><span class="punct">,</span>
+      <span class="str">"requestedAt"</span><span class="punct">:</span> <span class="num">1712380800000</span>
+    <span class="punct">}</span>
+  <span class="punct">]</span>
+<span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method post">POST</span> <code>/registry/publish</code></h4>
+<p>Publish a seed request to the registry.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Request body</span>
+<span class="punct">{</span>
+  <span class="str">"driveKey"</span><span class="punct">:</span> <span class="str">"f9e8d7c6..."</span><span class="punct">,</span>
+  <span class="str">"replicas"</span><span class="punct">:</span> <span class="num">3</span>
+<span class="punct">}</span>
+
+<span class="cm">// Response</span>
+<span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span> <span class="str">"id"</span><span class="punct">:</span> <span class="str">"req_abc123"</span> <span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method post">POST</span> <code>/registry/approve</code></h4>
+<p>Approve a pending seed request.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Request body</span>
+<span class="punct">{</span> <span class="str">"id"</span><span class="punct">:</span> <span class="str">"req_abc123"</span> <span class="punct">}</span>
+
+<span class="cm">// Response</span>
+<span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span> <span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method post">POST</span> <code>/registry/reject</code></h4>
+<p>Reject a pending seed request.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Request body</span>
+<span class="punct">{</span> <span class="str">"id"</span><span class="punct">:</span> <span class="str">"req_abc123"</span> <span class="punct">}</span>
+
+<span class="cm">// Response</span>
+<span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span> <span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<h4><span class="method post">POST</span> <code>/registry/auto-accept</code></h4>
+<p>Toggle auto-accept mode on or off.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cm">// Request body</span>
+<span class="punct">{</span> <span class="str">"enabled"</span><span class="punct">:</span> <span class="bool">false</span> <span class="punct">}</span>
+
+<span class="cm">// Response</span>
+<span class="punct">{</span> <span class="str">"ok"</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span> <span class="str">"autoAccept"</span><span class="punct">:</span> <span class="bool">false</span> <span class="punct">}</span></code></pre></div>
+
+<hr>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:3rem;font-size:.8rem;font-family:var(--mono)">
+  HiveRelay &mdash; Decentralized P2P Relay Network &mdash;
+  <a href="https://github.com/bigdestiny2/P2P-Hiveswarm" target="_blank">GitHub</a>
+</p>
+
+</main>
+</div>
+
+<script>
+// ── Copy to clipboard ──
+function copyCode(btn){
+  const pre = btn.closest('.code-wrap').querySelector('pre');
+  const text = pre.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// ── Mobile sidebar toggle ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+hamburger.addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+});
+
+// Close sidebar on nav click (mobile)
+sidebar.querySelectorAll('a').forEach(a => {
+  a.addEventListener('click', () => {
+    if (window.innerWidth <= 900) {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('show');
+    }
+  });
+});
+
+// ── Active sidebar link tracking ──
+const sections = document.querySelectorAll('h2[id], h3[id], h4[id]');
+const navLinks = document.querySelectorAll('.sidebar a');
+
+function updateActive() {
+  let current = '';
+  const offset = 80;
+  sections.forEach(s => {
+    if (s.getBoundingClientRect().top <= offset) current = s.id;
+  });
+  navLinks.forEach(link => {
+    link.classList.toggle('active', link.getAttribute('href') === '#' + current);
+  });
+}
+
+window.addEventListener('scroll', updateActive, { passive: true });
+updateActive();
+</script>
+</body>
+</html>
