@@ -34,6 +34,7 @@ export class RelayAPI extends EventEmitter {
     this._rateLimits = new Map()
     this._rateLimitCleanup = null
     this._dashboardHtml = null
+    this._networkHtml = null
   }
 
   async start () {
@@ -139,6 +140,17 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/network') {
+          if (!this._networkHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'network.html')
+            this._networkHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._networkHtml)
+          return
+        }
+
         if (path === '/api/overview') {
           const stats = this.node.getStats()
           const mem = process.memoryUsage()
@@ -170,7 +182,19 @@ export class RelayAPI extends EventEmitter {
             relay: stats.relay || { activeCircuits: 0, totalCircuitsServed: 0, totalBytesRelayed: 0 },
             seeder: stats.seeder || { coresSeeded: 0, totalBytesStored: 0, totalBytesServed: 0 },
             memory: { heapUsed: mem.heapUsed, rss: mem.rss },
-            errors: this.node.metrics ? this.node.metrics._errorCount : 0
+            errors: this.node.metrics ? this.node.metrics._errorCount : 0,
+            reputation: this.node.reputation ? {
+              trackedRelays: Object.keys(this.node.reputation.export()).length,
+              topRelay: (() => {
+                const lb = this.node.reputation.getLeaderboard(1)
+                return lb.length ? lb[0] : null
+              })()
+            } : null,
+            tor: this.node.torTransport ? this.node.torTransport.getInfo() : null,
+            bandwidth: this.node._bandwidthReceipt ? {
+              totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
+              receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
+            } : null
           })
         }
 
@@ -206,14 +230,39 @@ export class RelayAPI extends EventEmitter {
           if (this.node.swarm) {
             for (const conn of this.node.swarm.connections) {
               const entry = this.node.connections.get(conn)
-              peers.push({
-                remotePublicKey: conn.remotePublicKey ? Buffer.from(conn.remotePublicKey).toString('hex') : null,
+              const peerPubkey = conn.remotePublicKey ? Buffer.from(conn.remotePublicKey).toString('hex') : null
+              const peerData = {
+                remotePublicKey: peerPubkey,
                 type: conn.type || null,
                 connectedFor: entry ? now - entry.lastActivity : null
-              })
+              }
+              if (peerPubkey && this.node.reputation) {
+                const record = this.node.reputation.getRecord(peerPubkey)
+                peerData.reputation = record || null
+              }
+              peers.push(peerData)
             }
           }
           return this._json(res, { count: peers.length, peers })
+        }
+
+        if (path === '/api/network') {
+          if (!this.node.networkDiscovery) {
+            return this._json(res, { error: 'Network discovery not running' }, 503)
+          }
+          return this._json(res, this.node.networkDiscovery.getNetworkState())
+        }
+
+        if (path === '/api/reputation') {
+          const leaderboard = this.node.reputation ? this.node.reputation.getLeaderboard(100) : []
+          return this._json(res, leaderboard)
+        }
+
+        if (path.startsWith('/api/reputation/')) {
+          const pubkey = path.slice('/api/reputation/'.length)
+          if (!this.node.reputation) return this._json(res, null)
+          const record = this.node.reputation.getRecord(pubkey)
+          return this._json(res, record)
         }
       }
 

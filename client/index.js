@@ -103,6 +103,7 @@ export class HiveRelayClient extends EventEmitter {
     this._discoveryTopic = null
     this._reconnect = { timer: null, delay: 5000, attempt: 0 }
     this._relayHealthInterval = null
+    this._relayScores = new Map() // pubkeyHex -> { latency: number, successes: number, failures: number, bytesServed: number, connectedSince: number }
   }
 
   /**
@@ -416,12 +417,7 @@ export class HiveRelayClient extends EventEmitter {
       : null
 
     if (!relayHex) {
-      for (const [key, relay] of this.relays) {
-        if (relay.channels.circuit) {
-          relayHex = key
-          break
-        }
-      }
+      relayHex = this._selectBestRelay('circuit')
     }
 
     if (!relayHex) {
@@ -614,9 +610,21 @@ export class HiveRelayClient extends EventEmitter {
       lastSeen: Date.now()
     })
 
+    if (!this._relayScores.has(pubkeyHex)) {
+      this._relayScores.set(pubkeyHex, {
+        latency: 0,
+        successes: 0,
+        failures: 0,
+        bytesServed: 0,
+        connectedSince: Date.now()
+      })
+    }
+
     conn.on('close', () => {
       this.relays.delete(pubkeyHex)
       this.reservations.delete(pubkeyHex)
+      const closeScores = this._relayScores.get(pubkeyHex)
+      if (closeScores) closeScores.failures++
       this.emit('relay-disconnected', { pubkey: pubkeyHex })
       if (this.relays.size === 0 && this._started) {
         this._attemptReconnect()
@@ -625,6 +633,8 @@ export class HiveRelayClient extends EventEmitter {
 
     conn.on('error', () => {
       this.relays.delete(pubkeyHex)
+      const errorScores = this._relayScores.get(pubkeyHex)
+      if (errorScores) errorScores.failures++
     })
 
     this._resetReconnect()
@@ -697,6 +707,9 @@ export class HiveRelayClient extends EventEmitter {
       entry.acceptances.push(msg)
     }
 
+    const relayScores = this._relayScores.get(relayPubkeyHex)
+    if (relayScores) relayScores.successes++
+
     this.emit('seed-accepted', {
       appKey: appKeyHex,
       relay: b4a.toString(msg.relayPubkey, 'hex'),
@@ -714,6 +727,45 @@ export class HiveRelayClient extends EventEmitter {
     view.setBigUint64(16, BigInt(msg.ttlSeconds))
     parts.push(meta)
     return b4a.concat(parts)
+  }
+
+  _selectBestRelay (requireProtocol = 'circuit') {
+    let best = null
+    let bestScore = -1
+
+    for (const [pubkey, relay] of this.relays) {
+      if (requireProtocol && !relay.channels[requireProtocol]) continue
+
+      const scores = this._relayScores.get(pubkey) || { successes: 0, failures: 0, latency: 0, connectedSince: Date.now() }
+      const total = scores.successes + scores.failures
+      const reliability = total > 0 ? scores.successes / total : 0.5
+      const uptimeHours = (Date.now() - scores.connectedSince) / 3600000
+      const latencyPenalty = scores.latency > 0 ? 1000 / scores.latency : 1
+
+      const composite = (reliability * 10) + (uptimeHours * 0.5) + latencyPenalty
+      if (composite > bestScore) {
+        bestScore = composite
+        best = pubkey
+      }
+    }
+
+    return best
+  }
+
+  getRelayScores () {
+    const scores = []
+    for (const [pubkey, data] of this._relayScores) {
+      const total = data.successes + data.failures
+      scores.push({
+        relay: pubkey,
+        reliability: total > 0 ? (data.successes / total * 100).toFixed(1) + '%' : 'N/A',
+        successes: data.successes,
+        failures: data.failures,
+        uptimeHours: ((Date.now() - data.connectedSince) / 3600000).toFixed(1),
+        latencyMs: data.latency
+      })
+    }
+    return scores.sort((a, b) => parseFloat(b.reliability) - parseFloat(a.reliability))
   }
 
   _ensureStarted () {
