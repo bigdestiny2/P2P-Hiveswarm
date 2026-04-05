@@ -61,21 +61,26 @@ export class BootstrapCache {
     const cachedPeers = this._collectPeers()
     if (!cachedPeers.length) return configuredBootstrap || undefined
 
+    // If no explicit bootstrap nodes configured (null = use HyperDHT defaults),
+    // return undefined so Hyperswarm uses its built-in bootstrap servers.
+    // Cached peers alone should never replace the default bootstrap nodes.
+    if (!configuredBootstrap || !Array.isArray(configuredBootstrap) || !configuredBootstrap.length) {
+      return undefined
+    }
+
     const seen = new Set()
     const merged = []
 
     // Configured bootstrap nodes take priority
-    if (configuredBootstrap && Array.isArray(configuredBootstrap)) {
-      for (const node of configuredBootstrap) {
-        const key = node.host + ':' + node.port
-        if (!seen.has(key)) {
-          seen.add(key)
-          merged.push({ host: node.host, port: node.port })
-        }
+    for (const node of configuredBootstrap) {
+      const key = node.host + ':' + node.port
+      if (!seen.has(key)) {
+        seen.add(key)
+        merged.push({ host: node.host, port: node.port })
       }
     }
 
-    // Append cached peers
+    // Append cached peers as supplementary bootstrap nodes
     for (const p of cachedPeers) {
       const key = p.host + ':' + p.port
       if (!seen.has(key)) {
