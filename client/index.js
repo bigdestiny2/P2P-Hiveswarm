@@ -641,7 +641,7 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   _attemptReconnect () {
-    if (!this.autoDiscover || !this._started) return
+    if (!this.autoDiscover || !this._started || this.swarm.destroyed) return
 
     const { delay, attempt } = this._reconnect
     const nextAttempt = attempt + 1
