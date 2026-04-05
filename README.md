@@ -103,11 +103,18 @@ npm install
 # Start a relay node
 npx hiverelay start --region NA --max-storage 50GB
 
+# Start with Tor hidden service (requires Tor daemon)
+npx hiverelay start --tor --region NA
+
 # Check status
 npx hiverelay status
 
 # Seed a specific app
 npx hiverelay seed <app-key> --replicas 3
+
+# View dashboards
+open http://localhost:9100/dashboard   # Single relay
+open http://localhost:9100/network     # All relays on the network
 ```
 
 Or with Docker:
@@ -296,9 +303,18 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 
 ### Reputation System
 - **Score components** — Uptime, challenge pass rate, latency, bandwidth served
+- **Core loop wired** — ProofOfRelay feeds ReputationSystem, BandwidthReceipt tracks circuit bandwidth, reputation decay runs hourly
+- **Client relay selection** — Clients use composite scoring (reliability, uptime, latency) to pick the best relay
 - **Daily decay** — Scores decay at 0.995/day to keep nodes active
 - **Minimum threshold** — Nodes need 10+ challenges before being ranked
-- **Public scores** — Clients can query reputation to choose better relays
+- **Public API** — `/api/reputation` leaderboard and per-relay scoring
+
+### Tor Transport
+- **Hidden service** — Relay creates an ephemeral `.onion` address via Tor control port, reachable without exposing real IP
+- **SOCKS5 outbound** — Outgoing connections routed through Tor, hiding relay's IP from peers
+- **Duplex stream adapter** — SOCKS5 sockets wrapped into Node.js streams, compatible with Hyperswarm connections
+- **CLI flags** — `--tor`, `--tor-socks-port`, `--tor-control-port` for easy operator setup
+- **Dashboard integration** — Tor-enabled relays show green TOR badge and `.onion` address in network overview
 
 ### Incentive Layer (Phase 2)
 - **Lightning micropayments** — LND integration for paying relay operators
@@ -306,19 +322,36 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Daily settlement** — Automatic settlement when balance exceeds threshold
 - **Mock provider** — Development/testing without real Lightning node
 
+### Network Discovery
+- **DHT-powered** — Relays auto-discover each other on the Hyperswarm DHT
+- **No registry** — No central server, no manual configuration, no signup
+- **Live network state** — `/api/network` endpoint returns all discovered relays with live stats
+- **API port probing** — Discovered relays are polled for their HTTP API automatically
+- **Stale cleanup** — Relays not seen for 5+ minutes are marked offline, removed after 15 minutes
+
+### Dashboards
+- **Operator dashboard** (`/dashboard`) — Single-relay view with connections, storage, circuits, memory, peers, and charts
+- **Network overview** (`/network`) — All relays in the network, auto-populated from DHT discovery. Shows status, uptime, connections, storage, Tor badges, and connect-to-relay modal with copyable public keys and SDK code
+
 ### HTTP API (Operator)
 - **`GET /health`** — Node health check
 - **`GET /status`** — Stats: public key, connections, seeded apps, relay metrics
 - **`GET /peers`** — Connected peers list
 - **`GET /metrics`** — Prometheus-format metrics
+- **`GET /dashboard`** — Operator dashboard (HTML)
+- **`GET /network`** — Network overview dashboard (HTML)
+- **`GET /api/overview`** — Detailed node stats (JSON)
+- **`GET /api/network`** — All DHT-discovered relays with live stats (JSON)
+- **`GET /api/reputation`** — Reputation leaderboard (top 100)
+- **`GET /api/reputation/:pubkey`** — Single relay reputation record
 - **`POST /seed`** — Seed an app by key
 - **`POST /unseed`** — Stop seeding an app
 - Rate limited: 60 req/min per IP, 64KB max body
 
 ### Transports
 - **UDP (HyperDHT)** — Default, always on
-- **WebSocket** — Browser peer support (Phase 2)
-- **Tor** — Hidden service transport for censorship resistance (planned)
+- **WebSocket** — Browser peer support via duplex stream adapter
+- **Tor** — SOCKS5 proxy + hidden service for IP privacy and censorship resistance
 - **I2P** — Garlic routing for anonymity (planned)
 
 ### Production Ready
@@ -375,6 +408,7 @@ P2P-Hiveswarm/
 │   │   ├── proof-of-relay.js  # Cryptographic proof challenges
 │   │   └── bandwidth-receipt.js # Signed bandwidth proofs
 │   ├── registry/          # Autobase seeding registry
+│   ├── network-discovery.js # DHT-based relay auto-discovery
 │   └── logger.js          # Structured logging (pino)
 ├── incentive/
 │   ├── payment/           # Lightning micropayments
@@ -383,7 +417,14 @@ P2P-Hiveswarm/
 │   │   └── mock-provider.js      # Mock for testing
 │   └── reputation/        # Reputation scoring
 ├── transports/
-│   └── websocket/         # WebSocket transport (browser peers)
+│   ├── websocket/         # WebSocket transport (browser peers)
+│   └── tor/               # Tor hidden service + SOCKS5 transport
+├── dashboard/
+│   ├── index.html         # Operator dashboard (single relay)
+│   └── network.html       # Network overview (all relays, DHT-driven)
+├── specs/
+│   ├── HIVECOMPUTE-SPEC.md    # P2P compute/AI services spec
+│   └── HIVECOMPUTE-OVERVIEW.md # Human-friendly overview
 ├── cli/                   # CLI tool
 ├── config/                # Default configuration
 ├── test/
@@ -442,6 +483,10 @@ All options in `config/default.js`:
 
   // Transports
   transports: { udp: true, websocket: false, tor: false, i2p: false },
+  wsPort: 8765,
+
+  // Tor (when transports.tor = true)
+  tor: { socksHost: '127.0.0.1', socksPort: 9050, controlPort: 9051 },
 
   // Lightning (Phase 2)
   lightning: { enabled: false, rpcUrl: 'localhost:10009' },
@@ -456,18 +501,29 @@ Environment variables:
 
 ## Roadmap
 
-**Phase 1: Community Relay Network** (current)
-- No token, no payments
-- Operators earn reputation through proof-of-relay
-- SDK available for Pear app developers
-
-**Phase 2: Incentive Layer**
-- Lightning micropayments for relay operators
+**Phase 1: Community Relay Network** (complete)
+- Relay discovery, seeding, circuit relay, proof-of-relay
+- Reputation system with core loop wired (challenges, bandwidth, decay)
+- Client SDK with reputation-based relay selection
 - WebSocket transport for browser peers
+- Tor hidden service transport for IP privacy
+- DHT-powered network discovery + dashboards
+- Persistent relay identity across restarts
+- Operator dashboard + network overview
+
+**Phase 2: Incentive Layer** (in progress)
+- Lightning micropayments for relay operators
+- Payment settlement with held-amount schedule
 - Bandwidth marketplace
 
-**Phase 3: Scale**
-- Tor/I2P transports
+**Phase 3: Compute Network**
+- HiveCompute: P2P AI inference and compute services
+- Mac Studio / GPU owners rent compute to the network
+- Shared reputation across relay and compute
+- See `specs/HIVECOMPUTE-SPEC.md` for full architecture
+
+**Phase 4: Scale**
+- I2P transport
 - Cross-region relay routing
 - Token-based incentives (if demand proves it)
 
