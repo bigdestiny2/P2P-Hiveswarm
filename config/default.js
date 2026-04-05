@@ -57,6 +57,16 @@ export default {
   },
   wsPort: 8765,
 
+  // Tor hidden service
+  tor: {
+    socksHost: '127.0.0.1',
+    socksPort: 9050,
+    controlHost: '127.0.0.1',
+    controlPort: 9051,
+    controlPassword: null,
+    cookieAuthFile: '/var/lib/tor/control_auth_cookie'
+  },
+
   // Lightning payments
   lightning: {
     enabled: false,

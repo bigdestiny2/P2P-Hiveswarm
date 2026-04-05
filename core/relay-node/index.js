@@ -11,9 +11,14 @@ import { Relay } from './relay.js'
 import { Metrics } from './metrics.js'
 import { RelayAPI } from './api.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
+import { TorTransport } from '../../transports/tor/index.js'
 import { BootstrapCache } from '../bootstrap-cache.js'
 import { SeedProtocol } from '../protocol/seed-request.js'
 import { CircuitRelay } from '../protocol/relay-circuit.js'
+import { ProofOfRelay } from '../protocol/proof-of-relay.js'
+import { BandwidthReceipt } from '../protocol/bandwidth-receipt.js'
+import { ReputationSystem } from '../../incentive/reputation/index.js'
+import { NetworkDiscovery } from '../network-discovery.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -59,6 +64,7 @@ export class RelayNode extends EventEmitter {
     this.metrics = null
     this.api = null
     this.wsTransport = null
+    this.torTransport = null
     this.paymentManager = null
     this.settlementInterval = null
     this.seededApps = new Map() // appKey hex -> { drive, discovery keys }
@@ -68,6 +74,11 @@ export class RelayNode extends EventEmitter {
       enabled: this.config.bootstrapCacheEnabled !== false,
       maxPeers: this.config.bootstrapCachePeers || 50
     })
+    this.reputation = new ReputationSystem()
+    this._proofOfRelay = null
+    this._bandwidthReceipt = null
+    this._reputationDecayInterval = null
+    this.networkDiscovery = null
     this.running = false
   }
 
@@ -125,6 +136,42 @@ export class RelayNode extends EventEmitter {
         })
       }
 
+      // Initialize proof-of-relay challenge system
+      this._proofOfRelay = new ProofOfRelay({
+        maxLatencyMs: this.config.proofMaxLatencyMs || 5000,
+        challengeInterval: this.config.proofChallengeInterval || 300000
+      })
+
+      // Feed proof results into reputation scoring
+      this._proofOfRelay.on('proof-result', (result) => {
+        this.reputation.recordChallenge(result.relayPubkey, result.passed, result.latencyMs)
+      })
+
+      // Daily reputation decay (run hourly, decay is multiplicative)
+      this._reputationDecayInterval = setInterval(() => {
+        this.reputation.applyDecay()
+      }, 60 * 60 * 1000)
+      if (this._reputationDecayInterval.unref) this._reputationDecayInterval.unref()
+
+      // Initialize bandwidth receipt tracking
+      this._bandwidthReceipt = new BandwidthReceipt(this.swarm.keyPair, {
+        maxReceipts: 10000,
+        aggregateThresholdBytes: this.config.aggregateThresholdBytes || 10 * 1024 * 1024,
+        aggregateWindowMs: this.config.aggregateWindowMs || 10000
+      })
+
+      // When a circuit closes, record the bandwidth in reputation
+      if (this.relay) {
+        this.relay.on('circuit-closed', ({ circuitId, bytesRelayed, durationMs }) => {
+          if (bytesRelayed > 0 && this.reputation) {
+            this.reputation.recordBandwidth(
+              b4a.toString(this.swarm.keyPair.publicKey, 'hex'),
+              bytesRelayed
+            )
+          }
+        })
+      }
+
       if (this.config.enableMetrics) {
         this.metrics = new Metrics(this)
       }
@@ -147,6 +194,25 @@ export class RelayNode extends EventEmitter {
         await this.wsTransport.start()
       }
 
+      if (this.config.transports && this.config.transports.tor) {
+        const torOpts = this.config.tor || {}
+        this.torTransport = new TorTransport({
+          socksHost: torOpts.socksHost,
+          socksPort: torOpts.socksPort,
+          controlHost: torOpts.controlHost,
+          controlPort: torOpts.controlPort,
+          controlPassword: torOpts.controlPassword,
+          cookieAuthFile: torOpts.cookieAuthFile,
+          localPort: this.config.apiPort || 9100
+        })
+
+        this.torTransport.on('connection', (stream, info) => this._onConnection(stream, info))
+        this.torTransport.on('hidden-service', ({ onionAddress }) => {
+          this.emit('tor-ready', { onionAddress })
+        })
+        await this.torTransport.start()
+      }
+
       if (this.config.payment && this.config.payment.enabled && this.config.paymentManager) {
         this.paymentManager = this.config.paymentManager
         const interval = this.config.payment.settlementInterval || 24 * 60 * 60 * 1000
@@ -158,12 +224,18 @@ export class RelayNode extends EventEmitter {
       }
 
       this._startHealthChecks()
+
+      // Start network discovery — shares this node's swarm to discover other relays
+      this.networkDiscovery = new NetworkDiscovery({ swarm: this.swarm })
+      this.networkDiscovery.start().catch(() => {})
+
       this.running = true
       this.emit('started', { publicKey: this.swarm.keyPair.publicKey })
     } catch (err) {
       // Rollback in reverse order
       this.bootstrapCache.stop()
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
+      if (this.torTransport) { try { await this.torTransport.stop() } catch {} this.torTransport = null }
       if (this.wsTransport) { try { await this.wsTransport.stop() } catch {} this.wsTransport = null }
       if (this.api) { try { await this.api.stop() } catch {} this.api = null }
       if (this.metrics) { this.metrics.stop(); this.metrics = null }
@@ -231,8 +303,16 @@ export class RelayNode extends EventEmitter {
       seededApps: this.seededApps.size,
       connections: this.swarm ? this.swarm.connections.size : 0,
       relay: this.relay ? this.relay.getStats() : null,
-      seeder: this.seeder ? this.seeder.getStats() : null
+      seeder: this.seeder ? this.seeder.getStats() : null,
+      tor: this.torTransport ? this.torTransport.getInfo() : null,
+      reputation: {
+        trackedRelays: this.reputation ? Object.keys(this.reputation.export()).length : 0
+      }
     }
+  }
+
+  getLeaderboard (limit = 50) {
+    return this.reputation ? this.reputation.getLeaderboard(limit) : []
   }
 
   async _loadOrCreateKeyPair () {
@@ -270,6 +350,11 @@ export class RelayNode extends EventEmitter {
     if (this._circuitRelay) {
       try { this._circuitRelay.attach(conn) } catch (err) {
         this.emit('protocol-error', { protocol: 'circuit', error: err })
+      }
+    }
+    if (this._proofOfRelay) {
+      try { this._proofOfRelay.attach(conn) } catch (err) {
+        this.emit('protocol-error', { protocol: 'proof', error: err })
       }
     }
 
@@ -370,6 +455,10 @@ export class RelayNode extends EventEmitter {
     // Stop health checks, settlement, WebSocket, API, and metrics first
     if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
+    if (this.torTransport) {
+      try { await withTimeout(this.torTransport.stop(), timeout, 'torTransport.stop') } catch {}
+      this.torTransport = null
+    }
     if (this.wsTransport) {
       try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch {}
       this.wsTransport = null
@@ -386,6 +475,10 @@ export class RelayNode extends EventEmitter {
       if (this._circuitRelay.destroy) this._circuitRelay.destroy()
       this._circuitRelay = null
     }
+    if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch {} this.networkDiscovery = null }
+    if (this._proofOfRelay) { this._proofOfRelay = null }
+    if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
+    if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
 
     // Unseed all apps
     for (const appKeyHex of this.seededApps.keys()) {

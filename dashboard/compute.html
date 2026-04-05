@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiveCompute Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+  h1 { color: #ff9500; margin-bottom: 4px; font-size: 1.4em; }
+  .subtitle { color: #666; font-size: 0.85em; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px; }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+  .card h2 { color: #ff9500; font-size: 0.9em; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .stat { margin-bottom: 8px; }
+  .stat .label { color: #888; font-size: 0.8em; }
+  .stat .value { font-size: 1.3em; font-weight: bold; color: #fff; }
+  .stat .value.green { color: #4ade80; }
+  .stat .value.orange { color: #ff9500; }
+  .model-list { list-style: none; }
+  .model-list li { padding: 8px; border-bottom: 1px solid #333; font-size: 0.85em; }
+  .model-list li:last-child { border-bottom: none; }
+  .model-name { color: #ff9500; font-weight: bold; }
+  .model-meta { color: #888; font-size: 0.8em; margin-top: 2px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; margin-left: 6px; }
+  .badge.loaded { background: #166534; color: #4ade80; }
+  .badge.cold { background: #333; color: #888; }
+  .pubkey { font-size: 0.7em; color: #666; word-break: break-all; }
+  .footer { text-align: center; color: #444; font-size: 0.75em; margin-top: 24px; }
+  .error { color: #ef4444; }
+  #status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  #status-dot.ok { background: #4ade80; }
+  #status-dot.err { background: #ef4444; }
+</style>
+</head>
+<body>
+  <h1><span id="status-dot" class="ok"></span>HiveCompute Dashboard</h1>
+  <div class="subtitle">Decentralized Inference Node &bull; <span id="uptime">--</span> uptime</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Node Info</h2>
+      <div class="stat"><div class="label">Public Key</div><div class="value pubkey" id="pubkey">--</div></div>
+      <div class="stat"><div class="label">Region</div><div class="value" id="region">--</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Requests</h2>
+      <div class="stat"><div class="label">Active</div><div class="value orange" id="active-requests">0</div></div>
+      <div class="stat"><div class="label">Queued</div><div class="value" id="queue-depth">0</div></div>
+      <div class="stat"><div class="label">Total Served</div><div class="value green" id="total-served">0</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Tokens</h2>
+      <div class="stat"><div class="label">Generated</div><div class="value green" id="tokens-generated">0</div></div>
+      <div class="stat"><div class="label">Connections</div><div class="value" id="connections">0</div></div>
+      <div class="stat"><div class="label">Errors</div><div class="value error" id="errors">0</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Memory</h2>
+      <div class="stat"><div class="label">Heap Used</div><div class="value" id="heap">--</div></div>
+      <div class="stat"><div class="label">RSS</div><div class="value" id="rss">--</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Models</h2>
+    <ul class="model-list" id="model-list">
+      <li>Loading...</li>
+    </ul>
+  </div>
+
+  <div class="footer">HiveCompute v0.1.0 &bull; Refreshes every 5s</div>
+
+<script>
+function formatBytes(b) {
+  if (!b) return '0 B';
+  const u = ['B','KB','MB','GB'];
+  const i = Math.floor(Math.log(b)/Math.log(1024));
+  return (b/Math.pow(1024,i)).toFixed(1)+' '+u[i];
+}
+function formatNum(n) {
+  return (n||0).toLocaleString();
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/overview');
+    const d = await res.json();
+
+    document.getElementById('status-dot').className = 'ok';
+    document.getElementById('uptime').textContent = d.uptime ? d.uptime.human : '--';
+    document.getElementById('pubkey').textContent = d.publicKey || '--';
+    document.getElementById('active-requests').textContent = formatNum(d.activeRequests);
+    document.getElementById('queue-depth').textContent = formatNum(d.queueDepth);
+    document.getElementById('total-served').textContent = formatNum(d.totalRequestsServed);
+    document.getElementById('tokens-generated').textContent = formatNum(d.totalTokensGenerated);
+    document.getElementById('connections').textContent = formatNum(d.connections);
+    document.getElementById('errors').textContent = formatNum(d.errors);
+    document.getElementById('heap').textContent = formatBytes(d.memory?.heapUsed);
+    document.getElementById('rss').textContent = formatBytes(d.memory?.rss);
+
+    const list = document.getElementById('model-list');
+    if (d.models && d.models.length > 0) {
+      list.innerHTML = d.models.map(m =>
+        '<li>' +
+        '<span class="model-name">' + m.id + '</span>' +
+        '<span class="badge ' + (m.loaded ? 'loaded' : 'cold') + '">' + (m.loaded ? 'loaded' : 'cold') + '</span>' +
+        '<div class="model-meta">' + m.family + ' &bull; ' + m.parameterCount + ' &bull; ' + m.quantization + ' &bull; ctx ' + m.contextWindow + '</div>' +
+        '</li>'
+      ).join('');
+    } else {
+      list.innerHTML = '<li>No models loaded</li>';
+    }
+  } catch(e) {
+    document.getElementById('status-dot').className = 'err';
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
