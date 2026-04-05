@@ -41,10 +41,30 @@ Hiveswarm Relay Nodes
 ### Data Flow
 
 1. **Developer publishes** — `app.publish()` creates a Hyperdrive, writes files, joins the DHT topic
-2. **Relay nodes seed** — `app.seed()` broadcasts a signed request to connected relays; relays accept and begin replicating the Hyperdrive
-3. **Developer goes offline** — The app is still available because relay nodes have a full copy
-4. **End user opens the app** — `app.open(key)` finds peers on the DHT (relays + any other online peers) and replicates the data
-5. **NAT-blocked users** — Circuit relay forwards encrypted bytes through a relay node when direct connections fail
+2. **Relay discovery** — The client SDK joins a well-known DHT topic and finds relay nodes automatically (2-5 seconds)
+3. **Relay nodes seed** — `app.seed()` broadcasts a signed request over Protomux to all connected relays. Relays with capacity accept instantly and begin replicating. The request is also published to a persistent Hypercore-based registry as a backup path.
+4. **Developer goes offline** — The app is still available because relay nodes have a full copy
+5. **End user opens the app** — `app.open(key)` finds peers on the DHT (relays + any other online peers) and replicates the data
+6. **NAT-blocked users** — Circuit relay forwards encrypted bytes through a relay node when direct connections fail
+
+### How Relay Discovery Works
+
+All relay nodes announce on a **well-known DHT topic** (`hiverelay-discovery-v1`). Client SDKs join this topic as a client. The DHT connects them to relay nodes within seconds — no central registry, no hardcoded URLs, no configuration.
+
+```
+Client SDK                         Relay Nodes
+    │                                   │
+    ├── join(discovery-topic, client) ──→│── join(discovery-topic, server)
+    │                                   │
+    │←── DHT connects peers ───────────→│
+    │                                   │
+    ├── Protomux seed-request ─────────→│── Accept + replicate
+    │←── seed-accept ──────────────────←│
+    │                                   │
+    └── Done. App is seeded.            └── Serving data 24/7
+```
+
+The **seeding registry** (Hypercore-based, distributed) provides a backup path: if a client publishes a seed request and goes offline before relays connect, relays will still discover the request on their next scan (every 60 seconds). Relay operators can run in **auto-accept mode** (default — accept all matching requests) or **approval mode** (review via dashboard).
 
 ### Security Model
 
@@ -322,30 +342,58 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Daily settlement** — Automatic settlement when balance exceeds threshold
 - **Mock provider** — Development/testing without real Lightning node
 
+### Seeding Registry
+- **Hypercore-based** — Each node maintains its own append-only log of seed requests/acceptances
+- **DHT-synced** — Nodes discover the registry topic automatically, no central coordinator
+- **Auto-accept mode** (default) — Relays scan every 60s and seed matching requests based on region, capacity, and replication factor
+- **Approval mode** — Operators toggle via dashboard to review requests before accepting
+- **Dual-path seeding** — Client SDK broadcasts via Protomux (instant) AND publishes to registry (persistent backup)
+- **Dashboard controls** — Toggle auto/approval mode, unseed apps, approve/reject pending requests
+
 ### Network Discovery
 - **DHT-powered** — Relays auto-discover each other on the Hyperswarm DHT
-- **No registry** — No central server, no manual configuration, no signup
+- **No central registry** — No server, no manual configuration, no signup
 - **Live network state** — `/api/network` endpoint returns all discovered relays with live stats
 - **API port probing** — Discovered relays are polled for their HTTP API automatically
 - **Stale cleanup** — Relays not seen for 5+ minutes are marked offline, removed after 15 minutes
 
+### Health Monitoring & Self-Healing
+- **5 health checks** — Memory pressure, zero connections, stale connections, swarm state, error rate
+- **Soft recovery** — GC hint, cache clear, DHT re-announce, destroy stale connections
+- **Hard recovery** — Full node restart with rate limiting (max 3/hour, 60s cooldown)
+- **Dashboard integration** — `/api/health-detail` endpoint with check status and action history
+- **Event-driven** — `health-warning` and `health-critical` events for logging and alerting
+
 ### Dashboards
-- **Operator dashboard** (`/dashboard`) — Single-relay view with connections, storage, circuits, memory, peers, and charts
-- **Network overview** (`/network`) — All relays in the network, auto-populated from DHT discovery. Shows status, uptime, connections, storage, Tor badges, and connect-to-relay modal with copyable public keys and SDK code
+- **Operator dashboard** (`/dashboard`) — Single-relay view with connections, storage, circuits, memory, peers, charts, and registry management
+- **Network overview** (`/network`) — All relays in the network, auto-populated from DHT discovery. Shows status, uptime, connections, storage, Tor badges, and connect-to-relay modal
+- **WebSocket live feed** — 2-second broadcast interval for real-time stats, with HTTP polling fallback
+- **Connection indicator** — Shows WS LIVE / POLLING / DISCONNECTED status
 
 ### HTTP API (Operator)
 - **`GET /health`** — Node health check
-- **`GET /status`** — Stats: public key, connections, seeded apps, relay metrics
+- **`GET /status`** — Stats: public key, connections, seeded apps, relay metrics, registry status
 - **`GET /peers`** — Connected peers list
 - **`GET /metrics`** — Prometheus-format metrics
 - **`GET /dashboard`** — Operator dashboard (HTML)
 - **`GET /network`** — Network overview dashboard (HTML)
-- **`GET /api/overview`** — Detailed node stats (JSON)
+- **`GET /api/overview`** — Detailed node stats including health, registry, bandwidth (JSON)
+- **`GET /api/history`** — Time-series snapshots for charts (JSON)
+- **`GET /api/apps`** — Seeded apps with uptime and bytes served (JSON)
+- **`GET /api/peers`** — Peers with reputation data (JSON)
 - **`GET /api/network`** — All DHT-discovered relays with live stats (JSON)
+- **`GET /api/health-detail`** — Health check results and self-heal action history (JSON)
+- **`GET /api/registry`** — Active seed requests with relay acceptances (JSON)
+- **`GET /api/registry/pending`** — Pending requests awaiting operator approval (JSON)
 - **`GET /api/reputation`** — Reputation leaderboard (top 100)
 - **`GET /api/reputation/:pubkey`** — Single relay reputation record
 - **`POST /seed`** — Seed an app by key
 - **`POST /unseed`** — Stop seeding an app
+- **`POST /registry/publish`** — Publish a seed request to the registry
+- **`POST /registry/cancel`** — Cancel a seed request
+- **`POST /registry/approve`** — Approve a pending request (approval mode)
+- **`POST /registry/reject`** — Reject a pending request
+- **`POST /registry/auto-accept`** — Toggle auto-accept / approval mode
 - Rate limited: 60 req/min per IP, 64KB max body
 
 ### Transports
@@ -400,15 +448,19 @@ P2P-Hiveswarm/
 │   │   ├── relay.js       # Circuit relay with backpressure
 │   │   ├── seeder.js      # Hypercore/Hyperdrive seeder
 │   │   ├── api.js         # HTTP API (localhost only)
-│   │   └── metrics.js     # Prometheus metrics collector
+│   │   ├── metrics.js     # Prometheus metrics collector
+│   │   ├── ws-feed.js     # WebSocket live feed for dashboards
+│   │   ├── health-monitor.js  # 5-check health monitoring
+│   │   └── self-heal.js   # Auto-recovery (soft + hard actions)
 │   ├── protocol/          # Wire protocol (Protomux)
 │   │   ├── messages.js    # Compact-encoded message schemas
 │   │   ├── seed-request.js    # Seed request/accept protocol
 │   │   ├── relay-circuit.js   # Circuit relay protocol
 │   │   ├── proof-of-relay.js  # Cryptographic proof challenges
 │   │   └── bandwidth-receipt.js # Signed bandwidth proofs
-│   ├── registry/          # Autobase seeding registry
+│   ├── registry/          # Distributed seeding registry (Hypercore-based)
 │   ├── network-discovery.js # DHT-based relay auto-discovery
+│   ├── bootstrap-cache.js # Persistent DHT routing table
 │   └── logger.js          # Structured logging (pino)
 ├── incentive/
 │   ├── payment/           # Lightning micropayments
@@ -504,12 +556,16 @@ Environment variables:
 **Phase 1: Community Relay Network** (complete)
 - Relay discovery, seeding, circuit relay, proof-of-relay
 - Reputation system with core loop wired (challenges, bandwidth, decay)
-- Client SDK with reputation-based relay selection
+- Client SDK with reputation-based relay selection and dual-path seeding
 - WebSocket transport for browser peers
 - Tor hidden service transport for IP privacy
-- DHT-powered network discovery + dashboards
-- Persistent relay identity across restarts
-- Operator dashboard + network overview
+- DHT-powered network discovery (no central registry)
+- Distributed seeding registry with auto-accept and approval modes
+- Health monitoring (5 checks) and self-healing (soft + hard recovery)
+- WebSocket live dashboard feed with HTTP fallback
+- Persistent relay identity and bootstrap cache across restarts
+- Operator dashboard with registry management + network overview
+- Live network: 4 relays across Utah (NA) and Singapore (AS)
 
 **Phase 2: Incentive Layer** (in progress)
 - Lightning micropayments for relay operators
