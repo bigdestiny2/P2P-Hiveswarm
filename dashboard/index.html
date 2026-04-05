@@ -243,6 +243,39 @@ tr:hover td{background:rgba(0,170,255,.03)}
   </div>
 </div>
 
+<!-- Registry Management -->
+<div class="table-card" id="registryCard">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.8rem">
+    <h3 style="margin:0">Seeding Registry</h3>
+    <div style="display:flex;align-items:center;gap:.8rem">
+      <span id="registryMode" style="font-size:.72rem;color:var(--text-dim);font-family:var(--mono)">AUTO-ACCEPT</span>
+      <label style="position:relative;display:inline-block;width:40px;height:22px;cursor:pointer">
+        <input type="checkbox" id="autoAcceptToggle" checked style="opacity:0;width:0;height:0">
+        <span style="position:absolute;inset:0;background:rgba(0,255,0,.2);border-radius:11px;border:1px solid rgba(0,255,0,.3);transition:.3s" id="toggleTrack"></span>
+        <span style="position:absolute;top:3px;left:3px;width:16px;height:16px;background:#fff;border-radius:50%;transition:.3s" id="toggleDot"></span>
+      </label>
+    </div>
+  </div>
+  <div id="pendingSection" style="display:none;margin-bottom:1rem">
+    <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:var(--orange);margin-bottom:.5rem">Pending Approval</div>
+    <table style="width:100%">
+      <thead><tr>
+        <th>App Key</th><th>Publisher</th><th>Replicas</th><th>Geo</th><th>Actions</th>
+      </tr></thead>
+      <tbody id="pendingBody"><tr><td colspan="5" class="empty-state">No pending requests</td></tr></tbody>
+    </table>
+  </div>
+  <div>
+    <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);margin-bottom:.5rem">Active Seeds</div>
+    <table style="width:100%">
+      <thead><tr>
+        <th>App Key</th><th>Discovery Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
+      </tr></thead>
+      <tbody id="seedsBody"><tr><td colspan="5" class="empty-state">No apps seeded</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- Connection Status -->
 <div class="conn-status" id="connStatus">LIVE</div>
 
@@ -669,6 +702,135 @@ updateDashboard = function(overview, history, apps) {
   else window._lastApps = apps;
   _origUpdateDashboard(overview, history, apps);
 };
+
+/* ===== Registry Management ===== */
+var autoAcceptToggle = document.getElementById('autoAcceptToggle');
+var registryModeEl = document.getElementById('registryMode');
+var toggleTrack = document.getElementById('toggleTrack');
+var toggleDot = document.getElementById('toggleDot');
+var pendingSection = document.getElementById('pendingSection');
+
+function updateToggleUI(on) {
+  if (on) {
+    registryModeEl.textContent = 'AUTO-ACCEPT';
+    registryModeEl.style.color = 'var(--green)';
+    toggleTrack.style.background = 'rgba(0,255,0,.2)';
+    toggleTrack.style.borderColor = 'rgba(0,255,0,.3)';
+    toggleDot.style.left = '21px';
+    pendingSection.style.display = 'none';
+  } else {
+    registryModeEl.textContent = 'APPROVAL MODE';
+    registryModeEl.style.color = 'var(--orange)';
+    toggleTrack.style.background = 'rgba(255,153,0,.2)';
+    toggleTrack.style.borderColor = 'rgba(255,153,0,.3)';
+    toggleDot.style.left = '3px';
+    pendingSection.style.display = 'block';
+  }
+}
+
+autoAcceptToggle.addEventListener('change', function() {
+  var enabled = autoAcceptToggle.checked;
+  updateToggleUI(enabled);
+  fetch('/registry/auto-accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled })
+  }).catch(function(e) { console.warn('Toggle failed:', e); });
+});
+
+function unseedApp(appKey) {
+  if (!confirm('Stop seeding ' + appKey.slice(0, 12) + '...?')) return;
+  fetch('/unseed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appKey: appKey })
+  }).then(function() { fetchData(); }).catch(function(e) { console.warn('Unseed failed:', e); });
+}
+
+function approveRequest(appKey) {
+  fetch('/registry/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appKey: appKey })
+  }).then(function() { fetchPending(); fetchData(); }).catch(function(e) { console.warn('Approve failed:', e); });
+}
+
+function rejectRequest(appKey) {
+  fetch('/registry/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appKey: appKey })
+  }).then(function() { fetchPending(); }).catch(function(e) { console.warn('Reject failed:', e); });
+}
+
+function renderSeeds(apps) {
+  var tbody = document.getElementById('seedsBody');
+  if (!apps || !apps.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No apps seeded</td></tr>';
+    return;
+  }
+  tbody.innerHTML = apps.map(function(app) {
+    var uptime = app.startedAt ? Date.now() - app.startedAt : 0;
+    return '<tr>' +
+      '<td>' + truncateKey(app.appKey) + '</td>' +
+      '<td>' + truncateKey(app.discoveryKey) + '</td>' +
+      '<td>' + formatUptime(uptime) + '</td>' +
+      '<td>' + formatBytes(app.bytesServed || 0) + '</td>' +
+      '<td><button onclick="unseedApp(\'' + app.appKey + '\')" style="background:rgba(255,68,68,.15);color:var(--red);border:1px solid rgba(255,68,68,.3);border-radius:4px;padding:2px 8px;font-size:.7rem;cursor:pointer;font-family:var(--mono)">UNSEED</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function fetchPending() {
+  fetch('/api/registry/pending').then(function(r) { return r.json(); }).then(function(data) {
+    var tbody = document.getElementById('pendingBody');
+    if (!data.requests || !data.requests.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No pending requests</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.requests.map(function(req) {
+      return '<tr>' +
+        '<td>' + truncateKey(req.appKey) + '</td>' +
+        '<td>' + truncateKey(req.publisherPubkey) + '</td>' +
+        '<td>' + (req.replicationFactor || 3) + '</td>' +
+        '<td>' + (req.geoPreference && req.geoPreference.length ? req.geoPreference.join(', ') : 'any') + '</td>' +
+        '<td style="display:flex;gap:4px">' +
+        '<button onclick="approveRequest(\'' + req.appKey + '\')" style="background:rgba(0,255,0,.15);color:var(--green);border:1px solid rgba(0,255,0,.3);border-radius:4px;padding:2px 8px;font-size:.7rem;cursor:pointer;font-family:var(--mono)">APPROVE</button>' +
+        '<button onclick="rejectRequest(\'' + req.appKey + '\')" style="background:rgba(255,68,68,.15);color:var(--red);border:1px solid rgba(255,68,68,.3);border-radius:4px;padding:2px 8px;font-size:.7rem;cursor:pointer;font-family:var(--mono)">REJECT</button>' +
+        '</td></tr>';
+    }).join('');
+  }).catch(function() {});
+}
+
+// Fetch registry state on load and periodically
+function fetchRegistryState() {
+  fetch('/api/overview').then(function(r) { return r.json(); }).then(function(data) {
+    if (data.registry) {
+      var isAuto = data.registry.autoAccept !== false;
+      autoAcceptToggle.checked = isAuto;
+      updateToggleUI(isAuto);
+    }
+  }).catch(function() {});
+  fetch('/api/apps').then(function(r) { return r.json(); }).then(function(apps) {
+    renderSeeds(apps);
+  }).catch(function() {});
+  if (!autoAcceptToggle.checked) fetchPending();
+}
+
+// Override updateDashboard to also update seeds table
+var _prevUpdateDashboard = updateDashboard;
+updateDashboard = function(overview, history, apps) {
+  _prevUpdateDashboard(overview, history, apps);
+  if (apps && apps.length !== undefined) renderSeeds(apps);
+  if (overview && overview.registry) {
+    var isAuto = overview.registry.autoAccept !== false;
+    autoAcceptToggle.checked = isAuto;
+    updateToggleUI(isAuto);
+  }
+};
+
+setInterval(function() { if (!autoAcceptToggle.checked) fetchPending(); }, 10000);
+fetchRegistryState();
 
 // Boot: start HTTP fetch immediately, then try WS
 fetchData();

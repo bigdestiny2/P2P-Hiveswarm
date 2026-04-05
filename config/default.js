@@ -45,6 +45,11 @@ export default {
   enableAPI: true,
   apiPort: 9100,
 
+  // Seeding registry
+  registryKey: null, // null = create new autobase
+  registryScanInterval: 60_000, // 1 minute
+  registryAutoAccept: true, // Auto-accept matching seed requests (false = approval mode)
+
   // Regions
   regions: [], // Empty = accept from all regions
 

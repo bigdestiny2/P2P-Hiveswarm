@@ -234,6 +234,18 @@ async function start () {
     log.info({ action }, `self-heal: ${action.type} (trigger: ${action.check})`)
   })
 
+  node.on('registry-seed-accepted', ({ appKey, publisher, currentRelays }) => {
+    log.info({ appKey: appKey.slice(0, 12), publisher: publisher.slice(0, 12), currentRelays }, 'registry: auto-accepted seed request')
+  })
+
+  node.on('registry-pending', ({ appKey }) => {
+    log.info({ appKey: appKey.slice(0, 12) }, 'registry: new pending request (approval mode)')
+  })
+
+  node.on('registry-error', (details) => {
+    log.warn({ err: details.error || details }, 'registry error')
+  })
+
   let statusInterval = null
 
   goodbye(async () => {

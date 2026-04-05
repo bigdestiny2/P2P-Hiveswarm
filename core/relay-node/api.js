@@ -211,6 +211,10 @@ export class RelayAPI extends EventEmitter {
             bandwidth: this.node._bandwidthReceipt ? {
               totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
               receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
+            } : null,
+            registry: this.node.seedingRegistry ? {
+              running: this.node.seedingRegistry.running,
+              autoAccept: this.node.config.registryAutoAccept !== false
             } : null
           })
         }
@@ -270,6 +274,37 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, this.node.networkDiscovery.getNetworkState())
         }
 
+        if (path === '/api/registry/pending') {
+          const pending = []
+          for (const [appKey, entry] of this.node._pendingRequests) {
+            pending.push({ appKey, ...entry })
+          }
+          return this._json(res, { count: pending.length, requests: pending })
+        }
+
+        if (path === '/api/registry') {
+          if (!this.node.seedingRegistry) {
+            return this._json(res, { error: 'Registry not running' }, 503)
+          }
+          const requests = await this.node.seedingRegistry.getActiveRequests()
+          const enriched = []
+          for (const req of requests) {
+            const relays = await this.node.seedingRegistry.getRelaysForApp(req.appKey)
+            enriched.push({
+              ...req,
+              acceptedRelays: relays.length,
+              relays: relays.map(r => ({ pubkey: r.relayPubkey, region: r.region }))
+            })
+          }
+          return this._json(res, {
+            key: this.node.seedingRegistry.autobase && this.node.seedingRegistry.autobase.key
+              ? Buffer.from(this.node.seedingRegistry.autobase.key).toString('hex')
+              : null,
+            activeRequests: enriched.length,
+            requests: enriched
+          })
+        }
+
         if (path === '/api/reputation') {
           const leaderboard = this.node.reputation ? this.node.reputation.getLeaderboard(100) : []
           return this._json(res, leaderboard)
@@ -291,6 +326,50 @@ export class RelayAPI extends EventEmitter {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           const result = await this.node.seedApp(body.appKey, body.opts || {})
           return this._json(res, { ok: true, ...result })
+        }
+
+        if (path === '/registry/publish') {
+          if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+
+          const request = {
+            appKey: Buffer.from(body.appKey, 'hex'),
+            discoveryKeys: (body.discoveryKeys || []).map(dk => Buffer.from(dk, 'hex')),
+            replicationFactor: body.replicas || 3,
+            geoPreference: body.geo ? [].concat(body.geo) : [],
+            maxStorageBytes: body.maxStorageBytes || 0,
+            bountyRate: body.bountyRate || 0,
+            ttlSeconds: body.ttlDays ? body.ttlDays * 86400 : 30 * 86400,
+            publisherPubkey: this.node.swarm ? this.node.swarm.keyPair.publicKey : Buffer.alloc(32)
+          }
+
+          const entry = await this.node.seedingRegistry.publishRequest(request)
+          return this._json(res, { ok: true, ...entry })
+        }
+
+        if (path === '/registry/auto-accept') {
+          this.node.config.registryAutoAccept = body.enabled !== false
+          return this._json(res, { ok: true, autoAccept: this.node.config.registryAutoAccept })
+        }
+
+        if (path === '/registry/approve') {
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          await this.node.approveRequest(body.appKey)
+          return this._json(res, { ok: true })
+        }
+
+        if (path === '/registry/reject') {
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          this.node.rejectRequest(body.appKey)
+          return this._json(res, { ok: true })
+        }
+
+        if (path === '/registry/cancel') {
+          if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          const pubkey = this.node.swarm ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex') : null
+          await this.node.seedingRegistry.cancelRequest(body.appKey, pubkey)
+          return this._json(res, { ok: true })
         }
 
         if (path === '/unseed') {

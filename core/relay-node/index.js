@@ -21,6 +21,7 @@ import { ReputationSystem } from '../../incentive/reputation/index.js'
 import { NetworkDiscovery } from '../network-discovery.js'
 import { HealthMonitor } from './health-monitor.js'
 import { SelfHeal } from './self-heal.js'
+import { SeedingRegistry } from '../registry/index.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -83,6 +84,9 @@ export class RelayNode extends EventEmitter {
     this.networkDiscovery = null
     this.healthMonitor = null
     this.selfHeal = null
+    this.seedingRegistry = null
+    this._registryScanInterval = null
+    this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this.running = false
   }
 
@@ -229,6 +233,33 @@ export class RelayNode extends EventEmitter {
 
       this._startHealthChecks()
 
+      // Start seeding registry — distributed Autobase registry for seed requests
+      if (this.config.enableSeeding) {
+        this.seedingRegistry = new SeedingRegistry(this.store, this.swarm, {
+          registryKey: this.config.registryKey || null
+        })
+        await this.seedingRegistry.start().catch((err) => {
+          this.emit('registry-error', { error: err })
+          this.seedingRegistry = null
+        })
+
+        // Periodic scan for matching seed requests
+        if (this.seedingRegistry) {
+          const scanInterval = this.config.registryScanInterval || 60_000 // 1 min default
+          this._registryScanInterval = setInterval(() => {
+            this._scanRegistry().catch((err) => {
+              this.emit('registry-error', { error: err })
+            })
+          }, scanInterval)
+          if (this._registryScanInterval.unref) this._registryScanInterval.unref()
+
+          // Run initial scan after a short delay to let the registry sync
+          setTimeout(() => {
+            this._scanRegistry().catch(() => {})
+          }, 5000)
+        }
+      }
+
       // Start network discovery — shares this node's swarm to discover other relays
       this.networkDiscovery = new NetworkDiscovery({ swarm: this.swarm })
       this.networkDiscovery.start().catch(() => {})
@@ -248,6 +279,8 @@ export class RelayNode extends EventEmitter {
     } catch (err) {
       // Rollback in reverse order
       this.bootstrapCache.stop()
+      if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
+      if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch {} this.seedingRegistry = null }
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
       if (this.torTransport) { try { await this.torTransport.stop() } catch {} this.torTransport = null }
       if (this.wsTransport) { try { await this.wsTransport.stop() } catch {} this.wsTransport = null }
@@ -321,6 +354,12 @@ export class RelayNode extends EventEmitter {
       tor: this.torTransport ? this.torTransport.getInfo() : null,
       reputation: {
         trackedRelays: this.reputation ? Object.keys(this.reputation.export()).length : 0
+      },
+      registry: {
+        running: this.seedingRegistry ? this.seedingRegistry.running : false,
+        key: this.seedingRegistry && this.seedingRegistry.autobase && this.seedingRegistry.autobase.key
+          ? b4a.toString(this.seedingRegistry.autobase.key, 'hex')
+          : null
       }
     }
   }
@@ -393,6 +432,86 @@ export class RelayNode extends EventEmitter {
     })
 
     this.emit('connection', { info, remotePubKey: b4a.toString(info.publicKey, 'hex') })
+  }
+
+  async _scanRegistry () {
+    if (!this.seedingRegistry || !this.seeder) return
+
+    const region = (this.config.regions && this.config.regions[0]) || null
+    const availableBytes = this.config.maxStorageBytes - (this.seeder.totalBytesStored || 0)
+    const autoAccept = this.config.registryAutoAccept !== false
+
+    const requests = await this.seedingRegistry.getActiveRequests({
+      region,
+      maxStorageBytes: availableBytes
+    })
+
+    const myPubkey = this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null
+
+    for (const req of requests) {
+      // Skip if we already seed this app
+      if (this.seededApps.has(req.appKey)) continue
+
+      // Check if we already accepted this one
+      const relays = await this.seedingRegistry.getRelaysForApp(req.appKey)
+      const alreadyAccepted = relays.some(r => r.relayPubkey === myPubkey)
+      if (alreadyAccepted) continue
+
+      // Check if replication factor is already met
+      if (relays.length >= req.replicationFactor) continue
+
+      // Check storage capacity
+      if (req.maxStorageBytes > 0 && req.maxStorageBytes > availableBytes) continue
+
+      if (autoAccept) {
+        // Auto-accept: seed immediately
+        try {
+          await this.seedApp(req.appKey)
+          await this.seedingRegistry.recordAcceptance(
+            req.appKey,
+            myPubkey,
+            region || 'unknown'
+          )
+          this.emit('registry-seed-accepted', {
+            appKey: req.appKey,
+            publisher: req.publisherPubkey,
+            replicationFactor: req.replicationFactor,
+            currentRelays: relays.length + 1
+          })
+        } catch (err) {
+          this.emit('registry-error', { appKey: req.appKey, error: err })
+        }
+      } else {
+        // Approval mode: queue for operator review
+        if (!this._pendingRequests.has(req.appKey)) {
+          this._pendingRequests.set(req.appKey, {
+            ...req,
+            currentRelays: relays.length,
+            discoveredAt: Date.now()
+          })
+          this.emit('registry-pending', { appKey: req.appKey, publisher: req.publisherPubkey })
+        }
+      }
+    }
+  }
+
+  async approveRequest (appKeyHex) {
+    const req = this._pendingRequests.get(appKeyHex)
+    if (!req) throw new Error('No pending request for this app key')
+
+    const region = (this.config.regions && this.config.regions[0]) || null
+    const myPubkey = this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null
+
+    await this.seedApp(appKeyHex)
+    if (this.seedingRegistry) {
+      await this.seedingRegistry.recordAcceptance(appKeyHex, myPubkey, region || 'unknown')
+    }
+    this._pendingRequests.delete(appKeyHex)
+    this.emit('registry-seed-accepted', { appKey: appKeyHex, publisher: req.publisherPubkey })
+  }
+
+  rejectRequest (appKeyHex) {
+    this._pendingRequests.delete(appKeyHex)
   }
 
   _onSeedRequest (msg) {
@@ -495,6 +614,8 @@ export class RelayNode extends EventEmitter {
       if (this._circuitRelay.destroy) this._circuitRelay.destroy()
       this._circuitRelay = null
     }
+    if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
+    if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch {} this.seedingRegistry = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch {} this.networkDiscovery = null }
     if (this._proofOfRelay) { this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
