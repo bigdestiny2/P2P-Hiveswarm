@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HiveSwarm Relay Dashboard</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,5 93,27.5 93,72.5 50,95 7,72.5 7,27.5' fill='%230af' stroke='%230f0' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2358a6ff'/%3E%3Cstop offset='100%25' stop-color='%233fb950'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5' fill='url(%23g)' opacity='.9'/%3E%3Cpolygon points='27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5' fill='url(%23g)' opacity='.7'/%3E%3Cpolygon points='73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5' fill='url(%23g)' opacity='.7'/%3E%3C/svg%3E">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -19,18 +19,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 /* Header */
 .header{display:flex;align-items:center;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--card-border);margin-bottom:1.5rem;flex-wrap:wrap}
-.hex-icon{width:36px;height:36px;position:relative;flex-shrink:0}
-.hex-icon::before{
-  content:'';position:absolute;inset:0;
-  background:var(--cyan);
-  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
-  opacity:.85;
-}
-.hex-icon::after{
-  content:'';position:absolute;inset:6px;
-  background:var(--card);
-  clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
-}
+.hive-logo{width:36px;height:36px;flex-shrink:0}
 .header-text h1{font-size:1.4rem;color:var(--text-bright);font-weight:600;letter-spacing:.5px}
 .header-meta{font-size:.8rem;color:var(--text-dim);font-family:var(--mono);margin-top:2px}
 .uptime-badge{
@@ -149,7 +138,12 @@ tr:hover td{background:rgba(0,170,255,.03)}
 
 <!-- Header -->
 <div class="header">
-  <div class="hex-icon"></div>
+  <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0af"/><stop offset="100%" stop-color="#0f0"/></linearGradient></defs>
+    <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
+    <polygon points="26,50 50,64 50,92 26,106 2,92 2,64" fill="url(#hg)" opacity=".7"/>
+    <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
+  </svg>
   <div class="header-text">
     <h1>HiveSwarm Relay</h1>
     <div class="header-meta" id="headerMeta">Loading...</div>
