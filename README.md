@@ -64,7 +64,22 @@ Client SDK                         Relay Nodes
     └── Done. App is seeded.            └── Serving data 24/7
 ```
 
-The **seeding registry** (Hypercore-based, distributed) provides a backup path: if a client publishes a seed request and goes offline before relays connect, relays will still discover the request on their next scan (every 60 seconds). Relay operators can run in **auto-accept mode** (default — accept all matching requests) or **approval mode** (review via dashboard).
+### Why the Seeding Registry Exists
+
+The **primary path** is DHT + Protomux — the client finds relays and sends a seed request directly. This is instant (2-5 seconds) and works for the common case where the client is online and relays are connected.
+
+The **seeding registry** (Hypercore-based, distributed) handles the cases DHT alone can't:
+
+| Scenario | DHT/Protomux | Registry |
+|----------|-------------|----------|
+| Client online, relays connected | Instant (2-5s) | Not needed |
+| **Client publishes and goes offline** | Lost — no relays received it | Relays find it on next 60s scan |
+| **New relay joins the network later** | Missed it — wasn't online at broadcast | Discovers it in registry, auto-seeds |
+| **Replication factor not met** (1 of 3 relays accepted) | No retry mechanism | Other relays see it needs more replicas |
+
+The registry is not the critical path — it's a persistence and catch-up layer. Seed requests survive the client disconnecting, and new relays joining the network days later can still discover what needs seeding.
+
+Relay operators can run in **auto-accept mode** (default — accept all matching requests automatically) or **approval mode** (review and approve/reject via dashboard).
 
 ### Security Model
 
@@ -342,12 +357,14 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Daily settlement** — Automatic settlement when balance exceeds threshold
 - **Mock provider** — Development/testing without real Lightning node
 
-### Seeding Registry
-- **Hypercore-based** — Each node maintains its own append-only log of seed requests/acceptances
-- **DHT-synced** — Nodes discover the registry topic automatically, no central coordinator
+### Seeding Registry (Persistence & Catch-Up)
+- **Not the primary path** — DHT + Protomux handles instant seeding when client and relays are both online
+- **Persistence** — Seed requests survive the client going offline. Relays find them on the next scan cycle.
+- **Late joiners** — A relay that spins up days later discovers existing seed requests and auto-seeds them
+- **Replication tracking** — Relays see how many others already seed an app before accepting, ensuring the replication factor is met
+- **Hypercore-based** — Each node maintains its own append-only log, synced via a well-known DHT topic
 - **Auto-accept mode** (default) — Relays scan every 60s and seed matching requests based on region, capacity, and replication factor
 - **Approval mode** — Operators toggle via dashboard to review requests before accepting
-- **Dual-path seeding** — Client SDK broadcasts via Protomux (instant) AND publishes to registry (persistent backup)
 - **Dashboard controls** — Toggle auto/approval mode, unseed apps, approve/reject pending requests
 
 ### Network Discovery
