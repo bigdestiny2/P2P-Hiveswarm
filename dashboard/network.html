@@ -450,10 +450,64 @@ async function refresh() {
     var res = await fetch('/api/network', { signal: AbortSignal.timeout(10000) });
     var network = await res.json();
   } catch (e) {
-    document.getElementById('lastUpdated').textContent = 'fetch failed — retrying...';
+    document.getElementById('lastUpdated').textContent = 'fetch failed \u2014 retrying...';
     return;
   }
 
+  renderNetwork(network);
+}
+
+/* ===== WebSocket Live Feed ===== */
+var wsConnected = false;
+var ws = null;
+var pollTimer = null;
+var POLL_INTERVAL_WS = 30000;   // 30s backup when WS is live
+var POLL_INTERVAL_HTTP = 10000; // 10s fallback when WS is down
+
+function setPollInterval(ms) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(refresh, ms);
+}
+
+function connectWS() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws';
+
+  try { ws = new WebSocket(url); } catch (e) { return; }
+
+  ws.onopen = function() {
+    wsConnected = true;
+    // Reduce polling to backup interval
+    setPollInterval(POLL_INTERVAL_WS);
+  };
+
+  ws.onmessage = function(evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      if (msg.type === 'update' && msg.network) {
+        // Use the network data from WS instead of fetching
+        renderNetwork(msg.network);
+      }
+    } catch (e) {
+      console.warn('WS message parse error:', e);
+    }
+  };
+
+  ws.onclose = function() {
+    wsConnected = false;
+    ws = null;
+    // Fall back to fast HTTP polling
+    setPollInterval(POLL_INTERVAL_HTTP);
+    // Attempt reconnect after 3s
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = function() {
+    // onclose will fire after this — reconnect handled there
+  };
+}
+
+function renderNetwork(network) {
   var summary = network.summary || {};
   var relays = network.relays || [];
 
@@ -514,16 +568,18 @@ async function refresh() {
 
   // Timestamp
   var now = new Date();
+  var source = wsConnected ? 'WS' : 'HTTP';
   document.getElementById('lastUpdated').textContent =
-    onlineCount + ' discovered \u00B7 updated ' +
+    onlineCount + ' discovered \u00B7 ' + source + ' \u00B7 ' +
     String(now.getHours()).padStart(2, '0') + ':' +
     String(now.getMinutes()).padStart(2, '0') + ':' +
     String(now.getSeconds()).padStart(2, '0');
 }
 
-// Initial load + auto-refresh every 10s
+// Initial load + start polling + try WS
 refresh();
-setInterval(refresh, 10000);
+setPollInterval(POLL_INTERVAL_HTTP);
+connectWS();
 </script>
 </body>
 </html>

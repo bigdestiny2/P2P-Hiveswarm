@@ -19,6 +19,8 @@ import { ProofOfRelay } from '../protocol/proof-of-relay.js'
 import { BandwidthReceipt } from '../protocol/bandwidth-receipt.js'
 import { ReputationSystem } from '../../incentive/reputation/index.js'
 import { NetworkDiscovery } from '../network-discovery.js'
+import { HealthMonitor } from './health-monitor.js'
+import { SelfHeal } from './self-heal.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -79,6 +81,8 @@ export class RelayNode extends EventEmitter {
     this._bandwidthReceipt = null
     this._reputationDecayInterval = null
     this.networkDiscovery = null
+    this.healthMonitor = null
+    this.selfHeal = null
     this.running = false
   }
 
@@ -230,6 +234,16 @@ export class RelayNode extends EventEmitter {
       this.networkDiscovery.start().catch(() => {})
 
       this.running = true
+
+      // Start health monitoring and self-healing
+      this.healthMonitor = new HealthMonitor(this, this.config.healthMonitor)
+      this.selfHeal = new SelfHeal(this, this.config.selfHeal)
+      this.selfHeal.start(this.healthMonitor)
+      this.healthMonitor.on('health-warning', (details) => this.emit('health-warning', details))
+      this.healthMonitor.on('health-critical', (details) => this.emit('health-critical', details))
+      this.selfHeal.on('self-heal-action', (action) => this.emit('self-heal-action', action))
+      this.healthMonitor.start()
+
       this.emit('started', { publicKey: this.swarm.keyPair.publicKey })
     } catch (err) {
       // Rollback in reverse order
@@ -313,6 +327,10 @@ export class RelayNode extends EventEmitter {
 
   getLeaderboard (limit = 50) {
     return this.reputation ? this.reputation.getLeaderboard(limit) : []
+  }
+
+  getHealthStatus () {
+    return this.healthMonitor ? this.healthMonitor.getStatus() : null
   }
 
   async _loadOrCreateKeyPair () {
@@ -453,6 +471,8 @@ export class RelayNode extends EventEmitter {
     try { await this.bootstrapCache.save() } catch {}
 
     // Stop health checks, settlement, WebSocket, API, and metrics first
+    if (this.selfHeal) { this.selfHeal.stop(); this.selfHeal = null }
+    if (this.healthMonitor) { this.healthMonitor.stop(); this.healthMonitor = null }
     if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
     if (this.torTransport) {

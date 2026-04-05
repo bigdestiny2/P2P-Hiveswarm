@@ -555,10 +555,29 @@ function renderCharts(history) {
   });
 }
 
-/* ===== Data Fetching ===== */
+/* ===== Data Fetching & WebSocket ===== */
 var connStatusEl = document.getElementById('connStatus');
 var fetchErrors = 0;
+var wsConnected = false;
+var ws = null;
+var pollTimer = null;
+var POLL_INTERVAL_WS = 30000;   // 30s backup when WS is live
+var POLL_INTERVAL_HTTP = 5000;  // 5s fallback when WS is down
 
+function updateConnIndicator() {
+  if (wsConnected) {
+    connStatusEl.textContent = '\u25CF WS LIVE';
+    connStatusEl.className = 'conn-status';
+  } else if (fetchErrors === 0) {
+    connStatusEl.textContent = '\u25CF POLLING';
+    connStatusEl.className = 'conn-status';
+  } else {
+    connStatusEl.textContent = '\u25CF DISCONNECTED';
+    connStatusEl.className = 'conn-status error';
+  }
+}
+
+/* -- HTTP polling (fallback / backup) -- */
 async function fetchData() {
   try {
     var results = await Promise.all([
@@ -567,19 +586,94 @@ async function fetchData() {
       fetch('/api/apps').then(function(r) { return r.json(); })
     ]);
     fetchErrors = 0;
-    connStatusEl.textContent = '\u25CF LIVE';
-    connStatusEl.className = 'conn-status';
+    updateConnIndicator();
     updateDashboard(results[0], results[1], results[2]);
   } catch (e) {
     fetchErrors++;
-    connStatusEl.textContent = '\u25CF DISCONNECTED';
-    connStatusEl.className = 'conn-status error';
+    updateConnIndicator();
     if (fetchErrors <= 1) console.warn('Dashboard fetch failed:', e);
   }
 }
 
-setInterval(fetchData, 5000);
+function setPollInterval(ms) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(fetchData, ms);
+}
+
+/* -- WebSocket connection -- */
+function connectWS() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws';
+
+  try { ws = new WebSocket(url); } catch (e) { return; }
+
+  ws.onopen = function() {
+    wsConnected = true;
+    updateConnIndicator();
+    // Reduce polling to backup interval
+    setPollInterval(POLL_INTERVAL_WS);
+  };
+
+  ws.onmessage = function(evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      if (msg.type === 'update' && msg.overview) {
+        var o = msg.overview;
+        // Map the WS overview shape to what updateDashboard expects
+        var overview = {
+          publicKey: o.publicKey,
+          region: o.region,
+          uptime: o.uptime ? o.uptime.ms : 0,
+          connections: o.connections,
+          seededApps: o.seededApps,
+          bytesStored: o.storage ? o.storage.used : 0,
+          storageUsed: o.storage ? o.storage.used : 0,
+          storageMax: o.storage ? o.storage.max : 0,
+          bytesRelayed: o.relay ? o.relay.totalBytesRelayed : 0,
+          activeCircuits: o.relay ? o.relay.activeCircuits : 0,
+          totalCircuits: o.relay ? o.relay.totalCircuitsServed : 0,
+          memory: o.memory || {},
+          errors: o.errors || 0,
+          peers: []
+        };
+        // We don't get history/apps from WS, pass null to preserve last state
+        updateDashboard(overview, null, null);
+      }
+    } catch (e) {
+      console.warn('WS message parse error:', e);
+    }
+  };
+
+  ws.onclose = function() {
+    wsConnected = false;
+    ws = null;
+    updateConnIndicator();
+    // Fall back to fast HTTP polling
+    setPollInterval(POLL_INTERVAL_HTTP);
+    // Attempt reconnect after 3s
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = function() {
+    // onclose will fire after this — reconnect handled there
+  };
+}
+
+/* -- Adjust updateDashboard to handle null history/apps gracefully -- */
+var _origUpdateDashboard = updateDashboard;
+updateDashboard = function(overview, history, apps) {
+  // Keep previous apps/history when WS sends only overview
+  if (history == null) history = window._lastHistory || [];
+  else window._lastHistory = history;
+  if (apps == null) apps = window._lastApps || [];
+  else window._lastApps = apps;
+  _origUpdateDashboard(overview, history, apps);
+};
+
+// Boot: start HTTP fetch immediately, then try WS
 fetchData();
+setPollInterval(POLL_INTERVAL_HTTP);
+connectWS();
 
 /* Resize handler for charts */
 var resizeTimer;

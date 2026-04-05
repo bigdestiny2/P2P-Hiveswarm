@@ -14,6 +14,7 @@ import { readFile } from 'fs/promises'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
+import { DashboardFeed } from './ws-feed.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -35,6 +36,7 @@ export class RelayAPI extends EventEmitter {
     this._rateLimitCleanup = null
     this._dashboardHtml = null
     this._networkHtml = null
+    this._dashboardFeed = null
   }
 
   async start () {
@@ -51,6 +53,13 @@ export class RelayAPI extends EventEmitter {
     return new Promise((resolve, reject) => {
       this.server.on('error', reject)
       this.server.listen(this.port, '0.0.0.0', () => {
+        // Start WebSocket live feed for dashboard clients
+        this._dashboardFeed = new DashboardFeed({
+          server: this.server,
+          node: this.node
+        })
+        this._dashboardFeed.start()
+
         this.emit('started', { port: this.port })
         resolve()
       })
@@ -75,6 +84,7 @@ export class RelayAPI extends EventEmitter {
 
     // CORS headers on all responses
     res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
     // Rate limit check
     if (!this._checkRateLimit(ip)) {
@@ -151,6 +161,12 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/api/health-detail') {
+          const healthStatus = this.node.getHealthStatus()
+          const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
+          return this._json(res, { ...healthStatus, actions })
+        }
+
         if (path === '/api/overview') {
           const stats = this.node.getStats()
           const mem = process.memoryUsage()
@@ -191,6 +207,7 @@ export class RelayAPI extends EventEmitter {
               })()
             } : null,
             tor: this.node.torTransport ? this.node.torTransport.getInfo() : null,
+            health: this.node.getHealthStatus(),
             bandwidth: this.node._bandwidthReceipt ? {
               totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
               receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
@@ -322,6 +339,11 @@ export class RelayAPI extends EventEmitter {
   }
 
   async stop () {
+    if (this._dashboardFeed) {
+      this._dashboardFeed.stop()
+      this._dashboardFeed = null
+    }
+
     if (this._rateLimitCleanup) {
       clearInterval(this._rateLimitCleanup)
       this._rateLimitCleanup = null

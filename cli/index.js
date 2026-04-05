@@ -222,6 +222,18 @@ async function start () {
     log.error({ err: error }, 'settlement error')
   })
 
+  node.on('health-warning', (details) => {
+    log.warn({ health: details }, `health warning: ${details.check} — ${details.reason || 'threshold exceeded'}`)
+  })
+
+  node.on('health-critical', (details) => {
+    log.error({ health: details }, `health CRITICAL: ${details.check} — ${details.reason}`)
+  })
+
+  node.on('self-heal-action', (action) => {
+    log.info({ action }, `self-heal: ${action.type} (trigger: ${action.check})`)
+  })
+
   let statusInterval = null
 
   goodbye(async () => {
