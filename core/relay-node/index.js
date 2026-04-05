@@ -4,6 +4,8 @@ import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
+import { readFile, writeFile, mkdir } from 'fs/promises'
+import { join } from 'path'
 import { Seeder } from './seeder.js'
 import { Relay } from './relay.js'
 import { Metrics } from './metrics.js'
@@ -78,8 +80,11 @@ export class RelayNode extends EventEmitter {
       await this.bootstrapCache.load()
       const bootstrap = this.bootstrapCache.merge(this.config.bootstrapNodes)
 
+      const keyPair = await this._loadOrCreateKeyPair()
+
       this.swarm = new Hyperswarm({
         bootstrap,
+        keyPair,
         maxConnections: this.config.maxConnections
       })
 
@@ -227,6 +232,28 @@ export class RelayNode extends EventEmitter {
       connections: this.swarm ? this.swarm.connections.size : 0,
       relay: this.relay ? this.relay.getStats() : null,
       seeder: this.seeder ? this.seeder.getStats() : null
+    }
+  }
+
+  async _loadOrCreateKeyPair () {
+    const keyPath = join(this.config.storage, 'relay-identity.json')
+    try {
+      const data = JSON.parse(await readFile(keyPath, 'utf8'))
+      return {
+        publicKey: b4a.from(data.publicKey, 'hex'),
+        secretKey: b4a.from(data.secretKey, 'hex')
+      }
+    } catch {
+      // First run — generate and persist a new keypair
+      const publicKey = b4a.alloc(32)
+      const secretKey = b4a.alloc(64)
+      sodium.crypto_sign_keypair(publicKey, secretKey)
+      await mkdir(this.config.storage, { recursive: true })
+      await writeFile(keyPath, JSON.stringify({
+        publicKey: b4a.toString(publicKey, 'hex'),
+        secretKey: b4a.toString(secretKey, 'hex')
+      }, null, 2))
+      return { publicKey, secretKey }
     }
   }
 
