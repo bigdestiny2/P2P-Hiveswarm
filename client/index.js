@@ -363,6 +363,8 @@ export class HiveRelayClient extends EventEmitter {
     }
 
     // Broadcast seed request via Protomux to all connected relays (instant path)
+    const sendTime = Date.now()
+    entry.sentAt = sendTime
     for (const relay of this.relays.values()) {
       if (relay.channels.seed) {
         relay.channels.seed.requestMsg.send(request)
@@ -735,8 +737,9 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   _onSeedAccept (relayPubkeyHex, msg) {
+    const now = Date.now()
     const relay = this.relays.get(relayPubkeyHex)
-    if (relay) relay.lastSeen = Date.now()
+    if (relay) relay.lastSeen = now
 
     const appKeyHex = b4a.toString(msg.appKey, 'hex')
     const entry = this.seedRequests.get(appKeyHex)
@@ -746,7 +749,17 @@ export class HiveRelayClient extends EventEmitter {
     }
 
     const relayScores = this._relayScores.get(relayPubkeyHex)
-    if (relayScores) relayScores.successes++
+    if (relayScores) {
+      relayScores.successes++
+      // Opportunistic latency: round-trip time from seed request to accept
+      if (entry && entry.sentAt) {
+        const rtt = now - entry.sentAt
+        // Exponential moving average (α=0.3) to smooth out variance
+        relayScores.latency = relayScores.latency > 0
+          ? Math.round(relayScores.latency * 0.7 + rtt * 0.3)
+          : rtt
+      }
+    }
 
     this.emit('seed-accepted', {
       appKey: appKeyHex,

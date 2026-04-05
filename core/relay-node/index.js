@@ -532,7 +532,7 @@ export class RelayNode extends EventEmitter {
     this._seedProtocol.acceptSeedRequest(
       msg.appKey,
       this.swarm.keyPair.publicKey,
-      this.config.region || 'unknown',
+      (this.config.regions && this.config.regions[0]) || 'unknown',
       availableBytes
     )
 
