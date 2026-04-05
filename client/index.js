@@ -42,6 +42,7 @@ import {
   seedAcceptEncoding,
   relayReserveEncoding
 } from '../core/protocol/messages.js'
+import { SeedingRegistry } from '../core/registry/index.js'
 
 // Well-known topic that all HiveRelay nodes join for discovery
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -104,6 +105,7 @@ export class HiveRelayClient extends EventEmitter {
     this._reconnect = { timer: null, delay: 5000, attempt: 0 }
     this._relayHealthInterval = null
     this._relayScores = new Map() // pubkeyHex -> { latency: number, successes: number, failures: number, bytesServed: number, connectedSince: number }
+    this._registry = null
   }
 
   /**
@@ -151,6 +153,17 @@ export class HiveRelayClient extends EventEmitter {
         client: true
       })
       await this.swarm.flush()
+    }
+
+    // Start seeding registry for persistent seed request discovery
+    if (this.store) {
+      try {
+        const registryStore = this.store.namespace('seeding-registry')
+        this._registry = new SeedingRegistry(registryStore, this.swarm)
+        await this._registry.start()
+      } catch {
+        this._registry = null
+      }
     }
 
     this._started = true
@@ -340,11 +353,35 @@ export class HiveRelayClient extends EventEmitter {
     const entry = { request, acceptances: [] }
     this.seedRequests.set(keyHex, entry)
 
+    // If no relays connected yet, wait briefly for discovery before broadcasting
+    if (this.relays.size === 0 && this.autoDiscover) {
+      await new Promise((resolve) => {
+        const onRelay = () => { this.removeListener('relay-connected', onRelay); clearTimeout(t); resolve() }
+        const t = setTimeout(() => { this.removeListener('relay-connected', onRelay); resolve() }, 5000)
+        this.on('relay-connected', onRelay)
+      })
+    }
+
+    // Broadcast seed request via Protomux to all connected relays (instant path)
     for (const relay of this.relays.values()) {
       if (relay.channels.seed) {
         relay.channels.seed.requestMsg.send(request)
       }
     }
+
+    // Also publish to the distributed registry (persistent path — relays scanning later will find it)
+    if (this._registry) {
+      this._registry.publishRequest(request).catch(() => {})
+    }
+
+    // Re-broadcast to any relays that connect during the wait window
+    const onNewRelay = (evt) => {
+      const relay = this.relays.get(evt.pubkey)
+      if (relay && relay.channels.seed) {
+        relay.channels.seed.requestMsg.send(request)
+      }
+    }
+    this.on('relay-connected', onNewRelay)
 
     this.emit('seed-request-published', { appKey: keyHex })
 
@@ -365,6 +402,7 @@ export class HiveRelayClient extends EventEmitter {
       timer = setTimeout(done, timeout)
     })
 
+    this.removeListener('relay-connected', onNewRelay)
     return entry.acceptances
   }
 
@@ -809,6 +847,12 @@ export class HiveRelayClient extends EventEmitter {
     this.relays.clear()
     this.seedRequests.clear()
     this.reservations.clear()
+
+    // Stop registry
+    if (this._registry) {
+      try { await this._registry.stop() } catch {}
+      this._registry = null
+    }
 
     // Stop and persist bootstrap cache
     if (this._bootstrapCache) {
