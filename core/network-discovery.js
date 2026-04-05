@@ -131,15 +131,42 @@ export class NetworkDiscovery extends EventEmitter {
     for (const port of ports) {
       try {
         const data = await this._fetchApi(host, port)
-        if (data && data.publicKey === pubkey) {
-          relay.apiPort = port
-          relay.data = data
-          relay.lastSeen = Date.now()
-          this.emit('relay-api-found', { publicKey: pubkey, host, port })
-          return
+        if (data && data.publicKey) {
+          if (data.publicKey === pubkey) {
+            // Exact match — this is the relay we're probing
+            relay.apiPort = port
+            relay.data = data
+            relay.lastSeen = Date.now()
+            this.emit('relay-api-found', { publicKey: pubkey, host, port })
+          } else if (!this._relays.has(data.publicKey) || !this._relays.get(data.publicKey).apiPort) {
+            // Different relay on the same host (multi-instance) — register it too
+            const otherPubkey = data.publicKey
+            if (!this._relays.has(otherPubkey)) {
+              this._relays.set(otherPubkey, {
+                publicKey: otherPubkey,
+                host,
+                port: null,
+                apiPort: port,
+                lastSeen: Date.now(),
+                data,
+                online: true
+              })
+              this.emit('relay-discovered', { publicKey: otherPubkey, host })
+              this.emit('relay-api-found', { publicKey: otherPubkey, host, port })
+            } else {
+              const other = this._relays.get(otherPubkey)
+              other.apiPort = port
+              other.data = data
+              other.host = host
+              other.lastSeen = Date.now()
+              other.online = true
+            }
+          }
+          // Keep probing other ports on this host to find all instances
+          continue
         }
       } catch {
-        // try next port
+        continue
       }
     }
   }

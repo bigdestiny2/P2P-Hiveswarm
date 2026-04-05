@@ -94,6 +94,10 @@ export class RelayNode extends EventEmitter {
     if (this.running) return
 
     try {
+      // Re-create store if it was closed (e.g. after self-heal restart)
+      if (this.store.closed) {
+        this.store = new Corestore(this.config.storage)
+      }
       await this.store.ready()
 
       await this.bootstrapCache.load()

@@ -2,8 +2,8 @@ import { EventEmitter } from 'events'
 
 const DEFAULT_OPTS = {
   checkInterval: 30_000,
-  maxHeapPct: 90,
-  maxRssMB: 400,
+  maxHeapPct: 95,
+  maxRssMB: 512,
   staleConnectionThreshold: 5 * 60 * 1000,
   zeroConnectionsThreshold: 10 * 60 * 1000,
   maxConsecutiveFailures: 3
