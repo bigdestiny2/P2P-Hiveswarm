@@ -1,49 +1,95 @@
 /**
  * Seeding Registry
  *
- * An Autobase-powered distributed registry of seed requests.
+ * A Hypercore-powered distributed registry of seed requests.
  * Publishers announce apps they want seeded, relays discover and accept them.
  *
- * The registry is a multi-writer data structure where:
- * - Anyone can write seed requests
- * - Anyone can read the full registry
- * - Relay nodes filter requests matching their capacity
+ * Each node maintains its own append-only log of registry entries.
+ * Nodes discover each other via a well-known DHT topic and replicate
+ * their logs, building a merged view of all seed requests.
+ *
+ * Entry types: seed-request, seed-accept, seed-cancel
  */
 
-import Autobase from 'autobase'
+import Hypercore from 'hypercore'
 import b4a from 'b4a'
+import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
+
+// Well-known topic for registry discovery
+const REGISTRY_TOPIC = b4a.alloc(32)
+sodium.crypto_generichash(REGISTRY_TOPIC, b4a.from('hiverelay-seeding-registry-v1'))
 
 export class SeedingRegistry extends EventEmitter {
   constructor (store, swarm, opts = {}) {
     super()
     this.store = store
     this.swarm = swarm
-    this.autobase = null
-    this.registryKey = opts.registryKey || null // null = create new
+    this.localLog = null
+    this.peerLogs = new Map() // pubkey hex -> Hypercore
     this.running = false
+
+    // In-memory indexes rebuilt from logs
+    this._requests = new Map() // appKey -> seed-request entry
+    this._acceptances = new Map() // appKey -> [{ relayPubkey, region, timestamp }]
+    this._cancellations = new Set() // appKey:publisherPubkey
   }
 
   async start () {
-    // Create or join the registry autobase
-    this.autobase = new Autobase(this.store, this.registryKey, {
-      apply: this._apply.bind(this),
-      open: (store) => store.get('registry-view'),
-      valueEncoding: 'json'
-    })
+    // Create local log for this node's registry entries
+    this.localLog = this.store.get({ name: 'seeding-registry-local' })
+    await this.localLog.ready()
 
-    await this.autobase.ready()
+    // Rebuild index from local log
+    await this._indexLog(this.localLog)
 
-    // Join the swarm for the registry's discovery key
-    if (this.autobase.key) {
-      const topic = this.autobase.discoveryKey || this.autobase.key
-      this.swarm.join(topic, { server: true, client: true })
-    }
+    // Join DHT topic to discover other registry peers
+    this.swarm.join(REGISTRY_TOPIC, { server: true, client: true })
+
+    // Listen for new connections to replicate registry logs
+    this.swarm.on('connection', (conn) => this._onConnection(conn))
 
     this.running = true
     this.emit('started', {
-      key: this.autobase.key ? b4a.toString(this.autobase.key, 'hex') : null
+      key: b4a.toString(this.localLog.key, 'hex')
     })
+  }
+
+  _onConnection (conn) {
+    // Replicate our local log over this connection
+    this.localLog.replicate(conn)
+  }
+
+  async _indexLog (log) {
+    for (let i = 0; i < log.length; i++) {
+      try {
+        const block = await log.get(i)
+        if (!block) continue
+        const entry = JSON.parse(b4a.toString(block))
+        this._applyEntry(entry)
+      } catch {
+        continue
+      }
+    }
+  }
+
+  _applyEntry (entry) {
+    if (entry.type === 'seed-request') {
+      this._requests.set(entry.appKey, entry)
+    } else if (entry.type === 'seed-accept') {
+      if (!this._acceptances.has(entry.appKey)) {
+        this._acceptances.set(entry.appKey, [])
+      }
+      const list = this._acceptances.get(entry.appKey)
+      // Deduplicate by relay pubkey
+      if (!list.some(a => a.relayPubkey === entry.relayPubkey)) {
+        list.push(entry)
+      }
+    } else if (entry.type === 'seed-cancel') {
+      const cancelKey = entry.appKey + ':' + entry.publisherPubkey
+      this._cancellations.add(cancelKey)
+      this._requests.delete(entry.appKey)
+    }
   }
 
   /**
@@ -63,7 +109,8 @@ export class SeedingRegistry extends EventEmitter {
       publisherPubkey: b4a.toString(request.publisherPubkey, 'hex')
     }
 
-    await this.autobase.append(JSON.stringify(entry))
+    await this.localLog.append(b4a.from(JSON.stringify(entry)))
+    this._applyEntry(entry)
     this.emit('request-published', entry)
     return entry
   }
@@ -80,7 +127,8 @@ export class SeedingRegistry extends EventEmitter {
       region
     }
 
-    await this.autobase.append(JSON.stringify(entry))
+    await this.localLog.append(b4a.from(JSON.stringify(entry)))
+    this._applyEntry(entry)
     this.emit('acceptance-recorded', entry)
     return entry
   }
@@ -96,7 +144,8 @@ export class SeedingRegistry extends EventEmitter {
       publisherPubkey: publisherPubkeyHex
     }
 
-    await this.autobase.append(JSON.stringify(entry))
+    await this.localLog.append(b4a.from(JSON.stringify(entry)))
+    this._applyEntry(entry)
     this.emit('request-cancelled', entry)
     return entry
   }
@@ -105,82 +154,51 @@ export class SeedingRegistry extends EventEmitter {
    * Query active seed requests, optionally filtered
    */
   async getActiveRequests (filter = {}) {
-    const view = this.autobase.view
-    if (!view) return []
-
-    const requests = []
     const now = Date.now()
+    const results = []
 
-    for (let i = 0; i < view.length; i++) {
-      try {
-        const block = await view.get(i)
-        if (!block) continue
-        const entry = JSON.parse(block.toString())
+    for (const [appKey, entry] of this._requests) {
+      // Check if cancelled
+      const cancelKey = appKey + ':' + entry.publisherPubkey
+      if (this._cancellations.has(cancelKey)) continue
 
-        if (entry.type !== 'seed-request') continue
+      // Check TTL
+      const expiresAt = entry.timestamp + (entry.ttlSeconds * 1000)
+      if (expiresAt < now) continue
 
-        // Check TTL
-        const expiresAt = entry.timestamp + (entry.ttlSeconds * 1000)
-        if (expiresAt < now) continue
-
-        // Apply filters
-        if (filter.region && entry.geoPreference.length > 0) {
-          if (!entry.geoPreference.includes(filter.region)) continue
-        }
-        if (filter.maxStorageBytes && entry.maxStorageBytes > filter.maxStorageBytes) continue
-
-        requests.push(entry)
-      } catch {
-        continue
+      // Apply filters
+      if (filter.region && entry.geoPreference.length > 0) {
+        if (!entry.geoPreference.includes(filter.region)) continue
       }
+      if (filter.maxStorageBytes && entry.maxStorageBytes > filter.maxStorageBytes) continue
+
+      results.push(entry)
     }
 
-    return requests
+    return results
   }
 
   /**
    * Get relays currently seeding an app
    */
   async getRelaysForApp (appKeyHex) {
-    const view = this.autobase.view
-    if (!view) return []
-
-    const relays = []
-
-    for (let i = 0; i < view.length; i++) {
-      try {
-        const block = await view.get(i)
-        if (!block) continue
-        const entry = JSON.parse(block.toString())
-
-        if (entry.type === 'seed-accept' && entry.appKey === appKeyHex) {
-          relays.push(entry)
-        }
-      } catch {
-        continue
-      }
-    }
-
-    return relays
+    return this._acceptances.get(appKeyHex) || []
   }
 
-  /**
-   * Autobase apply function — linearizes the DAG into the view
-   */
-  async _apply (batch, clocks, change) {
-    for (const node of batch) {
-      try {
-        const entry = JSON.parse(node.value.toString())
-        await change.append(JSON.stringify(entry))
-      } catch {
-        // Skip malformed entries
-      }
-    }
+  get key () {
+    return this.localLog ? this.localLog.key : null
   }
 
   async stop () {
     this.running = false
-    if (this.autobase) await this.autobase.close()
+    try { await this.swarm.leave(REGISTRY_TOPIC) } catch {}
+    if (this.localLog) {
+      try { await this.localLog.close() } catch {}
+    }
+    for (const log of this.peerLogs.values()) {
+      try { await log.close() } catch {}
+    }
+    this.peerLogs.clear()
     this.emit('stopped')
   }
 }

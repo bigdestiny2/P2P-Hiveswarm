@@ -235,16 +235,15 @@ export class RelayNode extends EventEmitter {
 
       // Start seeding registry — distributed Autobase registry for seed requests
       if (this.config.enableSeeding) {
-        this.seedingRegistry = new SeedingRegistry(this.store, this.swarm, {
-          registryKey: this.config.registryKey || null
-        })
-        await this.seedingRegistry.start().catch((err) => {
-          this.emit('registry-error', { error: err })
-          this.seedingRegistry = null
-        })
+        try {
+          // Registry uses its own Corestore namespace to avoid conflicts
+          const registryStore = this.store.namespace('seeding-registry')
+          this.seedingRegistry = new SeedingRegistry(registryStore, this.swarm, {
+            registryKey: this.config.registryKey || null
+          })
+          await this.seedingRegistry.start()
 
-        // Periodic scan for matching seed requests
-        if (this.seedingRegistry) {
+          // Periodic scan for matching seed requests
           const scanInterval = this.config.registryScanInterval || 60_000 // 1 min default
           this._registryScanInterval = setInterval(() => {
             this._scanRegistry().catch((err) => {
@@ -257,6 +256,9 @@ export class RelayNode extends EventEmitter {
           setTimeout(() => {
             this._scanRegistry().catch(() => {})
           }, 5000)
+        } catch (err) {
+          this.emit('registry-error', { error: err })
+          this.seedingRegistry = null
         }
       }
 
@@ -357,8 +359,8 @@ export class RelayNode extends EventEmitter {
       },
       registry: {
         running: this.seedingRegistry ? this.seedingRegistry.running : false,
-        key: this.seedingRegistry && this.seedingRegistry.autobase && this.seedingRegistry.autobase.key
-          ? b4a.toString(this.seedingRegistry.autobase.key, 'hex')
+        key: this.seedingRegistry && this.seedingRegistry.key
+          ? b4a.toString(this.seedingRegistry.key, 'hex')
           : null
       }
     }

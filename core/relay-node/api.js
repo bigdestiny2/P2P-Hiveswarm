@@ -297,8 +297,8 @@ export class RelayAPI extends EventEmitter {
             })
           }
           return this._json(res, {
-            key: this.node.seedingRegistry.autobase && this.node.seedingRegistry.autobase.key
-              ? Buffer.from(this.node.seedingRegistry.autobase.key).toString('hex')
+            key: this.node.seedingRegistry.key
+              ? Buffer.from(this.node.seedingRegistry.key).toString('hex')
               : null,
             activeRequests: enriched.length,
             requests: enriched
