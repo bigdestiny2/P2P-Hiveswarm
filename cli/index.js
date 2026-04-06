@@ -47,6 +47,7 @@ process.on('unhandledRejection', (reason) => {
 const COMMANDS = {
   init,
   start,
+  testnet: startTestnet,
   seed,
   status,
   help
@@ -290,6 +291,220 @@ async function start () {
   }
 }
 
+// ─── testnet ────────────────────────────────────────────────────────
+
+async function startTestnet () {
+  const createTestnet = (await import('@hyperswarm/testnet')).default
+  const { HiveRelayClient } = await import('../client/index.js')
+  const Hyperswarm = (await import('hyperswarm')).default
+  const { mkdirSync, rmSync } = await import('fs')
+  const { tmpdir } = await import('os')
+  const { randomBytes } = await import('crypto')
+
+  const nodeCount = parseInt(args.nodes) || 3
+  const basePort = parseInt(args.port) || 19100
+  const runClient = args.client !== false
+  const testId = randomBytes(4).toString('hex')
+  const baseDir = join(tmpdir(), `hiverelay-testnet-${testId}`)
+  mkdirSync(baseDir, { recursive: true })
+
+  console.log('╔══════════════════════════════════════════════════════╗')
+  console.log('║           HiveRelay — Local Testnet                 ║')
+  console.log('╚══════════════════════════════════════════════════════╝')
+  console.log()
+  console.log(`  Testnet ID:   ${testId}`)
+  console.log(`  Relay nodes:  ${nodeCount}`)
+  console.log(`  API ports:    ${basePort}–${basePort + nodeCount - 1}`)
+  console.log(`  Test client:  ${runClient ? 'yes' : 'no'}`)
+  console.log(`  Storage:      ${baseDir}`)
+  console.log()
+  console.log('  Starting local DHT...')
+
+  const testnet = await createTestnet(3)
+  console.log(`  DHT bootstrap: ${testnet.bootstrap.map(b => b.host + ':' + b.port).join(', ')}`)
+  console.log()
+
+  const nodes = []
+
+  for (let i = 0; i < nodeCount; i++) {
+    const port = basePort + i
+    const storage = join(baseDir, `relay-${i}`)
+    mkdirSync(storage, { recursive: true })
+
+    const node = new RelayNode({
+      storage,
+      enableAPI: true,
+      apiPort: port,
+      enableRelay: true,
+      enableSeeding: true,
+      enableMetrics: true,
+      maxConnections: 64,
+      bootstrapNodes: testnet.bootstrap,
+      shutdownTimeoutMs: 5000
+    })
+
+    await node.start()
+    const pubKey = b4a.toString(node.swarm.keyPair.publicKey, 'hex')
+
+    console.log(`  [relay ${i}] ${pubKey.slice(0, 16)}...`)
+    console.log(`            API: http://127.0.0.1:${port}`)
+    console.log(`            Dashboard: http://127.0.0.1:${port}/dashboard`)
+
+    node.on('seeding', ({ appKey }) => {
+      console.log(`  [relay ${i}] seeding ${appKey.slice(0, 16)}...`)
+    })
+    node.on('seed-accepted', ({ appKey }) => {
+      console.log(`  [relay ${i}] accepted seed: ${appKey.slice(0, 16)}...`)
+    })
+
+    nodes.push({ node, port, pubKey })
+  }
+
+  // Flush all swarms
+  await Promise.all(nodes.map(({ node }) => node.swarm.flush()))
+  console.log()
+
+  let client = null
+  let clientSwarm = null
+
+  if (runClient) {
+    console.log('  Starting test client...')
+    const clientStorage = join(baseDir, 'client')
+    mkdirSync(clientStorage, { recursive: true })
+
+    clientSwarm = new Hyperswarm({ bootstrap: testnet.bootstrap })
+    client = new HiveRelayClient(clientStorage, {
+      swarm: clientSwarm,
+      maxRelays: nodeCount,
+      seedReplicas: nodeCount,
+      autoSeed: true
+    })
+
+    client.on('relay-connected', (evt) => {
+      console.log(`  [client] relay connected: ${evt.pubkey.slice(0, 16)}...`)
+    })
+    client.on('seeded', (evt) => {
+      console.log(`  [client] seeded! ${evt.acceptances} relay(s) accepted`)
+    })
+
+    await client.start()
+    await clientSwarm.flush()
+
+    // Wait for relay discovery
+    let found = false
+    for (let i = 0; i < 30; i++) {
+      if (client.relays.size > 0) { found = true; break }
+      await new Promise(r => setTimeout(r, 500))
+      await clientSwarm.flush()
+    }
+
+    if (found) {
+      console.log(`  [client] discovered ${client.relays.size} relay(s)`)
+    } else {
+      console.log('  [client] no relays discovered (DHT may need more time)')
+    }
+
+    console.log()
+    console.log('  ─── Test: Publish + Seed ───')
+    console.log()
+
+    try {
+      const drive = await client.publish([
+        { path: '/hello.txt', content: 'Hello from HiveRelay testnet!' },
+        { path: '/test.json', content: JSON.stringify({ ts: Date.now(), testnet: testId }) }
+      ], { timeout: 10000 })
+
+      const driveKey = b4a.toString(drive.key, 'hex')
+      console.log(`  [client] published drive: ${driveKey.slice(0, 16)}...`)
+
+      // Seed the drive
+      try {
+        await client.seed(driveKey, { replicas: nodeCount, timeout: 15000 })
+      } catch (e) {
+        console.log(`  [client] seed broadcast sent (${e.message})`)
+      }
+
+      // Wait briefly for seed accepts
+      await new Promise(r => setTimeout(r, 3000))
+
+      // Read back
+      const hello = await client.get(driveKey, '/hello.txt')
+      if (hello) {
+        console.log(`  [client] read back /hello.txt: "${b4a.toString(hello)}"`)
+      }
+
+      const files = await client.list(driveKey, '/')
+      console.log(`  [client] files in drive: ${files.join(', ')}`)
+
+      // Relay scores
+      const scores = client.getRelayScores()
+      if (scores.length > 0) {
+        console.log()
+        console.log('  ─── Relay Scores ───')
+        for (const s of scores) {
+          console.log(`    ${s.relay.slice(0, 16)}... latency=${s.latencyMs}ms reliability=${s.reliability} successes=${s.successes}`)
+        }
+      }
+    } catch (err) {
+      console.log(`  [client] publish test: ${err.message}`)
+    }
+  }
+
+  console.log()
+  console.log('  ─── Network Ready ───')
+  console.log()
+  for (const { port } of nodes) {
+    console.log(`    http://127.0.0.1:${port}/api/overview`)
+  }
+  console.log()
+  console.log('  SDK connect example:')
+  console.log()
+  console.log("    import Hyperswarm from 'hyperswarm'")
+  console.log("    import { HiveRelayClient } from 'p2p-hiverelay/client'")
+  console.log()
+  console.log(`    const swarm = new Hyperswarm({ bootstrap: [${testnet.bootstrap.map(b => `{ host: '${b.host}', port: ${b.port} }`).join(', ')}] })`)
+  console.log("    const client = new HiveRelayClient('./my-storage', { swarm })")
+  console.log('    await client.start()')
+  console.log()
+  console.log('  Press Ctrl+C to shut down the testnet.')
+  console.log()
+
+  // Status ticker
+  const statusInterval = setInterval(() => {
+    const parts = nodes.map(({ node }, i) => {
+      const s = node.getStats()
+      return `r${i}:${s.connections}p/${s.seededApps}a`
+    })
+    const clientPart = client ? ` | client:${client.relays.size}r` : ''
+    process.stdout.write(`\r  [testnet] ${parts.join(' | ')}${clientPart}   `)
+  }, 5000)
+
+  goodbye(async () => {
+    clearInterval(statusInterval)
+    console.log('\n\n  Shutting down testnet...')
+
+    if (client) {
+      try { await client.destroy() } catch {}
+    }
+    if (clientSwarm) {
+      try { await clientSwarm.destroy() } catch {}
+    }
+
+    for (const { node } of nodes) {
+      try { await node.stop() } catch {}
+    }
+
+    try { await testnet.destroy() } catch {}
+
+    try {
+      rmSync(baseDir, { recursive: true, force: true })
+      console.log(`  Cleaned up: ${baseDir}`)
+    } catch {}
+
+    console.log('  Testnet stopped.')
+  })
+}
+
 // ─── seed ───────────────────────────────────────────────────────────
 
 async function seed () {
@@ -352,6 +567,7 @@ HiveRelay v0.1.0 — Shared P2P Relay Backbone
 Usage:
   hiverelay init [options]      Initialize config + install agent skills
   hiverelay start [options]     Start a relay node
+  hiverelay testnet [options]   Spin up a local testnet (DHT + relays + client)
   hiverelay seed <key>          Request seeding for a Pear app
   hiverelay status              Show node status (queries running node)
   hiverelay help                Show this help
@@ -376,12 +592,19 @@ Start Options:
   --tor-control-port <n>         Tor control port (default: 9051)
   --quiet                       Suppress periodic status output
 
+Testnet Options:
+  --nodes <n>                   Number of relay nodes (default: 3)
+  --port <n>                    Base API port (default: 19100)
+  --no-client                   Skip launching a test client
+
 Environment:
   HIVERELAY_LOG_LEVEL           Log level: fatal, error, warn, info, debug, trace
 
 Examples:
   npx hiverelay init                              # One-line setup
   hiverelay start --region NA --max-storage 100GB  # Start relay
+  hiverelay testnet                                # Local testnet (3 relays + client)
+  hiverelay testnet --nodes 5                      # 5-node local testnet
   hiverelay status                                 # Check running node
   curl localhost:9100/health                       # API health check
 `)
