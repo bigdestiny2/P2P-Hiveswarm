@@ -152,6 +152,23 @@ open http://localhost:9100/dashboard   # Single relay
 open http://localhost:9100/network     # All relays on the network
 ```
 
+### Local Testnet (For Development)
+
+Spin up an isolated local network — private DHT, relay nodes, and a test client — in one command:
+
+```bash
+# 3 relay nodes + test client (publishes, seeds, reads back automatically)
+npx hiverelay testnet
+
+# 5 relay nodes, custom base port
+npx hiverelay testnet --nodes 5 --port 19200
+
+# Relays only (no test client)
+npx hiverelay testnet --no-client
+```
+
+The testnet creates its own DHT bootstrap nodes, so nothing touches the production network. It prints a ready-to-paste SDK snippet with the local bootstrap addresses. Ctrl+C tears everything down and cleans up storage.
+
 Or with Docker:
 
 ```bash

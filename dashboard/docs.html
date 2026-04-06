@@ -221,6 +221,7 @@ pre code{background:none;padding:0;color:var(--text)}
     <a href="#quick-start">Quick Start</a>
     <a href="#install">Installation</a>
     <a href="#cli">CLI Usage</a>
+    <a href="#testnet">Local Testnet</a>
   </div>
   <div class="sidebar-section">
     <div class="sidebar-section-title">Node Operator</div>
@@ -297,6 +298,38 @@ console<span class="punct">.</span><span class="fn">log</span><span class="punct
 <div class="callout tip">
   <div class="callout-label">Tip</div>
   Once running, open <code>http://localhost:9100/dashboard</code> to see the node operator dashboard, or <code>/network</code> for the full network overview.
+</div>
+
+
+<h3 id="testnet">Local Testnet</h3>
+
+<p>Spin up an isolated local network — private DHT, relay nodes, and a test client — in one command. Nothing touches the production network.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw"># 3 relay nodes + test client (publishes, seeds, reads back)</span>
+npx hiverelay testnet
+
+<span class="kw"># 5 nodes, custom base port</span>
+npx hiverelay testnet --nodes 5 --port 19200
+
+<span class="kw"># Relays only (no test client)</span>
+npx hiverelay testnet --no-client</code></pre></div>
+
+<p>The testnet creates its own DHT bootstrap nodes. When it's ready, it prints a copy-paste SDK snippet with the local bootstrap addresses so you can connect your own client code:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">js</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">import</span> Hyperswarm <span class="kw">from</span> <span class="str">'hyperswarm'</span>
+<span class="kw">import</span> { HiveRelayClient } <span class="kw">from</span> <span class="str">'p2p-hiverelay/client'</span>
+
+<span class="kw">const</span> swarm = <span class="kw">new</span> Hyperswarm({
+  bootstrap: [{ host: <span class="str">'127.0.0.1'</span>, port: <span class="num">49736</span> }, ...] <span class="kw">// printed by testnet</span>
+})
+<span class="kw">const</span> client = <span class="kw">new</span> HiveRelayClient(<span class="str">'./my-storage'</span>, { swarm })
+<span class="kw">await</span> client.start()</code></pre></div>
+
+<div class="callout tip">
+  <div class="callout-label">Tip</div>
+  Each testnet relay has its own dashboard at <code>http://127.0.0.1:PORT/dashboard</code>. Ctrl+C tears everything down and cleans up storage automatically.
 </div>
 
 
