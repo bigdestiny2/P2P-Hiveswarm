@@ -144,27 +144,34 @@ export class RelayAPI extends EventEmitter {
 
       // Catalog endpoint — lists all seeded drives as an app catalog
       // PearBrowser can use this as a catalog source
+      // Only includes drives that have synced and contain a manifest.json
       if (req.method === 'GET' && path === '/catalog.json') {
         const apps = []
         for (const [appKey] of this.node.seededApps) {
-          // Try to read manifest.json from each seeded drive
           try {
-            const drive = await this._gateway._getDrive(appKey)
-            if (drive) {
-              const manifestBuf = await drive.get('/manifest.json').catch(() => null)
-              if (manifestBuf) {
-                const manifest = JSON.parse(manifestBuf.toString())
-                apps.push({
-                  id: manifest.name ? manifest.name.toLowerCase().replace(/\s+/g, '-') : appKey.slice(0, 12),
-                  name: manifest.name || 'Unknown App',
-                  description: manifest.description || '',
-                  author: manifest.author || 'anonymous',
-                  version: manifest.version || '1.0.0',
-                  driveKey: appKey,
-                  categories: manifest.categories || ['uncategorized']
-                })
-              }
-            }
+            // Use a timeout — skip drives that haven't synced yet
+            const driveResult = await Promise.race([
+              this._gateway._getDrive(appKey),
+              new Promise(resolve => setTimeout(() => resolve(null), 3000))
+            ])
+            if (!driveResult) continue
+
+            const manifestBuf = await Promise.race([
+              driveResult.get('/manifest.json'),
+              new Promise(resolve => setTimeout(() => resolve(null), 2000))
+            ])
+            if (!manifestBuf) continue
+
+            const manifest = JSON.parse(manifestBuf.toString())
+            apps.push({
+              id: manifest.name ? manifest.name.toLowerCase().replace(/\s+/g, '-') : appKey.slice(0, 12),
+              name: manifest.name || 'Unknown App',
+              description: manifest.description || '',
+              author: manifest.author || 'anonymous',
+              version: manifest.version || '1.0.0',
+              driveKey: appKey,
+              categories: manifest.categories || ['uncategorized']
+            })
           } catch {}
         }
         res.setHeader('Content-Type', 'application/json')
