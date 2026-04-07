@@ -35,6 +35,7 @@ const CONTENT_TYPES = {
   mp4: 'video/mp4',
   webm: 'video/webm',
   mp3: 'audio/mpeg',
+  wasm: 'application/wasm',
   pdf: 'application/pdf',
   txt: 'text/plain; charset=utf-8',
   md: 'text/markdown; charset=utf-8'
@@ -106,7 +107,22 @@ export class HyperGateway extends EventEmitter {
         }
       }
 
-      const content = await drive.get(filePath)
+      // Ensure latest version is fetched from peers
+      await drive.update().catch(() => {})
+
+      let content = await drive.get(filePath)
+
+      // If content is null, try updating from peers and retry
+      if (!content) {
+        try {
+          await Promise.race([
+            drive.update({ wait: true }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+          ])
+          content = await drive.get(filePath)
+        } catch (_) {}
+      }
+
       if (!content) {
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'File not found', path: filePath }))
@@ -154,7 +170,17 @@ export class HyperGateway extends EventEmitter {
       const drive = new Hyperdrive(this.node.store, Buffer.from(keyHex, 'hex'))
       await drive.ready()
 
-      // Only serve if we actually have content (version > 0)
+      // If version is 0, try to fetch latest from peers (with timeout)
+      if (drive.version === 0) {
+        try {
+          await Promise.race([
+            drive.update({ wait: true }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+          ])
+        } catch (_) {}
+      }
+
+      // Still no content after update attempt
       if (drive.version === 0) {
         await drive.close()
         return null

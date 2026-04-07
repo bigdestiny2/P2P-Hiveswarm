@@ -401,13 +401,25 @@ export class RelayNode extends EventEmitter {
       const discoveryKey = drive.discoveryKey
       this.swarm.join(discoveryKey, { server: true, client: true })
 
-      // Flush DHT + eagerly download drive content in parallel
-      const eager = Promise.all([
-        this.swarm.flush(),
-        drive.update({ wait: true }).catch(() => {}),
-        drive.download('/').catch(() => {})
-      ])
-      eager.catch(() => {})
+      // Flush DHT, then eagerly pull drive content once peers are found
+      this.swarm.flush().then(async () => {
+        try {
+          // Wait for at least the metadata to arrive from a peer
+          await Promise.race([
+            drive.update({ wait: true }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
+          ])
+          // Now download all files eagerly so we can serve them via gateway
+          const dl = drive.download('/')
+          await Promise.race([
+            dl.done(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
+          ])
+          this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
+        } catch (err) {
+          this.emit('reseed-error', { appKey: appKeyHex, error: err.message })
+        }
+      }).catch(() => {})
 
       this.seededApps.set(appKeyHex, {
         drive,
