@@ -421,7 +421,7 @@ The key convention is: `{entity_type}!{id}`. Range queries with prefix `products
 ## Links
 
 - **[PearBrowser](https://github.com/bigdestiny2/PearBrowser)** — iOS P2P app platform
-- **[HiveRelay](https://github.com/bigdestiny2/P2P-Hiveswarm)** — Relay infrastructure
+- **[HiveRelay](https://github.com/bigdestiny2/p2p-hiverelay)** — Relay infrastructure
 - **[Holepunch](https://holepunch.to)** — The P2P stack
 - **[Bare Runtime](https://bare.pears.com)** — JS runtime for mobile
 - **[Hyperswarm](https://github.com/holepunchto/hyperswarm)** — Peer discovery

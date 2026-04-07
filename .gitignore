@@ -8,3 +8,5 @@ storage/
 coverage/
 .nyc_output/
 dist/
+.publisher-storage/
+.pos-publisher-storage/

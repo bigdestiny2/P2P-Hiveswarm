@@ -8,7 +8,7 @@
  *
  * Simple usage (auto-creates everything):
  *
- *   import { HiveRelayClient } from 'hiverelay/client'
+ *   import { HiveRelayClient } from 'p2p-hiverelay/client'
  *
  *   const app = new HiveRelayClient('./my-app-storage')
  *   await app.start()

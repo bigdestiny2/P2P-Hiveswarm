@@ -131,8 +131,8 @@ const files = await app.list(drive.key, '/')
 ### For Relay Operators
 
 ```bash
-git clone https://github.com/bigdestiny2/P2P-Hiveswarm
-cd P2P-Hiveswarm
+git clone https://github.com/bigdestiny2/p2p-hiverelay
+cd p2p-hiverelay
 npm install
 
 # Start a relay node
@@ -488,7 +488,7 @@ Real network latency adds ~200-500ms for DHT discovery. UDX (the UDP transport u
 ## Architecture
 
 ```
-P2P-Hiveswarm/
+p2p-hiverelay/
 ├── client/                # SDK for Pear app developers
 │   └── index.js           # HiveRelayClient — publish, open, seed, relay
 ├── core/

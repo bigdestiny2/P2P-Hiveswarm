@@ -213,5 +213,5 @@ The relay discovers HiveCompute nodes on the DHT and routes inference requests t
 ## Links
 
 - **[PearBrowser](https://github.com/bigdestiny2/PearBrowser)** — The iOS P2P app platform
-- **[HiveRelay](https://github.com/bigdestiny2/P2P-Hiveswarm)** — The relay backbone
+- **[HiveRelay](https://github.com/bigdestiny2/p2p-hiverelay)** — The relay backbone
 - **[Holepunch](https://holepunch.to)** — The underlying P2P stack

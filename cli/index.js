@@ -601,7 +601,7 @@ Environment:
   HIVERELAY_LOG_LEVEL           Log level: fatal, error, warn, info, debug, trace
 
 Examples:
-  npx hiverelay init                              # One-line setup
+  npx p2p-hiverelay init                           # One-line setup
   hiverelay start --region NA --max-storage 100GB  # Start relay
   hiverelay testnet                                # Local testnet (3 relays + client)
   hiverelay testnet --nodes 5                      # 5-node local testnet

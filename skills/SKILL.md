@@ -20,7 +20,7 @@ You are operating a HiveRelay node — a decentralized P2P relay backbone for th
 HiveRelay must be initialized first. If not already done:
 
 ```bash
-npx hiverelay init
+npx p2p-hiverelay init
 ```
 
 This creates `~/.hiverelay/config.json`, storage at `~/.hiverelay/storage/`, and installs this skill.

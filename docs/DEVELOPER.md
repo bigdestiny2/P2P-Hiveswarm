@@ -37,13 +37,13 @@
 Install HiveRelay as a dependency:
 
 ```bash
-npm install hiverelay
+npm install p2p-hiverelay
 ```
 
 Publish a Pear app that stays alive when you go offline:
 
 ```js
-import { HiveRelayClient } from 'hiverelay/client'
+import { HiveRelayClient } from 'p2p-hiverelay/client'
 
 const app = new HiveRelayClient('./my-app-storage')
 await app.start()
@@ -72,7 +72,7 @@ const html = await app.get(key, '/index.html')
 
 ```bash
 # First-time setup
-npx hiverelay init --region NA --max-storage 50GB
+npx p2p-hiverelay init --region NA --max-storage 50GB
 
 # Start the relay node
 hiverelay start --port 9100
@@ -245,10 +245,10 @@ Import from the package:
 
 ```js
 // Core module (relay operators)
-import { RelayNode, ProofOfRelay, BandwidthReceipt } from 'hiverelay'
+import { RelayNode, ProofOfRelay, BandwidthReceipt } from 'p2p-hiverelay'
 
 // Client SDK (app developers)
-import { HiveRelayClient } from 'hiverelay/client'
+import { HiveRelayClient } from 'p2p-hiverelay/client'
 ```
 
 ### Dependencies
@@ -275,7 +275,7 @@ import { HiveRelayClient } from 'hiverelay/client'
 ## 4. Client SDK Reference
 
 **File:** `client/index.js` (670 lines)
-**Import:** `import { HiveRelayClient } from 'hiverelay/client'`
+**Import:** `import { HiveRelayClient } from 'p2p-hiverelay/client'`
 
 ### Constructor
 
@@ -510,7 +510,7 @@ Closes all drives, leaves all swarm topics, clears all state. If the client crea
 ## 5. Relay Node Reference
 
 **File:** `core/relay-node/index.js` (263 lines)
-**Import:** `import { RelayNode } from 'hiverelay'`
+**Import:** `import { RelayNode } from 'p2p-hiverelay'`
 
 ### Constructor
 
@@ -647,7 +647,7 @@ All messages use `compact-encoding` and are framed over `protomux` channels on H
 ### Message Types
 
 ```js
-import { MSG, ERR, REGIONS } from 'hiverelay'
+import { MSG, ERR, REGIONS } from 'p2p-hiverelay'
 ```
 
 #### Seeding Messages (0x01–0x06)
@@ -798,7 +798,7 @@ The protocol uses two named Protomux channels:
 The seed protocol manages the negotiation between publishers and relay nodes for content seeding.
 
 ```js
-import { SeedProtocol } from 'hiverelay'
+import { SeedProtocol } from 'p2p-hiverelay'
 
 const seed = new SeedProtocol(corestore, { maxStorageBytes: 50 * 1024**3 })
 seed.attach(conn) // Attach to a Hyperswarm connection
@@ -817,7 +817,7 @@ seed.attach(conn) // Attach to a Hyperswarm connection
 The circuit relay forwards opaque encrypted bytes between peers that can't connect directly.
 
 ```js
-import { Relay } from 'hiverelay'
+import { Relay } from 'p2p-hiverelay'
 
 const relay = new Relay(swarm, {
   maxBandwidthMbps: 100,
@@ -853,7 +853,7 @@ const circuit = relay.createCircuit('circuit-123', sourceStream, destStream)
 Cryptographic verification that relay nodes actually hold data.
 
 ```js
-import { ProofOfRelay } from 'hiverelay'
+import { ProofOfRelay } from 'p2p-hiverelay'
 
 const proof = new ProofOfRelay({
   maxLatencyMs: 5000,             // 5-second response deadline
@@ -913,7 +913,7 @@ proof.getAllScores()
 Non-repudiable proof of data transfer, signed with Ed25519.
 
 ```js
-import { BandwidthReceipt } from 'hiverelay'
+import { BandwidthReceipt } from 'p2p-hiverelay'
 
 // Receiving peer creates and signs receipts
 const receipt = new BandwidthReceipt(keyPair, { maxReceipts: 10_000 })
@@ -997,7 +997,7 @@ seeder.getStats()
 Tracks relay performance across four axes with daily decay.
 
 ```js
-import { ReputationSystem } from 'hiverelay'
+import { ReputationSystem } from 'p2p-hiverelay'
 
 const rep = new ReputationSystem()
 ```
@@ -1058,7 +1058,7 @@ rep.import(data)           // Restore from saved state
 Storj-inspired held-amount schedule for relay operator payments.
 
 ```js
-import { PaymentManager } from 'hiverelay'
+import { PaymentManager } from 'p2p-hiverelay'
 
 const pm = new PaymentManager(provider) // LightningProvider or MockProvider
 ```
@@ -1106,7 +1106,7 @@ PaymentManager.calculatePrice({
 LND gRPC integration for Bitcoin Lightning payments.
 
 ```js
-import { LightningProvider } from 'hiverelay'
+import { LightningProvider } from 'p2p-hiverelay'
 
 const ln = new LightningProvider({
   rpcUrl: 'localhost:10009',
@@ -1130,7 +1130,7 @@ await ln.disconnect()
 In-memory payment provider for testing.
 
 ```js
-import { MockProvider } from 'hiverelay'
+import { MockProvider } from 'p2p-hiverelay'
 
 const mock = new MockProvider({ initialBalance: 100_000 })
 await mock.connect()
@@ -1149,7 +1149,7 @@ await mock.pay('lnbc...')
 Enables browser peers to connect to relay nodes.
 
 ```js
-import { WebSocketTransport } from 'hiverelay'
+import { WebSocketTransport } from 'p2p-hiverelay'
 
 const ws = new WebSocketTransport({
   port: 8765,
@@ -1174,7 +1174,7 @@ await ws.stop()
 Wraps a WebSocket into a Node.js Duplex stream for Protomux compatibility.
 
 ```js
-import { WebSocketStream } from 'hiverelay'
+import { WebSocketStream } from 'p2p-hiverelay'
 
 const stream = new WebSocketStream(ws)
 // Use like any Duplex: stream.write(), stream.on('data'), pipe(), etc.
@@ -1189,7 +1189,7 @@ Handles backpressure: when the WebSocket buffer is full, the Duplex's write retu
 SOCKS5 proxy integration for censorship resistance. Phase 2+ — currently a stub.
 
 ```js
-import { TorTransport } from 'hiverelay'
+import { TorTransport } from 'p2p-hiverelay'
 const tor = new TorTransport({ socksPort: 9050, hiddenService: true })
 ```
 
@@ -1566,7 +1566,7 @@ Built-in defaults (config/default.js)
 ```
 
 ```js
-import { loadConfig, saveConfig, ensureDirs } from 'hiverelay/config/loader.js'
+import { loadConfig, saveConfig, ensureDirs } from 'p2p-hiverelay/config/loader.js'
 
 ensureDirs()                    // Creates ~/.hiverelay/ and subdirectories
 const config = loadConfig({     // Merge: overrides > file > defaults
