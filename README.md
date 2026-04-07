@@ -428,6 +428,21 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **`POST /registry/approve`** — Approve a pending request (approval mode)
 - **`POST /registry/reject`** — Reject a pending request
 - **`POST /registry/auto-accept`** — Toggle auto-accept / approval mode
+
+#### Hyper Gateway (HTTP access to Hyperdrive content)
+- **`GET /v1/hyper/DRIVE_KEY/path`** — Serve files from a seeded Hyperdrive over HTTP. Auto-detects content type, resolves `index.html` for directories, returns JSON directory listings. Vite-built apps have asset paths auto-rewritten.
+- **`GET /catalog.json`** — App catalog listing all seeded drives with metadata from `manifest.json` (name, description, author, version, categories). Used by PearBrowser as a catalog source.
+- **`GET /api/gateway`** — Gateway stats: cached drives, total requests, bytes served.
+
+Example:
+```
+# Fetch a file from a seeded Hyperdrive:
+curl https://relay.p2phiverelay.xyz/v1/hyper/abc123.../index.html
+
+# Get the app catalog:
+curl https://relay.p2phiverelay.xyz/catalog.json
+```
+
 - Rate limited: 60 req/min per IP, 64KB max body
 
 ### Transports

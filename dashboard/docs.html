@@ -256,6 +256,11 @@ pre code{background:none;padding:0;color:var(--text)}
     <a href="#network-discovery">Network &amp; Discovery</a>
   </div>
   <div class="sidebar-section">
+    <div class="sidebar-section-title">Gateway</div>
+    <a href="#gateway">Hyper Gateway</a>
+    <a href="#catalog">App Catalog</a>
+  </div>
+  <div class="sidebar-section">
     <div class="sidebar-section-title">Reference</div>
     <a href="#api-reference">API Reference</a>
   </div>
@@ -618,6 +623,90 @@ console<span class="punct">.</span><span class="fn">log</span><span class="punct
   <div class="callout-label">Firewall Note</div>
   For best connectivity, ensure your relay can accept inbound UDP and TCP connections. While Hyperswarm can hole-punch through most NATs, a publicly reachable relay provides the best experience for all peers.
 </div>
+
+
+<!-- ════════════════════ HYPER GATEWAY ════════════════════ -->
+<h2 class="section-title" id="gateway">Hyper Gateway</h2>
+
+<p>The Hyper Gateway serves seeded Hyperdrive content over plain HTTP. Mobile clients and browsers can fetch Pear app files without a full P2P connection &mdash; the relay acts as an HTTP bridge.</p>
+
+<h3>Fetching Files</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw"># Fetch a file from a seeded Hyperdrive</span>
+curl https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html
+
+<span class="kw"># Directory listing (JSON)</span>
+curl https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/
+
+<span class="kw"># Gateway stats</span>
+curl https://relay.p2phiverelay.xyz/api/gateway</code></pre></div>
+
+<p>The gateway automatically:</p>
+<ul>
+  <li>Detects content types from file extensions (HTML, CSS, JS, images, fonts, video, etc.)</li>
+  <li>Resolves <code>index.html</code> for directory paths</li>
+  <li>Returns JSON directory listings when no index exists</li>
+  <li>Rewrites absolute <code>/assets/</code> paths in HTML to <code>./assets/</code> for Vite-built apps</li>
+  <li>Caches opened drives in memory for fast subsequent requests</li>
+  <li>Sets <code>Cache-Control</code>, <code>X-Hyper-Key</code>, and <code>X-Served-By</code> headers</li>
+</ul>
+
+<h3 id="catalog">App Catalog</h3>
+
+<p>Each relay exposes a <code>/catalog.json</code> endpoint that lists all seeded apps with metadata. PearBrowser and other app stores can use this as a catalog source.</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code>curl https://relay.p2phiverelay.xyz/catalog.json</code></pre></div>
+
+<p>Response:</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code>{
+  <span class="str">"version"</span>: <span class="num">1</span>,
+  <span class="str">"name"</span>: <span class="str">"HiveRelay App Catalog"</span>,
+  <span class="str">"relayKey"</span>: <span class="str">"1e7d8b1f..."</span>,
+  <span class="str">"apps"</span>: [
+    {
+      <span class="str">"id"</span>: <span class="str">"my-pear-app"</span>,
+      <span class="str">"name"</span>: <span class="str">"My Pear App"</span>,
+      <span class="str">"description"</span>: <span class="str">"A P2P application"</span>,
+      <span class="str">"author"</span>: <span class="str">"dev@example.com"</span>,
+      <span class="str">"version"</span>: <span class="str">"1.0.0"</span>,
+      <span class="str">"driveKey"</span>: <span class="str">"abc123..."</span>,
+      <span class="str">"categories"</span>: [<span class="str">"productivity"</span>]
+    }
+  ]
+}</code></pre></div>
+
+<div class="callout tip">
+  <div class="callout-label">Tip</div>
+  To appear in the catalog, include a <code>manifest.json</code> in the root of your Hyperdrive with <code>name</code>, <code>description</code>, <code>author</code>, <code>version</code>, and <code>categories</code> fields.
+</div>
+
+<h3>Full Flow: Publish to Gateway</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">js</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">import</span> { HiveRelayClient } <span class="kw">from</span> <span class="str">'p2p-hiverelay/client'</span>
+
+<span class="kw">const</span> client = <span class="kw">new</span> HiveRelayClient(<span class="str">'./app-storage'</span>)
+<span class="kw">await</span> client.start()
+
+<span class="kw">// Publish with manifest for catalog listing</span>
+<span class="kw">const</span> drive = <span class="kw">await</span> client.publish([
+  { path: <span class="str">'/manifest.json'</span>, content: JSON.stringify({
+    name: <span class="str">'My App'</span>, description: <span class="str">'A cool P2P app'</span>,
+    author: <span class="str">'you'</span>, version: <span class="str">'1.0.0'</span>, categories: [<span class="str">'tools'</span>]
+  })},
+  { path: <span class="str">'/index.html'</span>, content: <span class="str">'&lt;h1&gt;Hello World&lt;/h1&gt;'</span> }
+])
+
+<span class="kw">// Seed it on relays</span>
+<span class="kw">await</span> client.seed(drive.key.toString(<span class="str">'hex'</span>), { replicas: <span class="num">3</span> })
+
+<span class="kw">// Now accessible via HTTP:</span>
+<span class="kw">// https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html</span>
+<span class="kw">// And listed in /catalog.json</span></code></pre></div>
 
 
 <!-- ════════════════════ API REFERENCE ════════════════════ -->
