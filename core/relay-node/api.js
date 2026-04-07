@@ -5,8 +5,11 @@
  * Enables agents (Hermes, OpenClaw) to query and control the relay
  * node without importing the module directly.
  *
- * Binds to localhost only — not exposed to the network.
- * Includes per-IP rate limiting to prevent abuse.
+ * Security features:
+ *   - Configurable bind address (opts.apiHost, default '0.0.0.0')
+ *   - Configurable CORS origins (opts.corsOrigins, default '*')
+ *   - Per-IP rate limiting to prevent abuse
+ *   - Hex key input validation on all POST routes
  */
 
 import { createServer } from 'http'
@@ -25,11 +28,25 @@ const DEFAULT_PORT = 9100
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
 
+const MAX_DISCOVERY_KEYS = 100
+
+/**
+ * Validate a hex-encoded key string.
+ * @param {*} str - value to check
+ * @param {number} len - expected character length (e.g. 64 for 32-byte keys)
+ * @returns {boolean}
+ */
+function isValidHexKey (str, len) {
+  return typeof str === 'string' && str.length === len && /^[0-9a-f]+$/i.test(str)
+}
+
 export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
     super()
     this.node = relayNode
     this.port = opts.apiPort || DEFAULT_PORT
+    this.host = opts.apiHost || '0.0.0.0'
+    this.corsOrigins = opts.corsOrigins || '*'
     this.server = null
 
     // Per-IP request counts: ip -> { count, resetAt }
@@ -55,7 +72,7 @@ export class RelayAPI extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       this.server.on('error', reject)
-      this.server.listen(this.port, '0.0.0.0', () => {
+      this.server.listen(this.port, this.host, () => {
         // Start WebSocket live feed for dashboard clients
         this._dashboardFeed = new DashboardFeed({
           server: this.server,
@@ -86,8 +103,19 @@ export class RelayAPI extends EventEmitter {
     const ip = req.socket.remoteAddress || '127.0.0.1'
 
     // CORS headers on all responses
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    const allowedOrigin = this._getAllowedOrigin(req.headers.origin)
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin)
+    }
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.writeHead(204)
+      res.end()
+      return
+    }
 
     // Rate limit check
     if (!this._checkRateLimit(ip)) {
@@ -384,6 +412,7 @@ export class RelayAPI extends EventEmitter {
 
         if (path === '/seed') {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const result = await this.node.seedApp(body.appKey, body.opts || {})
           return this._json(res, { ok: true, ...result })
         }
@@ -391,10 +420,27 @@ export class RelayAPI extends EventEmitter {
         if (path === '/registry/publish') {
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+
+          const dks = body.discoveryKeys || []
+          if (!Array.isArray(dks) || dks.length > MAX_DISCOVERY_KEYS) {
+            return this._json(res, { error: `discoveryKeys must be an array of at most ${MAX_DISCOVERY_KEYS} items` }, 400)
+          }
+          for (const dk of dks) {
+            if (!isValidHexKey(dk, 64)) return this._json(res, { error: 'Each discoveryKey must be 64 hex characters' }, 400)
+          }
+
+          let appKeyBuf, dkBufs
+          try {
+            appKeyBuf = Buffer.from(body.appKey, 'hex')
+            dkBufs = dks.map(dk => Buffer.from(dk, 'hex'))
+          } catch (err) {
+            return this._json(res, { error: 'Invalid hex encoding: ' + err.message }, 400)
+          }
 
           const request = {
-            appKey: Buffer.from(body.appKey, 'hex'),
-            discoveryKeys: (body.discoveryKeys || []).map(dk => Buffer.from(dk, 'hex')),
+            appKey: appKeyBuf,
+            discoveryKeys: dkBufs,
             replicationFactor: body.replicas || 3,
             geoPreference: body.geo ? [].concat(body.geo) : [],
             maxStorageBytes: body.maxStorageBytes || 0,
@@ -414,12 +460,14 @@ export class RelayAPI extends EventEmitter {
 
         if (path === '/registry/approve') {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.approveRequest(body.appKey)
           return this._json(res, { ok: true })
         }
 
         if (path === '/registry/reject') {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           this.node.rejectRequest(body.appKey)
           return this._json(res, { ok: true })
         }
@@ -427,6 +475,7 @@ export class RelayAPI extends EventEmitter {
         if (path === '/registry/cancel') {
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const pubkey = this.node.swarm ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex') : null
           await this.node.seedingRegistry.cancelRequest(body.appKey, pubkey)
           return this._json(res, { ok: true })
@@ -434,6 +483,7 @@ export class RelayAPI extends EventEmitter {
 
         if (path === '/unseed') {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.unseedApp(body.appKey)
           return this._json(res, { ok: true })
         }
@@ -444,6 +494,20 @@ export class RelayAPI extends EventEmitter {
     } catch (err) {
       this._json(res, { error: err.message }, 500)
     }
+  }
+
+  /**
+   * Determine the Access-Control-Allow-Origin value for this request.
+   * Returns the origin string to set, or null if the origin is not allowed.
+   */
+  _getAllowedOrigin (requestOrigin) {
+    if (this.corsOrigins === '*') return '*'
+
+    const allowed = Array.isArray(this.corsOrigins) ? this.corsOrigins : [this.corsOrigins]
+
+    if (!requestOrigin) return null
+    if (allowed.includes(requestOrigin)) return requestOrigin
+    return null
   }
 
   _json (res, data, status = 200) {

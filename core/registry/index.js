@@ -67,7 +67,8 @@ export class SeedingRegistry extends EventEmitter {
         if (!block) continue
         const entry = JSON.parse(b4a.toString(block))
         this._applyEntry(entry)
-      } catch {
+      } catch (err) {
+        this.emit('index-error', { context: 'indexLog', index: i, error: err })
         continue
       }
     }
@@ -191,12 +192,12 @@ export class SeedingRegistry extends EventEmitter {
 
   async stop () {
     this.running = false
-    try { await this.swarm.leave(REGISTRY_TOPIC) } catch {}
+    try { await this.swarm.leave(REGISTRY_TOPIC) } catch (_) {}
     if (this.localLog) {
-      try { await this.localLog.close() } catch {}
+      try { await this.localLog.close() } catch (_) {}
     }
     for (const log of this.peerLogs.values()) {
-      try { await log.close() } catch {}
+      try { await log.close() } catch (_) {}
     }
     this.peerLogs.clear()
     this.emit('stopped')

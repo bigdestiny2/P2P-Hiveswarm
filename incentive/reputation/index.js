@@ -12,6 +12,7 @@
  */
 
 import { EventEmitter } from 'events'
+import { readFile, writeFile } from 'fs/promises'
 
 const DECAY_RATE = 0.995 // Daily decay multiplier (~0.5% per day)
 const CHALLENGE_WEIGHT = 10 // Points per passed challenge
@@ -206,6 +207,40 @@ export class ReputationSystem extends EventEmitter {
       this.records.set(relayPubkeyHex, record)
     }
     return record
+  }
+
+  /**
+   * Save reputation data to a JSON file
+   */
+  async save (filePath) {
+    try {
+      const data = this.export()
+      await writeFile(filePath, JSON.stringify(data, null, 2))
+    } catch (err) {
+      this.emit('save-error', { filePath, error: err })
+    }
+  }
+
+  /**
+   * Load reputation data from a JSON file
+   * Returns a new ReputationSystem instance with the loaded data
+   */
+  static async load (filePath) {
+    const system = new ReputationSystem()
+    try {
+      const raw = await readFile(filePath, 'utf8')
+      if (!raw || raw.trim() === '') return system
+      const data = JSON.parse(raw)
+      if (data && typeof data === 'object') {
+        system.import(data)
+      }
+    } catch (err) {
+      // Missing file, empty file, or corrupt JSON — return empty system
+      if (err.code !== 'ENOENT') {
+        system.emit('load-error', { filePath, error: err })
+      }
+    }
+    return system
   }
 
   /**

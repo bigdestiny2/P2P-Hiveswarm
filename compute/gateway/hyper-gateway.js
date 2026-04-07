@@ -162,7 +162,8 @@ export class HyperGateway extends EventEmitter {
 
       this._drives.set(keyHex, drive)
       return drive
-    } catch {
+    } catch (err) {
+      this.emit('drive-error', { context: 'getDrive', key: keyHex, error: err })
       return null
     }
   }
@@ -173,7 +174,9 @@ export class HyperGateway extends EventEmitter {
       for await (const entry of drive.list(dirPath)) {
         entries.push(entry.key)
       }
-    } catch {}
+    } catch (err) {
+      this.emit('drive-error', { context: 'directoryListing', key: keyHex, path: dirPath, error: err })
+    }
 
     res.setHeader('Content-Type', 'application/json')
     res.setHeader('X-Hyper-Key', keyHex)
@@ -192,7 +195,7 @@ export class HyperGateway extends EventEmitter {
 
   async close () {
     for (const [, drive] of this._drives) {
-      try { await drive.close() } catch {}
+      try { await drive.close() } catch (_) {}
     }
     this._drives.clear()
   }

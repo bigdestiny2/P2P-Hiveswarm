@@ -40,7 +40,8 @@ const DEFAULT_CONFIG = {
   enableAPI: true,
   apiPort: 9100,
   bootstrapNodes: null, // null = use HyperDHT defaults
-  shutdownTimeoutMs: 10_000
+  shutdownTimeoutMs: 10_000,
+  enableEviction: true
 }
 
 function isValidHexKey (hex) {
@@ -81,6 +82,7 @@ export class RelayNode extends EventEmitter {
     this._proofOfRelay = null
     this._bandwidthReceipt = null
     this._reputationDecayInterval = null
+    this._reputationSaveInterval = null
     this.networkDiscovery = null
     this.healthMonitor = null
     this.selfHeal = null
@@ -159,11 +161,25 @@ export class RelayNode extends EventEmitter {
         this.reputation.recordChallenge(result.relayPubkey, result.passed, result.latencyMs)
       })
 
+      // Load persisted reputation data
+      const reputationPath = join(this.config.storage, 'reputation.json')
+      try {
+        this.reputation = await ReputationSystem.load(reputationPath)
+      } catch (_) {
+        this.reputation = new ReputationSystem()
+      }
+
       // Daily reputation decay (run hourly, decay is multiplicative)
       this._reputationDecayInterval = setInterval(() => {
         this.reputation.applyDecay()
       }, 60 * 60 * 1000)
       if (this._reputationDecayInterval.unref) this._reputationDecayInterval.unref()
+
+      // Periodic reputation save every 5 minutes
+      this._reputationSaveInterval = setInterval(() => {
+        this.reputation.save(reputationPath).catch(() => {})
+      }, 5 * 60 * 1000)
+      if (this._reputationSaveInterval.unref) this._reputationSaveInterval.unref()
 
       // Initialize bandwidth receipt tracking
       this._bandwidthReceipt = new BandwidthReceipt(this.swarm.keyPair, {
@@ -290,16 +306,18 @@ export class RelayNode extends EventEmitter {
     } catch (err) {
       // Rollback in reverse order
       this.bootstrapCache.stop()
+      if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
+      if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
       if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
-      if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch {} this.seedingRegistry = null }
+      if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
-      if (this.torTransport) { try { await this.torTransport.stop() } catch {} this.torTransport = null }
-      if (this.wsTransport) { try { await this.wsTransport.stop() } catch {} this.wsTransport = null }
-      if (this.api) { try { await this.api.stop() } catch {} this.api = null }
+      if (this.torTransport) { try { await this.torTransport.stop() } catch (_) {} this.torTransport = null }
+      if (this.wsTransport) { try { await this.wsTransport.stop() } catch (_) {} this.wsTransport = null }
+      if (this.api) { try { await this.api.stop() } catch (_) {} this.api = null }
       if (this.metrics) { this.metrics.stop(); this.metrics = null }
-      if (this.relay) { try { await this.relay.stop() } catch {} this.relay = null }
-      if (this.seeder) { try { await this.seeder.stop() } catch {} this.seeder = null }
-      if (this.swarm) { try { await this.swarm.destroy() } catch {} this.swarm = null }
+      if (this.relay) { try { await this.relay.stop() } catch (_) {} this.relay = null }
+      if (this.seeder) { try { await this.seeder.stop() } catch (_) {} this.seeder = null }
+      if (this.swarm) { try { await this.swarm.destroy() } catch (_) {} this.swarm = null }
       this.running = false
       throw err
     }
@@ -312,7 +330,7 @@ export class RelayNode extends EventEmitter {
     try {
       const data = JSON.parse(await readFile(logPath, 'utf8'))
       return Array.isArray(data) ? data : []
-    } catch {
+    } catch (_) {
       return []
     }
   }
@@ -349,6 +367,31 @@ export class RelayNode extends EventEmitter {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
 
+    // Evict oldest app if storage capacity would be exceeded
+    if (this.config.enableEviction !== false && this.seeder.totalBytesStored >= this.config.maxStorageBytes && this.seededApps.size > 0) {
+      const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000
+      let oldestKey = null
+      let oldestTime = Infinity
+
+      for (const [appKey, entry] of this.seededApps) {
+        if (entry.startedAt < oldestTime) {
+          oldestTime = entry.startedAt
+          oldestKey = appKey
+        }
+      }
+
+      const shouldEvict = oldestKey && (
+        (opts.replicationFactor && opts.replicationFactor > (this.seededApps.get(oldestKey)?.replicationFactor || 1)) ||
+        (Date.now() - oldestTime > TWENTY_FOUR_HOURS)
+      )
+
+      if (shouldEvict) {
+        await this._evictOldestApp()
+      } else {
+        throw new Error('Storage capacity exceeded and no eligible app to evict')
+      }
+    }
+
     const appKey = b4a.from(appKeyHex, 'hex')
     const drive = new Hyperdrive(this.store, appKey)
 
@@ -377,7 +420,7 @@ export class RelayNode extends EventEmitter {
       this._saveSeededAppsLog().catch(() => {})
       return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
-      try { await drive.close() } catch {}
+      try { await drive.close() } catch (_) {}
       throw err
     }
   }
@@ -386,8 +429,8 @@ export class RelayNode extends EventEmitter {
     const entry = this.seededApps.get(appKeyHex)
     if (!entry) return
 
-    try { await this.swarm.leave(entry.discoveryKey) } catch {}
-    try { await entry.drive.close() } catch {}
+    try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
+    try { await entry.drive.close() } catch (_) {}
     this.seededApps.delete(appKeyHex)
     this._saveSeededAppsLog().catch(() => {})
 
@@ -431,7 +474,7 @@ export class RelayNode extends EventEmitter {
         publicKey: b4a.from(data.publicKey, 'hex'),
         secretKey: b4a.from(data.secretKey, 'hex')
       }
-    } catch {
+    } catch (_) {
       // First run — generate and persist a new keypair
       const publicKey = b4a.alloc(32)
       const secretKey = b4a.alloc(64)
@@ -443,6 +486,24 @@ export class RelayNode extends EventEmitter {
       }, null, 2))
       return { publicKey, secretKey }
     }
+  }
+
+  async _evictOldestApp () {
+    let oldestKey = null
+    let oldestTime = Infinity
+
+    for (const [appKey, entry] of this.seededApps) {
+      if (entry.startedAt < oldestTime) {
+        oldestTime = entry.startedAt
+        oldestKey = appKey
+      }
+    }
+
+    if (!oldestKey) return null
+
+    await this.unseedApp(oldestKey)
+    this.emit('evicted', { appKey: oldestKey, reason: 'storage full' })
+    return oldestKey
   }
 
   _onConnection (conn, info) {
@@ -649,7 +710,7 @@ export class RelayNode extends EventEmitter {
 
     // Stop bootstrap cache and persist peers
     this.bootstrapCache.stop()
-    try { await this.bootstrapCache.save() } catch {}
+    try { await this.bootstrapCache.save() } catch (_) {}
 
     // Stop health checks, settlement, WebSocket, API, and metrics first
     if (this.selfHeal) { this.selfHeal.stop(); this.selfHeal = null }
@@ -657,15 +718,15 @@ export class RelayNode extends EventEmitter {
     if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
     if (this.torTransport) {
-      try { await withTimeout(this.torTransport.stop(), timeout, 'torTransport.stop') } catch {}
+      try { await withTimeout(this.torTransport.stop(), timeout, 'torTransport.stop') } catch (_) {}
       this.torTransport = null
     }
     if (this.wsTransport) {
-      try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch {}
+      try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch (_) {}
       this.wsTransport = null
     }
     if (this.api) {
-      try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch {}
+      try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch (_) {}
       this.api = null
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
@@ -677,30 +738,35 @@ export class RelayNode extends EventEmitter {
       this._circuitRelay = null
     }
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
-    if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch {} this.seedingRegistry = null }
-    if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch {} this.networkDiscovery = null }
+    if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
+    if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (_) {} this.networkDiscovery = null }
     if (this._proofOfRelay) { this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
+    if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
     if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
+    // Persist reputation before shutdown
+    if (this.reputation) {
+      try { await this.reputation.save(join(this.config.storage, 'reputation.json')) } catch (_) {}
+    }
 
     // Unseed all apps
     for (const appKeyHex of this.seededApps.keys()) {
       try {
         await withTimeout(this.unseedApp(appKeyHex), timeout, `unseedApp(${appKeyHex.slice(0, 8)})`)
-      } catch {}
+      } catch (_) {}
     }
 
     if (this.relay) {
-      try { await withTimeout(this.relay.stop(), timeout, 'relay.stop') } catch {}
+      try { await withTimeout(this.relay.stop(), timeout, 'relay.stop') } catch (_) {}
     }
     if (this.seeder) {
-      try { await withTimeout(this.seeder.stop(), timeout, 'seeder.stop') } catch {}
+      try { await withTimeout(this.seeder.stop(), timeout, 'seeder.stop') } catch (_) {}
     }
     if (this.swarm) {
-      try { await withTimeout(this.swarm.destroy(), timeout, 'swarm.destroy') } catch {}
+      try { await withTimeout(this.swarm.destroy(), timeout, 'swarm.destroy') } catch (_) {}
     }
     if (this.store) {
-      try { await withTimeout(this.store.close(), timeout, 'store.close') } catch {}
+      try { await withTimeout(this.store.close(), timeout, 'store.close') } catch (_) {}
     }
 
     this.running = false

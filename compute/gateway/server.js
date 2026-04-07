@@ -5,11 +5,11 @@
  * content over HTTP for mobile clients (PearBrowser fast-path).
  *
  * Usage:
- *   node compute/gateway/server.js [--port 9100] [--storage ./storage]
+ *   node compute/gateway/server.js [--port 9100] [--storage ./storage] [--cors https://example.com]
  *
  * Or programmatically:
  *   const { startGateway } = await import('./server.js')
- *   const gateway = await startGateway({ port: 9100, storage: './storage' })
+ *   const gateway = await startGateway({ port: 9100, storage: './storage', corsOrigin: '*' })
  */
 
 import { createServer } from 'http'
@@ -30,6 +30,7 @@ export async function startGateway (opts = {}) {
   const port = opts.port || DEFAULT_PORT
   const storagePath = opts.storage || './gateway-storage'
   const seedKeys = opts.seedKeys || []
+  const corsOrigin = opts.corsOrigin || '*'
 
   // Boot P2P
   const store = new Corestore(storagePath)
@@ -59,8 +60,13 @@ export async function startGateway (opts = {}) {
 
   // HTTP server
   const server = createServer(async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    const origin = req.headers.origin
+    if (corsOrigin === '*') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+    } else if (origin && origin === corsOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin)
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -145,9 +151,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
   const port = args.includes('--port') ? parseInt(args[args.indexOf('--port') + 1]) : DEFAULT_PORT
   const storage = args.includes('--storage') ? args[args.indexOf('--storage') + 1] : './gateway-storage'
+  const corsOrigin = args.includes('--cors') ? args[args.indexOf('--cors') + 1] : '*'
   const seedKeys = args.filter(a => /^[a-f0-9]{52,64}$/i.test(a))
 
-  startGateway({ port, storage, seedKeys }).then((gw) => {
+  startGateway({ port, storage, seedKeys, corsOrigin }).then((gw) => {
     process.on('SIGINT', async () => {
       console.log('\n  Shutting down...')
       await gw.close()

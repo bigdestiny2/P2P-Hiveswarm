@@ -9,7 +9,8 @@
  * - I2P router running locally (i2pd or Java I2P)
  * - SAM bridge enabled (default: 127.0.0.1:7656)
  *
- * Status: STUB — Phase 2+ implementation
+ * Status: NOT IMPLEMENTED — Phase 2 stub only.
+ * All methods throw. Do not enable in production config.
  */
 
 import { EventEmitter } from 'events'

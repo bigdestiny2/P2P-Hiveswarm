@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Relay Node",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["cli/index.js", "start", "--region", "NA", "--max-storage", "50GB"],
+      "port": 9100
+    },
+    {
+      "name": "Local Network",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/local-network.js"],
+      "port": 9100
+    },
+    {
+      "name": "Comprehensive Tests",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/comprehensive-test.js"],
+      "port": 9100
+    },
+    {
+      "name": "POS Simulation",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/pear-pos-test.js"],
+      "port": 9100
+    }
+  ]
+}

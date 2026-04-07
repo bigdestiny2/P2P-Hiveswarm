@@ -449,7 +449,7 @@ curl https://relay.p2phiverelay.xyz/catalog.json
 - **UDP (HyperDHT)** — Default, always on
 - **WebSocket** — Browser peer support via duplex stream adapter
 - **Tor** — SOCKS5 proxy + hidden service for IP privacy and censorship resistance
-- **I2P** — Garlic routing for anonymity (planned)
+- **I2P** — Garlic routing for anonymity (Phase 2 — not yet implemented)
 
 ### Production Ready
 - **Structured logging** — JSON logs via pino, configurable via `HIVERELAY_LOG_LEVEL`

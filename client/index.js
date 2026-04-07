@@ -161,7 +161,8 @@ export class HiveRelayClient extends EventEmitter {
         const registryStore = this.store.namespace('seeding-registry')
         this._registry = new SeedingRegistry(registryStore, this.swarm)
         await this._registry.start()
-      } catch {
+      } catch (err) {
+        this.emit('registry-error', { context: 'registry-start', error: err })
         this._registry = null
       }
     }
@@ -308,8 +309,8 @@ export class HiveRelayClient extends EventEmitter {
     const keyHex = typeof driveKey === 'string' ? driveKey : b4a.toString(driveKey, 'hex')
     const drive = this.drives.get(keyHex)
     if (!drive) return
-    try { await this.swarm.leave(drive.discoveryKey) } catch {}
-    try { await drive.close() } catch {}
+    try { await this.swarm.leave(drive.discoveryKey) } catch (_) {}
+    try { await drive.close() } catch (_) {}
     this.drives.delete(keyHex)
   }
 
@@ -720,7 +721,7 @@ export class HiveRelayClient extends EventEmitter {
           this.relays.delete(pubkey)
           this.reservations.delete(pubkey)
           this.emit('relay-stale', { pubkey })
-          try { relay.conn.destroy() } catch {}
+          try { relay.conn.destroy() } catch (_) {}
         }
       }
     }, HEALTH_CHECK_INTERVAL)
@@ -846,14 +847,14 @@ export class HiveRelayClient extends EventEmitter {
 
     // Close all drives
     for (const [keyHex, drive] of this.drives) {
-      try { await this.swarm.leave(drive.discoveryKey) } catch {}
-      try { await drive.close() } catch {}
+      try { await this.swarm.leave(drive.discoveryKey) } catch (_) {}
+      try { await drive.close() } catch (_) {}
       this.drives.delete(keyHex)
     }
 
     // Leave discovery topic
     if (this._discoveryTopic) {
-      try { await this.swarm.leave(RELAY_DISCOVERY_TOPIC) } catch {}
+      try { await this.swarm.leave(RELAY_DISCOVERY_TOPIC) } catch (_) {}
       this._discoveryTopic = null
     }
 
@@ -863,23 +864,23 @@ export class HiveRelayClient extends EventEmitter {
 
     // Stop registry
     if (this._registry) {
-      try { await this._registry.stop() } catch {}
+      try { await this._registry.stop() } catch (_) {}
       this._registry = null
     }
 
     // Stop and persist bootstrap cache
     if (this._bootstrapCache) {
       this._bootstrapCache.stop()
-      try { await this._bootstrapCache.save() } catch {}
+      try { await this._bootstrapCache.save() } catch (_) {}
       this._bootstrapCache = null
     }
 
     // Only destroy things we created
     if (this._ownsSwarm && this.swarm) {
-      try { await this.swarm.destroy() } catch {}
+      try { await this.swarm.destroy() } catch (_) {}
     }
     if (this._ownsStore && this.store) {
-      try { await this.store.close() } catch {}
+      try { await this.store.close() } catch (_) {}
     }
 
     this._started = false
