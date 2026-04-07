@@ -399,27 +399,52 @@ export class RelayNode extends EventEmitter {
       await drive.ready()
 
       const discoveryKey = drive.discoveryKey
-      this.swarm.join(discoveryKey, { server: true, client: true })
 
-      // Flush DHT, then eagerly pull drive content once peers are found
-      this.swarm.flush().then(async () => {
-        try {
-          // Wait for at least the metadata to arrive from a peer
-          await Promise.race([
-            drive.update({ wait: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
-          ])
-          // Now download all files eagerly so we can serve them via gateway
-          const dl = drive.download('/')
-          await Promise.race([
-            dl.done(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
-          ])
-          this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
-        } catch (err) {
-          this.emit('reseed-error', { appKey: appKeyHex, error: err.message })
+      // Signal that we're looking for peers for this drive's cores
+      // This helps Corestore announce new cores on existing replication sessions
+      const done = drive.findingPeers ? drive.findingPeers() : null
+      this.swarm.join(discoveryKey, { server: true, client: true })
+      this.swarm.flush().then(() => { if (done) done() }).catch(() => { if (done) done() })
+
+      // Eagerly replicate drive content with retry loop
+      // Existing swarm connections may not discover new cores immediately,
+      // so we retry with re-joins until the drive has data
+      const eagerReplicate = async () => {
+        const MAX_RETRIES = 6
+        const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
+
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          try {
+            // Re-join topic to trigger fresh DHT lookups + new connections
+            this.swarm.join(discoveryKey, { server: true, client: true })
+            await this.swarm.flush()
+
+            // Wait for metadata from a peer
+            await Promise.race([
+              drive.update({ wait: true }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
+            ])
+
+            if (drive.version > 0) {
+              // Download all files eagerly
+              const dl = drive.download('/')
+              await Promise.race([
+                dl.done(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
+              ])
+              this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
+              return // success
+            }
+          } catch (_) {}
+
+          // Wait before retry
+          if (attempt < MAX_RETRIES - 1) {
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+          }
         }
-      }).catch(() => {})
+        this.emit('reseed-error', { appKey: appKeyHex, error: 'max retries exceeded' })
+      }
+      eagerReplicate().catch(() => {})
 
       this.seededApps.set(appKeyHex, {
         drive,
