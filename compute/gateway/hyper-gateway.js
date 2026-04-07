@@ -120,8 +120,21 @@ export class HyperGateway extends EventEmitter {
       res.setHeader('X-Hyper-Key', keyHex)
       res.setHeader('X-Served-By', 'hiverelay-gateway')
       res.setHeader('Cache-Control', 'public, max-age=60')
-      res.writeHead(200)
-      res.end(content)
+
+      // Rewrite absolute asset paths in HTML so Vite-built apps resolve
+      // through the gateway. /assets/foo.js → ./assets/foo.js
+      if (contentType.includes('text/html')) {
+        let html = content.toString('utf-8')
+        html = html.replace(/href="\//g, 'href="./')
+          .replace(/src="\//g, 'src="./')
+          .replace(/href='\//g, "href='./")
+          .replace(/src='\//g, "src='./")
+        res.writeHead(200)
+        res.end(Buffer.from(html))
+      } else {
+        res.writeHead(200)
+        res.end(content)
+      }
 
       this.emit('served', { keyHex, filePath, bytes: content.length })
     } catch (err) {
