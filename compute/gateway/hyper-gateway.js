@@ -4,6 +4,10 @@
  * Exposes seeded Hyperdrives over HTTP so mobile clients can fetch
  * content without a full P2P connection (fast-path).
  *
+ * Uses its own dedicated Corestore + Hyperswarm for content replication,
+ * separate from the relay node's protocol swarm. This ensures drive data
+ * replicates reliably regardless of when drives are seeded.
+ *
  * Designed to be mounted on the existing RelayAPI server.
  *
  * Usage:
@@ -12,8 +16,11 @@
  *   // if (path.startsWith('/v1/hyper/')) return gateway.handle(req, res, path)
  */
 
+import Corestore from 'corestore'
+import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
 import { EventEmitter } from 'events'
+import { join } from 'path'
 
 const CONTENT_TYPES = {
   html: 'text/html; charset=utf-8',
@@ -53,15 +60,39 @@ export class HyperGateway extends EventEmitter {
     this._drives = new Map() // keyHex → Hyperdrive
     this._totalRequests = 0
     this._totalBytesServed = 0
+
+    // Dedicated content delivery store + swarm
+    // Separate from the relay node's protocol swarm to ensure
+    // clean drive replication without connection deduplication issues
+    this._store = null
+    this._swarm = null
+    this._ready = false
+  }
+
+  /**
+   * Initialize the gateway's own P2P stack for content delivery.
+   * Called automatically on first request, or can be called explicitly.
+   */
+  async _ensureReady () {
+    if (this._ready) return
+
+    const storagePath = this.node.config
+      ? join(this.node.config.storage || './storage', 'gateway-store')
+      : './gateway-store'
+
+    this._store = new Corestore(storagePath)
+    await this._store.ready()
+
+    this._swarm = new Hyperswarm()
+    this._swarm.on('connection', (conn) => this._store.replicate(conn))
+
+    this._ready = true
+    this.emit('ready')
   }
 
   /**
    * Handle an HTTP request for Hyperdrive content
    * Path format: /v1/hyper/KEY/file/path
-   *
-   * @param {http.IncomingMessage} req
-   * @param {http.ServerResponse} res
-   * @param {string} path — the full URL path
    */
   async handle (req, res) {
     const url = new URL(req.url, 'http://localhost')
@@ -86,13 +117,20 @@ export class HyperGateway extends EventEmitter {
       return
     }
 
+    // Check if this drive is seeded on the relay
+    if (this.node.seededApps && !this.node.seededApps.has(keyHex)) {
+      res.writeHead(404)
+      res.end(JSON.stringify({ error: 'Drive not seeded on this relay' }))
+      return
+    }
+
     this._totalRequests++
 
     try {
       const drive = await this._getDrive(keyHex)
       if (!drive) {
         res.writeHead(404)
-        res.end(JSON.stringify({ error: 'Drive not seeded on this relay' }))
+        res.end(JSON.stringify({ error: 'Drive not available yet — still replicating' }))
         return
       }
 
@@ -107,22 +145,7 @@ export class HyperGateway extends EventEmitter {
         }
       }
 
-      // Ensure latest version is fetched from peers
-      await drive.update().catch(() => {})
-
-      let content = await drive.get(filePath)
-
-      // If content is null, try updating from peers and retry
-      if (!content) {
-        try {
-          await Promise.race([
-            drive.update({ wait: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
-          ])
-          content = await drive.get(filePath)
-        } catch (_) {}
-      }
-
+      const content = await drive.get(filePath)
       if (!content) {
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'File not found', path: filePath }))
@@ -160,31 +183,48 @@ export class HyperGateway extends EventEmitter {
   }
 
   async _getDrive (keyHex) {
-    // Check cache
-    if (this._drives.has(keyHex)) return this._drives.get(keyHex)
+    // Return cached drive if already open and has content
+    if (this._drives.has(keyHex)) {
+      const cached = this._drives.get(keyHex)
+      // Refresh in background for next request
+      cached.update().catch(() => {})
+      return cached
+    }
 
-    // Check if the relay has this drive seeded
-    if (!this.node.store) return null
+    // Initialize our own P2P stack on first use
+    await this._ensureReady()
 
     try {
-      const drive = new Hyperdrive(this.node.store, Buffer.from(keyHex, 'hex'))
+      const drive = new Hyperdrive(this._store, Buffer.from(keyHex, 'hex'))
       await drive.ready()
 
-      // If version is 0, try to fetch latest from peers (with timeout)
+      // Join the drive's discovery key on our dedicated swarm
+      const done = drive.findingPeers()
+      this._swarm.join(drive.discoveryKey, { server: true, client: true })
+      this._swarm.flush().then(done, done)
+
+      // Wait for drive data to arrive from peers
       if (drive.version === 0) {
         try {
           await Promise.race([
             drive.update({ wait: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ])
         } catch (_) {}
       }
 
-      // Still no content after update attempt
+      // Still no content
       if (drive.version === 0) {
         await drive.close()
         return null
       }
+
+      // Eagerly download all files for future requests
+      try {
+        const dl = drive.download('/')
+        // Don't await — let it download in background
+        dl.done().catch(() => {})
+      } catch (_) {}
 
       this._drives.set(keyHex, drive)
       return drive
@@ -224,5 +264,12 @@ export class HyperGateway extends EventEmitter {
       try { await drive.close() } catch (_) {}
     }
     this._drives.clear()
+
+    if (this._swarm) {
+      try { await this._swarm.destroy() } catch (_) {}
+    }
+    if (this._store) {
+      try { await this._store.close() } catch (_) {}
+    }
   }
 }
