@@ -96,11 +96,11 @@ Relay operators can run in **auto-accept mode** (default — accept all matching
 ### For App Developers (SDK)
 
 ```bash
-npm install hiverelay
+npm install p2p-hiverelay
 ```
 
 ```js
-import { HiveRelayClient } from 'hiverelay/client'
+import { HiveRelayClient } from 'p2p-hiverelay/client'
 
 // Create a client (auto-creates Hyperswarm + Corestore)
 const app = new HiveRelayClient('./my-app-storage')
@@ -136,16 +136,16 @@ cd P2P-Hiveswarm
 npm install
 
 # Start a relay node
-npx hiverelay start --region NA --max-storage 50GB
+npx p2p-hiverelay start --region NA --max-storage 50GB
 
 # Start with Tor hidden service (requires Tor daemon)
-npx hiverelay start --tor --region NA
+npx p2p-hiverelay start --tor --region NA
 
 # Check status
-npx hiverelay status
+npx p2p-hiverelay status
 
 # Seed a specific app
-npx hiverelay seed <app-key> --replicas 3
+npx p2p-hiverelay seed <app-key> --replicas 3
 
 # View dashboards
 open http://localhost:9100/dashboard   # Single relay
@@ -158,13 +158,13 @@ Spin up an isolated local network — private DHT, relay nodes, and a test clien
 
 ```bash
 # 3 relay nodes + test client (publishes, seeds, reads back automatically)
-npx hiverelay testnet
+npx p2p-hiverelay testnet
 
 # 5 relay nodes, custom base port
-npx hiverelay testnet --nodes 5 --port 19200
+npx p2p-hiverelay testnet --nodes 5 --port 19200
 
 # Relays only (no test client)
-npx hiverelay testnet --no-client
+npx p2p-hiverelay testnet --no-client
 ```
 
 The testnet creates its own DHT bootstrap nodes, so nothing touches the production network. It prints a ready-to-paste SDK snippet with the local bootstrap addresses. Ctrl+C tears everything down and cleans up storage.

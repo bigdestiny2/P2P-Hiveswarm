@@ -6,11 +6,26 @@
   "main": "core/index.js",
   "exports": {
     ".": "./core/index.js",
-    "./client": "./client/index.js"
+    "./client": "./client/index.js",
+    "./gateway": "./compute/gateway/hyper-gateway.js"
   },
   "bin": {
+    "p2p-hiverelay": "./cli/index.js",
     "hiverelay": "./cli/index.js"
   },
+  "files": [
+    "cli/",
+    "client/",
+    "core/",
+    "compute/",
+    "config/",
+    "incentive/",
+    "transports/",
+    "dashboard/",
+    "scripts/publish-app.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node cli/index.js start",
     "test": "brittle test/**/*.test.js",
