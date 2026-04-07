@@ -94,6 +94,7 @@ export class HiveRelayClient extends EventEmitter {
 
     // Drive management
     this.drives = new Map() // key hex -> Hyperdrive
+    this._appDrives = new Map() // appId string -> key hex (persistent app→drive mapping)
 
     // Seed defaults
     this.autoSeed = config.autoSeed !== false
@@ -178,10 +179,16 @@ export class HiveRelayClient extends EventEmitter {
   // ─── Content API ─────────────────────────────────────────────────
 
   /**
-   * Publish content to a new Hyperdrive and request relay seeding.
+   * Publish content to a Hyperdrive and request relay seeding.
+   *
+   * If opts.appId is provided, reuses an existing drive for that app
+   * (version update) instead of creating a new one. This prevents
+   * duplicate app entries on the relay network.
    *
    * @param {Array<{path: string, content: Buffer|string}>} files - Files to write
    * @param {object} opts
+   * @param {string} opts.appId - Stable app identifier (e.g. 'pear-pos'). Reuses drive if one exists.
+   * @param {string} opts.key - Explicit drive key hex to update (overrides appId lookup)
    * @param {boolean} opts.seed - Request seeding (default: this.autoSeed)
    * @param {number} opts.replicas - Number of relay replicas
    * @param {number} opts.timeout - Seed request timeout in ms
@@ -190,9 +197,36 @@ export class HiveRelayClient extends EventEmitter {
   async publish (files, opts = {}) {
     this._ensureStarted()
 
-    const drive = new Hyperdrive(this.store)
+    let drive
+    let isUpdate = false
+
+    // Priority 1: explicit key (resume publishing to a known drive)
+    if (opts.key) {
+      const keyBuf = typeof opts.key === 'string' ? b4a.from(opts.key, 'hex') : opts.key
+      drive = new Hyperdrive(this.store, keyBuf)
+      isUpdate = true
+    // Priority 2: appId lookup (reuse drive for same app)
+    } else if (opts.appId && this._appDrives.has(opts.appId)) {
+      const existingKey = this._appDrives.get(opts.appId)
+      drive = new Hyperdrive(this.store, b4a.from(existingKey, 'hex'))
+      isUpdate = true
+    // Priority 3: check persisted app→drive mapping from storage
+    } else if (opts.appId && this._storagePath) {
+      const savedKey = await this._loadAppDriveMapping(opts.appId)
+      if (savedKey) {
+        drive = new Hyperdrive(this.store, b4a.from(savedKey, 'hex'))
+        isUpdate = true
+      }
+    }
+
+    // No existing drive found — create new
+    if (!drive) {
+      drive = new Hyperdrive(this.store)
+    }
+
     await drive.ready()
 
+    // Write all files to the drive
     for (const file of files) {
       const content = typeof file.content === 'string'
         ? b4a.from(file.content)
@@ -207,6 +241,12 @@ export class HiveRelayClient extends EventEmitter {
     const keyHex = b4a.toString(drive.key, 'hex')
     this.drives.set(keyHex, drive)
 
+    // Persist the appId→driveKey mapping for future publishes
+    if (opts.appId) {
+      this._appDrives.set(opts.appId, keyHex)
+      this._saveAppDriveMapping(opts.appId, keyHex).catch(() => {})
+    }
+
     const shouldSeed = opts.seed !== undefined ? opts.seed : this.autoSeed
     if (shouldSeed) {
       const replicas = opts.replicas || this.seedReplicas
@@ -219,7 +259,7 @@ export class HiveRelayClient extends EventEmitter {
       }
     }
 
-    this.emit('published', { key: keyHex, files: files.length })
+    this.emit('published', { key: keyHex, files: files.length, isUpdate })
     return drive
   }
 
@@ -823,6 +863,35 @@ export class HiveRelayClient extends EventEmitter {
   _ensureStarted () {
     if (!this._started) throw new Error('Client not started — call await app.start() first')
     if (!this.store) throw new Error('No store available — pass a storage path or { store } option')
+  }
+
+  // ─── App→Drive Mapping Persistence ──────────────────────────────
+
+  async _loadAppDriveMapping (appId) {
+    if (!this._storagePath) return null
+    try {
+      const { readFile } = await import('fs/promises')
+      const { join } = await import('path')
+      const mapPath = join(this._storagePath, 'app-drives.json')
+      const data = JSON.parse(await readFile(mapPath, 'utf8'))
+      return data[appId] || null
+    } catch (_) {
+      return null
+    }
+  }
+
+  async _saveAppDriveMapping (appId, keyHex) {
+    if (!this._storagePath) return
+    try {
+      const { readFile, writeFile, mkdir } = await import('fs/promises')
+      const { join } = await import('path')
+      await mkdir(this._storagePath, { recursive: true })
+      const mapPath = join(this._storagePath, 'app-drives.json')
+      let data = {}
+      try { data = JSON.parse(await readFile(mapPath, 'utf8')) } catch (_) {}
+      data[appId] = keyHex
+      await writeFile(mapPath, JSON.stringify(data, null, 2))
+    } catch (_) {}
   }
 
   /**

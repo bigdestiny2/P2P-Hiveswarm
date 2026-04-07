@@ -71,7 +71,8 @@ export class RelayNode extends EventEmitter {
     this.torTransport = null
     this.paymentManager = null
     this.settlementInterval = null
-    this.seededApps = new Map() // appKey hex -> { drive, discovery keys }
+    this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version }
+    this.appIndex = new Map() // appId string -> appKey hex (deduplication index)
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -339,7 +340,12 @@ export class RelayNode extends EventEmitter {
     const logPath = join(this.config.storage, 'seeded-apps.json')
     const entries = []
     for (const [appKey, entry] of this.seededApps) {
-      entries.push({ appKey, startedAt: entry.startedAt })
+      entries.push({
+        appKey,
+        startedAt: entry.startedAt,
+        appId: entry.appId || null,
+        version: entry.version || null
+      })
     }
     try {
       await writeFile(logPath, JSON.stringify(entries, null, 2))
@@ -355,7 +361,14 @@ export class RelayNode extends EventEmitter {
     for (const entry of saved) {
       if (this.seededApps.has(entry.appKey)) continue
       try {
-        await this.seedApp(entry.appKey)
+        await this.seedApp(entry.appKey, {
+          appId: entry.appId || null,
+          version: entry.version || null
+        })
+        // Rebuild appIndex from saved metadata
+        if (entry.appId) {
+          this.appIndex.set(entry.appId, entry.appKey)
+        }
         this.emit('reseeded', { appKey: entry.appKey })
       } catch (err) {
         this.emit('reseed-error', { appKey: entry.appKey, error: err })
@@ -366,6 +379,12 @@ export class RelayNode extends EventEmitter {
   async seedApp (appKeyHex, opts = {}) {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
+
+    // Already seeding this exact key — no-op
+    if (this.seededApps.has(appKeyHex)) {
+      const existing = this.seededApps.get(appKeyHex)
+      return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
+    }
 
     // Evict oldest app if storage capacity would be exceeded
     if (this.config.enableEviction !== false && this.seeder.totalBytesStored >= this.config.maxStorageBytes && this.seededApps.size > 0) {
@@ -401,43 +420,40 @@ export class RelayNode extends EventEmitter {
       const discoveryKey = drive.discoveryKey
 
       // Signal that we're looking for peers for this drive's cores
-      // This helps Corestore announce new cores on existing replication sessions
       const done = drive.findingPeers ? drive.findingPeers() : null
       this.swarm.join(discoveryKey, { server: true, client: true })
       this.swarm.flush().then(() => { if (done) done() }).catch(() => { if (done) done() })
 
       // Eagerly replicate drive content with retry loop
-      // Existing swarm connections may not discover new cores immediately,
-      // so we retry with re-joins until the drive has data
       const eagerReplicate = async () => {
         const MAX_RETRIES = 6
         const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
           try {
-            // Re-join topic to trigger fresh DHT lookups + new connections
             this.swarm.join(discoveryKey, { server: true, client: true })
             await this.swarm.flush()
 
-            // Wait for metadata from a peer
             await Promise.race([
               drive.update({ wait: true }),
               new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
             ])
 
             if (drive.version > 0) {
-              // Download all files eagerly
               const dl = drive.download('/')
               await Promise.race([
                 dl.done(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
               ])
+
+              // After content is downloaded, read manifest and deduplicate
+              await this._indexAppManifest(appKeyHex, drive)
+
               this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
-              return // success
+              return
             }
           } catch (_) {}
 
-          // Wait before retry
           if (attempt < MAX_RETRIES - 1) {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
           }
@@ -450,7 +466,9 @@ export class RelayNode extends EventEmitter {
         drive,
         discoveryKey,
         startedAt: Date.now(),
-        bytesServed: 0
+        bytesServed: 0,
+        appId: opts.appId || null,
+        version: opts.version || null
       })
 
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
@@ -462,9 +480,97 @@ export class RelayNode extends EventEmitter {
     }
   }
 
+  /**
+   * Read manifest.json from a drive and deduplicate by appId.
+   * If an older version of the same app is already seeded, unseed it.
+   */
+  async _indexAppManifest (appKeyHex, drive) {
+    try {
+      const manifestBuf = await Promise.race([
+        drive.get('/manifest.json'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('manifest timeout')), 5000))
+      ])
+      if (!manifestBuf) return
+
+      const manifest = JSON.parse(manifestBuf.toString())
+      const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : null)
+      if (!appId) return
+
+      const version = manifest.version || '0.0.0'
+
+      // Update this entry's metadata
+      const entry = this.seededApps.get(appKeyHex)
+      if (entry) {
+        entry.appId = appId
+        entry.version = version
+      }
+
+      // Check if we already have a different drive for the same appId
+      const existingKey = this.appIndex.get(appId)
+      if (existingKey && existingKey !== appKeyHex) {
+        const existingEntry = this.seededApps.get(existingKey)
+        const existingVersion = existingEntry?.version || '0.0.0'
+
+        // Only replace if new version is >= existing
+        if (this._compareVersions(version, existingVersion) >= 0) {
+          this.emit('app-replaced', {
+            appId,
+            oldKey: existingKey,
+            oldVersion: existingVersion,
+            newKey: appKeyHex,
+            newVersion: version
+          })
+
+          // Unseed the old version
+          await this.unseedApp(existingKey)
+        } else {
+          // Old version is newer — unseed the one we just added
+          this.emit('app-version-rejected', {
+            appId,
+            rejectedKey: appKeyHex,
+            rejectedVersion: version,
+            currentKey: existingKey,
+            currentVersion: existingVersion
+          })
+          await this.unseedApp(appKeyHex)
+          return
+        }
+      }
+
+      // Update the appId → key index
+      this.appIndex.set(appId, appKeyHex)
+      this._saveSeededAppsLog().catch(() => {})
+    } catch (_) {
+      // No manifest or parse error — skip deduplication silently
+    }
+  }
+
+  /**
+   * Compare semver-like version strings. Returns:
+   *   1  if a > b
+   *   0  if a == b
+   *  -1  if a < b
+   */
+  _compareVersions (a, b) {
+    const pa = (a || '0.0.0').split('.').map(Number)
+    const pb = (b || '0.0.0').split('.').map(Number)
+    for (let i = 0; i < 3; i++) {
+      const na = pa[i] || 0
+      const nb = pb[i] || 0
+      if (na > nb) return 1
+      if (na < nb) return -1
+    }
+    return 0
+  }
+
   async unseedApp (appKeyHex) {
     const entry = this.seededApps.get(appKeyHex)
     if (!entry) return
+
+    // Clean up the appId → key index
+    if (entry.appId && this.appIndex.get(entry.appId) === appKeyHex) {
+      this.appIndex.delete(entry.appId)
+    }
 
     try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
     try { await entry.drive.close() } catch (_) {}

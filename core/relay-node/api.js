@@ -144,10 +144,11 @@ export class RelayAPI extends EventEmitter {
 
       // Catalog endpoint — lists all seeded drives as an app catalog
       // PearBrowser can use this as a catalog source
-      // Only includes drives that have synced and contain a manifest.json
+      // Deduplicated by appId — only shows the latest version of each app
       if (req.method === 'GET' && path === '/catalog.json') {
-        const apps = []
-        for (const [appKey] of this.node.seededApps) {
+        const appMap = new Map() // appId → catalog entry (deduplication)
+
+        for (const [appKey, entry] of this.node.seededApps) {
           try {
             // Use a timeout — skip drives that haven't synced yet
             const driveResult = await Promise.race([
@@ -163,24 +164,36 @@ export class RelayAPI extends EventEmitter {
             if (!manifestBuf) continue
 
             const manifest = JSON.parse(manifestBuf.toString())
-            apps.push({
-              id: manifest.name ? manifest.name.toLowerCase().replace(/\s+/g, '-') : appKey.slice(0, 12),
+            const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : appKey.slice(0, 12))
+            const version = manifest.version || '1.0.0'
+
+            const catalogEntry = {
+              id: appId,
               name: manifest.name || 'Unknown App',
               description: manifest.description || '',
               author: manifest.author || 'anonymous',
-              version: manifest.version || '1.0.0',
+              version,
               driveKey: appKey,
-              categories: manifest.categories || ['uncategorized']
-            })
+              categories: manifest.categories || ['uncategorized'],
+              publishedAt: manifest.publishedAt || null,
+              seededAt: entry.startedAt
+            }
+
+            // Deduplicate: keep only the latest version per appId
+            const existing = appMap.get(appId)
+            if (!existing || this._compareVersions(version, existing.version) > 0) {
+              appMap.set(appId, catalogEntry)
+            }
           } catch {}
         }
+
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Access-Control-Allow-Origin', '*')
         return this._json(res, {
           version: 1,
           name: 'HiveRelay App Catalog',
           relayKey: this.node.swarm ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex') : null,
-          apps
+          apps: Array.from(appMap.values())
         })
       }
 
@@ -331,6 +344,8 @@ export class RelayAPI extends EventEmitter {
           for (const [appKey, entry] of this.node.seededApps) {
             apps.push({
               appKey,
+              appId: entry.appId || null,
+              version: entry.version || null,
               discoveryKey: entry.discoveryKey ? Buffer.from(entry.discoveryKey).toString('hex') : null,
               startedAt: entry.startedAt,
               bytesServed: entry.bytesServed || 0,
@@ -420,7 +435,11 @@ export class RelayAPI extends EventEmitter {
         if (path === '/seed') {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
-          const result = await this.node.seedApp(body.appKey, body.opts || {})
+          const seedOpts = body.opts || {}
+          // Forward appId from request body for deduplication
+          if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
+          if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          const result = await this.node.seedApp(body.appKey, seedOpts)
           return this._json(res, { ok: true, ...result })
         }
 
@@ -515,6 +534,18 @@ export class RelayAPI extends EventEmitter {
     if (!requestOrigin) return null
     if (allowed.includes(requestOrigin)) return requestOrigin
     return null
+  }
+
+  _compareVersions (a, b) {
+    const pa = (a || '0.0.0').split('.').map(Number)
+    const pb = (b || '0.0.0').split('.').map(Number)
+    for (let i = 0; i < 3; i++) {
+      const na = pa[i] || 0
+      const nb = pb[i] || 0
+      if (na > nb) return 1
+      if (na < nb) return -1
+    }
+    return 0
   }
 
   _json (res, data, status = 200) {
