@@ -15,6 +15,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
 import { DashboardFeed } from './ws-feed.js'
+import { HyperGateway } from '../../compute/gateway/hyper-gateway.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -36,7 +37,9 @@ export class RelayAPI extends EventEmitter {
     this._rateLimitCleanup = null
     this._dashboardHtml = null
     this._networkHtml = null
+    this._docsHtml = null
     this._dashboardFeed = null
+    this._gateway = new HyperGateway(relayNode)
   }
 
   async start () {
@@ -101,6 +104,16 @@ export class RelayAPI extends EventEmitter {
     res.setHeader('Content-Type', 'application/json')
 
     try {
+      // Hyper Gateway — serve Hyperdrive content over HTTP
+      if (path.startsWith('/v1/hyper/')) {
+        return this._gateway.handle(req, res)
+      }
+
+      // Gateway stats endpoint
+      if (req.method === 'GET' && path === '/api/gateway') {
+        return this._json(res, this._gateway.getStats())
+      }
+
       // GET routes
       if (req.method === 'GET') {
         if (path === '/health') {
@@ -226,7 +239,8 @@ export class RelayAPI extends EventEmitter {
             registry: this.node.seedingRegistry ? {
               running: this.node.seedingRegistry.running,
               autoAccept: this.node.config.registryAutoAccept !== false
-            } : null
+            } : null,
+            gateway: this._gateway ? this._gateway.getStats() : null
           })
         }
 
@@ -432,6 +446,10 @@ export class RelayAPI extends EventEmitter {
     if (this._dashboardFeed) {
       this._dashboardFeed.stop()
       this._dashboardFeed = null
+    }
+
+    if (this._gateway) {
+      await this._gateway.close()
     }
 
     if (this._rateLimitCleanup) {
