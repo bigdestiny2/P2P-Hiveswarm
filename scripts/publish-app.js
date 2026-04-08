@@ -119,6 +119,19 @@ async function walkDir (dir, base) {
   return files
 }
 
+async function resolveFromRelay (relays, appId) {
+  for (const url of relays) {
+    try {
+      const res = await fetch(url + '/api/resolve/' + encodeURIComponent(appId), { signal: AbortSignal.timeout(5000) })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.driveKey) return data.driveKey
+      }
+    } catch (_) {}
+  }
+  return null
+}
+
 async function seedOnRelay (relayUrl, appKey, appId, version) {
   try {
     const body = { appKey }
@@ -130,7 +143,13 @@ async function seedOnRelay (relayUrl, appKey, appId, version) {
       body: JSON.stringify(body)
     })
     const data = await res.json()
-    return { url: relayUrl, ok: data.ok || false, replaced: data.alreadySeeded ? 'same-key' : null, error: data.error || null }
+    return {
+      url: relayUrl,
+      ok: data.ok || false,
+      replaced: data.alreadySeeded ? 'same-key' : null,
+      canonicalKey: data.canonicalKey || null,
+      error: data.error || null
+    }
   } catch (err) {
     return { url: relayUrl, ok: false, error: err.message }
   }
@@ -202,6 +221,19 @@ async function run () {
       console.log('  Found existing drive for "' + appId + '": ' + driveMap[appId].slice(0, 16) + '...')
       drive = new Hyperdrive(store, Buffer.from(driveMap[appId], 'hex'))
       isUpdate = true
+    } else {
+      // No local mapping — check relay registry (handles publisher storage loss)
+      const resolvedKey = await resolveFromRelay(opts.relays, appId)
+      if (resolvedKey) {
+        console.log('  Relay registry has key for "' + appId + '": ' + resolvedKey.slice(0, 16) + '...')
+        console.log('  (recovered from relay — publisher storage was likely lost)')
+        drive = new Hyperdrive(store, Buffer.from(resolvedKey, 'hex'))
+        isUpdate = true
+        // Save locally so we don't need relay lookup next time
+        const map = await loadDriveMap(opts.storage)
+        map[appId] = resolvedKey
+        await saveDriveMap(opts.storage, map)
+      }
     }
   }
 
@@ -286,6 +318,7 @@ async function run () {
   for (const result of seedResults) {
     let status = result.ok ? 'OK' : 'FAIL: ' + result.error
     if (result.replaced) status += ' (already seeded)'
+    if (result.canonicalKey) status += ' [canonical: ' + result.canonicalKey.slice(0, 16) + '...]'
     console.log('    ' + result.url + ' — ' + status)
     if (result.ok) seeded++
   }

@@ -233,6 +233,33 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { count: peers.length, peers })
         }
 
+        // Resolve appId → driveKey (for PearBrowser and publishers that lost storage)
+        if (path.startsWith('/api/resolve/')) {
+          const appId = decodeURIComponent(path.slice('/api/resolve/'.length))
+          if (!appId) return this._json(res, { error: 'appId required' }, 400)
+
+          const entry = this.node.resolveApp(appId)
+          if (!entry) {
+            return this._json(res, { error: 'App not found', appId }, 404)
+          }
+          return this._json(res, {
+            appId,
+            driveKey: entry.driveKey,
+            version: entry.version,
+            name: entry.name,
+            updatedAt: entry.updatedAt
+          })
+        }
+
+        // List all registered apps (registry overview)
+        if (path === '/api/registry') {
+          const apps = []
+          for (const [appId, entry] of this.node.appRegistry) {
+            apps.push({ appId, ...entry })
+          }
+          return this._json(res, { count: apps.length, apps })
+        }
+
         // --- Dashboard endpoints ---
 
         if (path === '/dashboard') {

@@ -73,6 +73,7 @@ export class RelayNode extends EventEmitter {
     this.settlementInterval = null
     this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version }
     this.appIndex = new Map() // appId string -> appKey hex (deduplication index)
+    this.appRegistry = new Map() // appId string -> driveKey hex (persistent, survives storage loss)
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -283,6 +284,9 @@ export class RelayNode extends EventEmitter {
         }
       }
 
+      // Load persistent app registry (appId → driveKey mapping)
+      await this._loadAppRegistry()
+
       // Re-seed apps from persistent log (survives restarts)
       this._reseedFromLog().catch((err) => {
         this.emit('reseed-error', { error: err })
@@ -324,6 +328,41 @@ export class RelayNode extends EventEmitter {
     }
 
     return this
+  }
+
+  // ─── Persistent app registry (appId → driveKey, survives publisher storage loss) ───
+
+  async _loadAppRegistry () {
+    const regPath = join(this.config.storage, 'app-registry.json')
+    try {
+      const data = JSON.parse(await readFile(regPath, 'utf8'))
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        for (const [appId, entry] of Object.entries(data)) {
+          this.appRegistry.set(appId, entry)
+        }
+      }
+    } catch (_) {}
+  }
+
+  async _saveAppRegistry () {
+    const regPath = join(this.config.storage, 'app-registry.json')
+    const obj = {}
+    for (const [appId, entry] of this.appRegistry) {
+      obj[appId] = entry
+    }
+    try {
+      await writeFile(regPath, JSON.stringify(obj, null, 2))
+    } catch (err) {
+      this.emit('error', { context: 'app-registry-save', error: err })
+    }
+  }
+
+  /**
+   * Resolve an appId to its canonical driveKey.
+   * Returns { driveKey, version, name } or null if unknown.
+   */
+  resolveApp (appId) {
+    return this.appRegistry.get(appId) || null
   }
 
   async _loadSeededAppsLog () {
@@ -379,6 +418,26 @@ export class RelayNode extends EventEmitter {
   async seedApp (appKeyHex, opts = {}) {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
+
+    // If publisher provides an appId, check if we already have a canonical key for it.
+    // This handles the case where publisher lost storage and created a new drive key —
+    // the relay knows the real key and tells the publisher to use it instead.
+    if (opts.appId && this.appRegistry.has(opts.appId)) {
+      const registered = this.appRegistry.get(opts.appId)
+      if (registered.driveKey !== appKeyHex) {
+        // Return the canonical key so publisher can switch to it
+        const canonical = registered.driveKey
+        if (this.seededApps.has(canonical)) {
+          const existing = this.seededApps.get(canonical)
+          return {
+            discoveryKey: b4a.toString(existing.discoveryKey, 'hex'),
+            alreadySeeded: true,
+            canonicalKey: canonical,
+            message: `App "${opts.appId}" already registered with key ${canonical.slice(0, 12)}... — use this key instead`
+          }
+        }
+      }
+    }
 
     // Already seeding this exact key — no-op
     if (this.seededApps.has(appKeyHex)) {
@@ -539,6 +598,15 @@ export class RelayNode extends EventEmitter {
 
       // Update the appId → key index
       this.appIndex.set(appId, appKeyHex)
+
+      // Persist to app registry (survives publisher storage loss)
+      this.appRegistry.set(appId, {
+        driveKey: appKeyHex,
+        version,
+        name: manifest.name || appId,
+        updatedAt: Date.now()
+      })
+      this._saveAppRegistry().catch(() => {})
       this._saveSeededAppsLog().catch(() => {})
     } catch (_) {
       // No manifest or parse error — skip deduplication silently
