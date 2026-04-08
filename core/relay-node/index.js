@@ -475,9 +475,54 @@ export class RelayNode extends EventEmitter {
     const isBlind = opts.blind === true
     const appKey = b4a.from(appKeyHex, 'hex')
 
-    // For blind apps, the relay does NOT have the encryption key.
-    // It replicates encrypted ciphertext blocks and serves them over P2P,
-    // but cannot read the content. No HTTP gateway access for blind apps.
+    // ─── Blind mode: replicate raw Hypercores without interpreting content ───
+    // The relay does NOT have the encryption key. It joins the DHT topic,
+    // replicates encrypted blocks, and serves them over P2P only.
+    // It CANNOT open the data as a Hyperdrive (would get DECODING_ERROR).
+    if (isBlind) {
+      // Open raw Hypercore by key — this is the drive's metadata core
+      const core = this.store.get({ key: appKey })
+      await core.ready()
+
+      // Compute discovery key from the core key
+      const discoveryKey = core.discoveryKey
+
+      // Join the topic as server+client to replicate encrypted blocks
+      this.swarm.join(discoveryKey, { server: true, client: true })
+      this.swarm.flush().catch(() => {})
+
+      // Download all blocks in background (they're ciphertext to us)
+      core.download({ start: 0, end: -1 }).catch(() => {})
+
+      this.seededApps.set(appKeyHex, {
+        drive: null, // no Hyperdrive for blind apps
+        core,
+        discoveryKey,
+        startedAt: Date.now(),
+        bytesServed: 0,
+        appId: opts.appId || null,
+        version: opts.version || null,
+        blind: true
+      })
+
+      if (opts.appId) {
+        this.appRegistry.set(opts.appId, {
+          driveKey: appKeyHex,
+          version: opts.version || null,
+          name: opts.appId,
+          blind: true,
+          updatedAt: Date.now()
+        })
+        this.appIndex.set(opts.appId, appKeyHex)
+        this._saveAppRegistry().catch(() => {})
+      }
+
+      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: true })
+      this._saveSeededAppsLog().catch(() => {})
+      return { discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: true }
+    }
+
+    // ─── Public mode: full Hyperdrive replication + HTTP gateway serving ───
     const drive = new Hyperdrive(this.store, appKey)
 
     try {
@@ -512,13 +557,9 @@ export class RelayNode extends EventEmitter {
                 new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
               ])
 
-              // Blind apps: relay has ciphertext, skip manifest indexing (can't read it)
-              // Public apps: read manifest and deduplicate
-              if (!isBlind) {
-                await this._indexAppManifest(appKeyHex, drive)
-              }
+              await this._indexAppManifest(appKeyHex, drive)
 
-              this.emit('reseeded', { appKey: appKeyHex, version: drive.version, blind: isBlind })
+              this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
               return
             }
           } catch (_) {}
@@ -538,25 +579,12 @@ export class RelayNode extends EventEmitter {
         bytesServed: 0,
         appId: opts.appId || null,
         version: opts.version || null,
-        blind: isBlind
+        blind: false
       })
 
-      // For blind apps with appId, register them so resolve works (without content data)
-      if (isBlind && opts.appId) {
-        this.appRegistry.set(opts.appId, {
-          driveKey: appKeyHex,
-          version: opts.version || null,
-          name: opts.appId,
-          blind: true,
-          updatedAt: Date.now()
-        })
-        this.appIndex.set(opts.appId, appKeyHex)
-        this._saveAppRegistry().catch(() => {})
-      }
-
-      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: isBlind })
+      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
       this._saveSeededAppsLog().catch(() => {})
-      return { discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: isBlind }
+      return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
       try { await drive.close() } catch (_) {}
       throw err
@@ -667,7 +695,8 @@ export class RelayNode extends EventEmitter {
     }
 
     try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
-    try { await entry.drive.close() } catch (_) {}
+    if (entry.drive) { try { await entry.drive.close() } catch (_) {} }
+    if (entry.core) { try { await entry.core.close() } catch (_) {} }
     this.seededApps.delete(appKeyHex)
     this._saveSeededAppsLog().catch(() => {})
 
