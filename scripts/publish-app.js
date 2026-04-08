@@ -73,6 +73,7 @@ function parseArgs (argv) {
     if (arg === '--storage') { opts.storage = args[++i]; continue }
     if (arg === '--key') { opts.key = args[++i]; continue }
     if (arg === '--blind') { opts.blind = true; continue }
+    if (arg === '--encryption-key') { opts.encryptionKey = args[++i]; continue }
     if (arg === '--no-stay') { opts.stay = false; continue }
     if (!arg.startsWith('-') && !opts.directory) { opts.directory = arg; continue }
   }
@@ -194,6 +195,7 @@ async function run () {
     console.error('  --storage <path>     Publisher storage path')
     console.error('  --key <hex>          Explicit drive key')
     console.error('  --blind              Encrypt content (relay can\'t read, P2P only)')
+    console.error('  --encryption-key <h> Use explicit encryption key (hex, for recovery)')
     console.error('  --no-stay            Exit after publishing')
     process.exit(1)
   }
@@ -232,11 +234,16 @@ async function run () {
   const swarm = new Hyperswarm()
   swarm.on('connection', (conn) => store.replicate(conn))
 
-  // For blind mode: load or generate encryption key
+  // For blind mode: use explicit key, load saved key, or generate new one
   let encryptionKey = null
   if (opts.blind) {
-    encryptionKey = await loadOrCreateEncryptionKey(opts.storage, appId)
-    console.log('  Encryption key: ' + b4a.toString(encryptionKey, 'hex').slice(0, 16) + '...')
+    if (opts.encryptionKey) {
+      encryptionKey = b4a.from(opts.encryptionKey, 'hex')
+      console.log('  Encryption key: ' + opts.encryptionKey.slice(0, 16) + '... (provided)')
+    } else {
+      encryptionKey = await loadOrCreateEncryptionKey(opts.storage, appId)
+      console.log('  Encryption key: ' + b4a.toString(encryptionKey, 'hex').slice(0, 16) + '... (from storage)')
+    }
     console.log('  (share this key with authorized peers for decryption)')
     console.log()
   }
@@ -262,16 +269,23 @@ async function run () {
       isUpdate = true
     } else {
       // No local mapping — check relay registry (handles publisher storage loss)
-      const resolvedKey = await resolveFromRelay(opts.relays, appId)
-      if (resolvedKey) {
-        console.log('  Relay registry has key for "' + appId + '": ' + resolvedKey.slice(0, 16) + '...')
-        console.log('  (recovered from relay — publisher storage was likely lost)')
-        drive = new Hyperdrive(store, Buffer.from(resolvedKey, 'hex'), driveOpts)
-        isUpdate = true
-        // Save locally so we don't need relay lookup next time
-        const map = await loadDriveMap(opts.storage)
-        map[appId] = resolvedKey
-        await saveDriveMap(opts.storage, map)
+      // Skip relay recovery for blind apps unless --encryption-key was explicitly provided
+      // (a new publisher instance generates a different encryption key, can't write to old drive)
+      const canRecover = !opts.blind || opts.encryptionKey
+      if (canRecover) {
+        const resolvedKey = await resolveFromRelay(opts.relays, appId)
+        if (resolvedKey) {
+          console.log('  Relay registry has key for "' + appId + '": ' + resolvedKey.slice(0, 16) + '...')
+          console.log('  (recovered from relay — publisher storage was likely lost)')
+          drive = new Hyperdrive(store, Buffer.from(resolvedKey, 'hex'), driveOpts)
+          isUpdate = true
+          // Save locally so we don't need relay lookup next time
+          const map = await loadDriveMap(opts.storage)
+          map[appId] = resolvedKey
+          await saveDriveMap(opts.storage, map)
+        }
+      } else if (opts.blind) {
+        console.log('  Blind mode: creating new drive (use --encryption-key to recover existing)')
       }
     }
   }
