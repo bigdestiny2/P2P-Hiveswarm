@@ -17,6 +17,7 @@
  *   --relays <urls>      Comma-separated relay API URLs to seed on
  *   --storage <path>     Corestore path (default: .publisher-storage)
  *   --key <hex>          Explicit drive key (overrides appId lookup)
+ *   --blind              Encrypt content (relay can't read it, P2P only)
  *   --no-stay            Exit after publishing (don't stay online)
  *
  * Examples:
@@ -58,6 +59,7 @@ function parseArgs (argv) {
     relays: DEFAULT_RELAYS,
     storage: '.publisher-storage',
     key: null,
+    blind: false,
     stay: true
   }
 
@@ -70,6 +72,7 @@ function parseArgs (argv) {
     if (arg === '--relays') { opts.relays = args[++i].split(',').map(s => s.trim()); continue }
     if (arg === '--storage') { opts.storage = args[++i]; continue }
     if (arg === '--key') { opts.key = args[++i]; continue }
+    if (arg === '--blind') { opts.blind = true; continue }
     if (arg === '--no-stay') { opts.stay = false; continue }
     if (!arg.startsWith('-') && !opts.directory) { opts.directory = arg; continue }
   }
@@ -119,6 +122,27 @@ async function walkDir (dir, base) {
   return files
 }
 
+async function loadOrCreateEncryptionKey (storagePath, appId) {
+  await mkdir(storagePath, { recursive: true })
+  const keyFile = join(storagePath, 'encryption-keys.json')
+  let keys = {}
+  try {
+    keys = JSON.parse(await readFile(keyFile, 'utf8'))
+  } catch (_) {}
+
+  const id = appId || '_default'
+  if (keys[id]) {
+    return b4a.from(keys[id], 'hex')
+  }
+
+  // Generate new 32-byte encryption key
+  const key = b4a.alloc(32)
+  sodium.randombytes_buf(key)
+  keys[id] = b4a.toString(key, 'hex')
+  await writeFile(keyFile, JSON.stringify(keys, null, 2))
+  return key
+}
+
 async function resolveFromRelay (relays, appId) {
   for (const url of relays) {
     try {
@@ -132,11 +156,12 @@ async function resolveFromRelay (relays, appId) {
   return null
 }
 
-async function seedOnRelay (relayUrl, appKey, appId, version) {
+async function seedOnRelay (relayUrl, appKey, appId, version, blind) {
   try {
     const body = { appKey }
     if (appId) body.appId = appId
     if (version) body.version = version
+    if (blind) body.blind = true
     const res = await fetch(relayUrl + '/seed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -168,6 +193,7 @@ async function run () {
     console.error('  --version <version>  App version (default: 1.0.0)')
     console.error('  --storage <path>     Publisher storage path')
     console.error('  --key <hex>          Explicit drive key')
+    console.error('  --blind              Encrypt content (relay can\'t read, P2P only)')
     console.error('  --no-stay            Exit after publishing')
     process.exit(1)
   }
@@ -188,6 +214,7 @@ async function run () {
   console.log('  Relays:   ', opts.relays.length)
   if (appId) console.log('  App ID:   ', appId)
   if (opts.version !== '1.0.0') console.log('  Version:  ', opts.version)
+  if (opts.blind) console.log('  Mode:      BLIND (encrypted, P2P only)')
   console.log()
 
   // Scan files
@@ -205,6 +232,18 @@ async function run () {
   const swarm = new Hyperswarm()
   swarm.on('connection', (conn) => store.replicate(conn))
 
+  // For blind mode: load or generate encryption key
+  let encryptionKey = null
+  if (opts.blind) {
+    encryptionKey = await loadOrCreateEncryptionKey(opts.storage, appId)
+    console.log('  Encryption key: ' + b4a.toString(encryptionKey, 'hex').slice(0, 16) + '...')
+    console.log('  (share this key with authorized peers for decryption)')
+    console.log()
+  }
+
+  // Hyperdrive constructor options (with optional encryption)
+  const driveOpts = encryptionKey ? { encryptionKey } : {}
+
   // Resolve drive key: explicit --key > saved mapping > new drive
   let drive
   let isUpdate = false
@@ -212,14 +251,14 @@ async function run () {
   if (opts.key) {
     // Explicit key
     console.log('  Reopening drive:', opts.key.slice(0, 16) + '...')
-    drive = new Hyperdrive(store, Buffer.from(opts.key, 'hex'))
+    drive = new Hyperdrive(store, Buffer.from(opts.key, 'hex'), driveOpts)
     isUpdate = true
   } else if (appId) {
     // Check saved appId → key mapping
     const driveMap = await loadDriveMap(opts.storage)
     if (driveMap[appId]) {
       console.log('  Found existing drive for "' + appId + '": ' + driveMap[appId].slice(0, 16) + '...')
-      drive = new Hyperdrive(store, Buffer.from(driveMap[appId], 'hex'))
+      drive = new Hyperdrive(store, Buffer.from(driveMap[appId], 'hex'), driveOpts)
       isUpdate = true
     } else {
       // No local mapping — check relay registry (handles publisher storage loss)
@@ -227,7 +266,7 @@ async function run () {
       if (resolvedKey) {
         console.log('  Relay registry has key for "' + appId + '": ' + resolvedKey.slice(0, 16) + '...')
         console.log('  (recovered from relay — publisher storage was likely lost)')
-        drive = new Hyperdrive(store, Buffer.from(resolvedKey, 'hex'))
+        drive = new Hyperdrive(store, Buffer.from(resolvedKey, 'hex'), driveOpts)
         isUpdate = true
         // Save locally so we don't need relay lookup next time
         const map = await loadDriveMap(opts.storage)
@@ -239,7 +278,7 @@ async function run () {
 
   if (!drive) {
     console.log('  Creating new Hyperdrive...')
-    drive = new Hyperdrive(store)
+    drive = new Hyperdrive(store, null, driveOpts)
   }
 
   await drive.ready()
@@ -311,7 +350,7 @@ async function run () {
   // Seed on relays (pass appId + version for deduplication)
   console.log('  Seeding on relays...')
   const seedResults = await Promise.all(
-    opts.relays.map(url => seedOnRelay(url, driveKey, manifest.id, manifest.version))
+    opts.relays.map(url => seedOnRelay(url, driveKey, manifest.id, manifest.version, opts.blind))
   )
 
   let seeded = 0
@@ -326,17 +365,34 @@ async function run () {
   console.log('  Seeded on', seeded + '/' + opts.relays.length, 'relays')
   console.log()
 
-  // Print access URLs
-  console.log('  === Access URLs ===')
-  console.log()
-  for (const url of opts.relays) {
-    console.log('    ' + url + '/v1/hyper/' + driveKey + '/index.html')
+  // Print access info
+  if (opts.blind) {
+    console.log('  === BLIND / ENCRYPTED APP ===')
+    console.log()
+    console.log('    Drive key:       ', driveKey)
+    console.log('    Encryption key:  ', b4a.toString(encryptionKey, 'hex'))
+    console.log()
+    console.log('    Access: P2P only (PearBrowser / Hyperswarm)')
+    console.log('    HTTP gateway:    BLOCKED (relay has ciphertext only)')
+    console.log()
+    console.log('    Share BOTH keys with authorized users:')
+    console.log('      Drive key = which app to open')
+    console.log('      Encryption key = how to decrypt it')
+    console.log()
+    console.log('    Catalog: https://relay.p2phiverelay.xyz/catalog.json')
+    console.log()
+  } else {
+    console.log('  === Access URLs ===')
+    console.log()
+    for (const url of opts.relays) {
+      console.log('    ' + url + '/v1/hyper/' + driveKey + '/index.html')
+    }
+    console.log()
+    console.log('    Gateway: https://relay.p2phiverelay.xyz/v1/hyper/' + driveKey + '/index.html')
+    console.log()
+    console.log('    Catalog: https://relay.p2phiverelay.xyz/catalog.json')
+    console.log()
   }
-  console.log()
-  console.log('    Gateway: https://relay.p2phiverelay.xyz/v1/hyper/' + driveKey + '/index.html')
-  console.log()
-  console.log('    Catalog: https://relay.p2phiverelay.xyz/catalog.json')
-  console.log()
 
   // Monitor replication
   let peerCount = 0

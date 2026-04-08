@@ -71,9 +71,9 @@ export class RelayNode extends EventEmitter {
     this.torTransport = null
     this.paymentManager = null
     this.settlementInterval = null
-    this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version }
+    this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version, blind }
     this.appIndex = new Map() // appId string -> appKey hex (deduplication index)
-    this.appRegistry = new Map() // appId string -> driveKey hex (persistent, survives storage loss)
+    this.appRegistry = new Map() // appId string -> { driveKey, version, name, blind, updatedAt }
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -383,7 +383,8 @@ export class RelayNode extends EventEmitter {
         appKey,
         startedAt: entry.startedAt,
         appId: entry.appId || null,
-        version: entry.version || null
+        version: entry.version || null,
+        blind: entry.blind || false
       })
     }
     try {
@@ -402,7 +403,8 @@ export class RelayNode extends EventEmitter {
       try {
         await this.seedApp(entry.appKey, {
           appId: entry.appId || null,
-          version: entry.version || null
+          version: entry.version || null,
+          blind: entry.blind || false
         })
         // Rebuild appIndex from saved metadata
         if (entry.appId) {
@@ -470,7 +472,12 @@ export class RelayNode extends EventEmitter {
       }
     }
 
+    const isBlind = opts.blind === true
     const appKey = b4a.from(appKeyHex, 'hex')
+
+    // For blind apps, the relay does NOT have the encryption key.
+    // It replicates encrypted ciphertext blocks and serves them over P2P,
+    // but cannot read the content. No HTTP gateway access for blind apps.
     const drive = new Hyperdrive(this.store, appKey)
 
     try {
@@ -505,10 +512,13 @@ export class RelayNode extends EventEmitter {
                 new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
               ])
 
-              // After content is downloaded, read manifest and deduplicate
-              await this._indexAppManifest(appKeyHex, drive)
+              // Blind apps: relay has ciphertext, skip manifest indexing (can't read it)
+              // Public apps: read manifest and deduplicate
+              if (!isBlind) {
+                await this._indexAppManifest(appKeyHex, drive)
+              }
 
-              this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
+              this.emit('reseeded', { appKey: appKeyHex, version: drive.version, blind: isBlind })
               return
             }
           } catch (_) {}
@@ -527,12 +537,26 @@ export class RelayNode extends EventEmitter {
         startedAt: Date.now(),
         bytesServed: 0,
         appId: opts.appId || null,
-        version: opts.version || null
+        version: opts.version || null,
+        blind: isBlind
       })
 
-      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
+      // For blind apps with appId, register them so resolve works (without content data)
+      if (isBlind && opts.appId) {
+        this.appRegistry.set(opts.appId, {
+          driveKey: appKeyHex,
+          version: opts.version || null,
+          name: opts.appId,
+          blind: true,
+          updatedAt: Date.now()
+        })
+        this.appIndex.set(opts.appId, appKeyHex)
+        this._saveAppRegistry().catch(() => {})
+      }
+
+      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: isBlind })
       this._saveSeededAppsLog().catch(() => {})
-      return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
+      return { discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: isBlind }
     } catch (err) {
       try { await drive.close() } catch (_) {}
       throw err
@@ -600,10 +624,12 @@ export class RelayNode extends EventEmitter {
       this.appIndex.set(appId, appKeyHex)
 
       // Persist to app registry (survives publisher storage loss)
+      const existingReg = this.appRegistry.get(appId)
       this.appRegistry.set(appId, {
         driveKey: appKeyHex,
         version,
         name: manifest.name || appId,
+        blind: existingReg?.blind || false,
         updatedAt: Date.now()
       })
       this._saveAppRegistry().catch(() => {})

@@ -150,7 +150,32 @@ export class RelayAPI extends EventEmitter {
 
         for (const [appKey, entry] of this.node.seededApps) {
           try {
-            // Use a timeout — skip drives that haven't synced yet
+            const isBlind = entry.blind || false
+
+            // Blind apps: can't read manifest (encrypted), use metadata from seededApps
+            if (isBlind) {
+              const appId = entry.appId || appKey.slice(0, 12)
+              const catalogEntry = {
+                id: appId,
+                name: entry.appId || 'Private App',
+                description: 'Encrypted app — P2P access only',
+                author: 'anonymous',
+                version: entry.version || '0.0.0',
+                driveKey: appKey,
+                blind: true,
+                access: 'p2p-only',
+                categories: ['private'],
+                publishedAt: null,
+                seededAt: entry.startedAt
+              }
+              const existing = appMap.get(appId)
+              if (!existing || this._compareVersions(catalogEntry.version, existing.version) > 0) {
+                appMap.set(appId, catalogEntry)
+              }
+              continue
+            }
+
+            // Public apps: read manifest from gateway
             const driveResult = await Promise.race([
               this._gateway._getDrive(appKey),
               new Promise(resolve => setTimeout(() => resolve(null), 3000))
@@ -174,6 +199,8 @@ export class RelayAPI extends EventEmitter {
               author: manifest.author || 'anonymous',
               version,
               driveKey: appKey,
+              blind: false,
+              access: 'public',
               categories: manifest.categories || ['uncategorized'],
               publishedAt: manifest.publishedAt || null,
               seededAt: entry.startedAt
@@ -373,6 +400,7 @@ export class RelayAPI extends EventEmitter {
               appKey,
               appId: entry.appId || null,
               version: entry.version || null,
+              blind: entry.blind || false,
               discoveryKey: entry.discoveryKey ? Buffer.from(entry.discoveryKey).toString('hex') : null,
               startedAt: entry.startedAt,
               bytesServed: entry.bytesServed || 0,
@@ -466,6 +494,7 @@ export class RelayAPI extends EventEmitter {
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
           if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          if (body.blind === true) seedOpts.blind = true
           const result = await this.node.seedApp(body.appKey, seedOpts)
           return this._json(res, { ok: true, ...result })
         }

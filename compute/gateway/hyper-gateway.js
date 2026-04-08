@@ -124,6 +124,18 @@ export class HyperGateway extends EventEmitter {
       return
     }
 
+    // Blind apps: relay has encrypted ciphertext, can't serve over HTTP
+    const appEntry = this.node.seededApps && this.node.seededApps.get(keyHex)
+    if (appEntry && appEntry.blind) {
+      res.writeHead(403)
+      res.end(JSON.stringify({
+        error: 'Private app — encrypted content, P2P access only',
+        blind: true,
+        hint: 'Use PearBrowser or Hyperswarm to access this app with the encryption key'
+      }))
+      return
+    }
+
     this._totalRequests++
 
     try {

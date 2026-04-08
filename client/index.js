@@ -200,28 +200,31 @@ export class HiveRelayClient extends EventEmitter {
     let drive
     let isUpdate = false
 
+    // Encryption key for blind mode (relay stores ciphertext, can't read content)
+    const driveOpts = opts.encryptionKey ? { encryptionKey: opts.encryptionKey } : {}
+
     // Priority 1: explicit key (resume publishing to a known drive)
     if (opts.key) {
       const keyBuf = typeof opts.key === 'string' ? b4a.from(opts.key, 'hex') : opts.key
-      drive = new Hyperdrive(this.store, keyBuf)
+      drive = new Hyperdrive(this.store, keyBuf, driveOpts)
       isUpdate = true
     // Priority 2: appId lookup (reuse drive for same app)
     } else if (opts.appId && this._appDrives.has(opts.appId)) {
       const existingKey = this._appDrives.get(opts.appId)
-      drive = new Hyperdrive(this.store, b4a.from(existingKey, 'hex'))
+      drive = new Hyperdrive(this.store, b4a.from(existingKey, 'hex'), driveOpts)
       isUpdate = true
     // Priority 3: check persisted app→drive mapping from storage
     } else if (opts.appId && this._storagePath) {
       const savedKey = await this._loadAppDriveMapping(opts.appId)
       if (savedKey) {
-        drive = new Hyperdrive(this.store, b4a.from(savedKey, 'hex'))
+        drive = new Hyperdrive(this.store, b4a.from(savedKey, 'hex'), driveOpts)
         isUpdate = true
       }
     }
 
     // No existing drive found — create new
     if (!drive) {
-      drive = new Hyperdrive(this.store)
+      drive = new Hyperdrive(this.store, null, driveOpts)
     }
 
     await drive.ready()
@@ -282,7 +285,8 @@ export class HiveRelayClient extends EventEmitter {
       return this.drives.get(keyHex)
     }
 
-    const drive = new Hyperdrive(this.store, keyBuf)
+    const driveOpts = opts.encryptionKey ? { encryptionKey: opts.encryptionKey } : {}
+    const drive = new Hyperdrive(this.store, keyBuf, driveOpts)
     await drive.ready()
 
     this.swarm.join(drive.discoveryKey, { server: true, client: true })
