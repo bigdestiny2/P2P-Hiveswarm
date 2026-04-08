@@ -492,7 +492,8 @@ export class RelayNode extends EventEmitter {
       this.swarm.flush().catch(() => {})
 
       // Download all blocks in background (they're ciphertext to us)
-      core.download({ start: 0, end: -1 }).catch(() => {})
+      const range = core.download({ start: 0, end: -1 })
+      range.done().catch(() => {})
 
       this.seededApps.set(appKeyHex, {
         drive: null, // no Hyperdrive for blind apps
