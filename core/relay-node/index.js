@@ -481,7 +481,7 @@ export class RelayNode extends EventEmitter {
     const drive = new Hyperdrive(this.store, appKey)
 
     try {
-      await drive.ready()
+      await withTimeout(drive.ready(), 15000, 'drive.ready()')
 
       const discoveryKey = drive.discoveryKey
 
