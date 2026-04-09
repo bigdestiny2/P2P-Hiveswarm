@@ -269,13 +269,19 @@ export class RelayAPI extends EventEmitter {
           if (!entry) {
             return this._json(res, { error: 'App not found', appId }, 404)
           }
-          return this._json(res, {
+          const response = {
             appId,
             driveKey: entry.driveKey,
             version: entry.version,
             name: entry.name,
+            blind: entry.blind || false,
             updatedAt: entry.updatedAt
-          })
+          }
+          if (entry.blind) {
+            response.access = 'p2p-only'
+            response.hint = 'Connect directly via Hyperswarm with the encryption key. The relay provides discovery only — content is not mirrored.'
+          }
+          return this._json(res, response)
         }
 
         // List all registered apps (registry overview)

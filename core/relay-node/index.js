@@ -475,30 +475,18 @@ export class RelayNode extends EventEmitter {
     const isBlind = opts.blind === true
     const appKey = b4a.from(appKeyHex, 'hex')
 
-    // ─── Blind mode: replicate raw Hypercores without interpreting content ───
-    // The relay does NOT have the encryption key. It joins the DHT topic,
-    // replicates encrypted blocks, and serves them over P2P only.
-    // It CANNOT open the data as a Hyperdrive (would get DECODING_ERROR).
+    // ─── Blind mode: discovery-only registration ───
+    // The relay does NOT replicate blind app content — it can't decrypt it,
+    // can't serve it over HTTP, and multi-core replication without Hyperdrive
+    // is unreliable. Instead the relay acts as a discovery registry:
+    //   - Registers the app (appId → driveKey) so PearBrowser can resolve it
+    //   - Lists it in the catalog as "p2p-only"
+    //   - Peers with the encryption key connect directly via Hyperswarm
     if (isBlind) {
-      // Open raw Hypercore by key — this is the drive's metadata core
-      const core = this.store.get({ key: appKey })
-      await core.ready()
-
-      // Compute discovery key from the core key
-      const discoveryKey = core.discoveryKey
-
-      // Join the topic as server+client to replicate encrypted blocks
-      this.swarm.join(discoveryKey, { server: true, client: true })
-      this.swarm.flush().catch(() => {})
-
-      // Download all blocks in background (they're ciphertext to us)
-      const range = core.download({ start: 0, end: -1 })
-      range.done().catch(() => {})
-
       this.seededApps.set(appKeyHex, {
-        drive: null, // no Hyperdrive for blind apps
-        core,
-        discoveryKey,
+        drive: null,
+        core: null,
+        discoveryKey: null,
         startedAt: Date.now(),
         bytesServed: 0,
         appId: opts.appId || null,
@@ -518,9 +506,9 @@ export class RelayNode extends EventEmitter {
         this._saveAppRegistry().catch(() => {})
       }
 
-      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: true })
+      this.emit('seeding', { appKey: appKeyHex, blind: true, discoveryOnly: true })
       this._saveSeededAppsLog().catch(() => {})
-      return { discoveryKey: b4a.toString(discoveryKey, 'hex'), blind: true }
+      return { blind: true, discoveryOnly: true }
     }
 
     // ─── Public mode: full Hyperdrive replication + HTTP gateway serving ───
@@ -542,21 +530,33 @@ export class RelayNode extends EventEmitter {
         const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          if (drive.closed) return
+
           try {
             this.swarm.join(discoveryKey, { server: true, client: true })
             await this.swarm.flush()
+
+            if (drive.closed) return
 
             await Promise.race([
               drive.update({ wait: true }),
               new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
             ])
 
+            if (drive.closed || drive.closing) return
+
             if (drive.version > 0) {
-              const dl = drive.download('/')
+              if (drive.closed || drive.closing) return
+              let dl
+              try {
+                dl = drive.download('/')
+              } catch (_) { return }
               await Promise.race([
                 dl.done(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
               ])
+
+              if (drive.closed || drive.closing) return
 
               await this._indexAppManifest(appKeyHex, drive)
 
@@ -695,9 +695,10 @@ export class RelayNode extends EventEmitter {
       this.appIndex.delete(entry.appId)
     }
 
-    try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
+    if (entry.discoveryKey) {
+      try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
+    }
     if (entry.drive) { try { await entry.drive.close() } catch (_) {} }
-    if (entry.core) { try { await entry.core.close() } catch (_) {} }
     this.seededApps.delete(appKeyHex)
     this._saveSeededAppsLog().catch(() => {})
 
