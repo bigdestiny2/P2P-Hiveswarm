@@ -109,7 +109,9 @@ export class BootstrapCache {
 
     // Periodically snapshot to disk
     this._interval = setInterval(() => {
-      this.save().catch(() => {})
+      this.save().catch(err => {
+        this.emit?.('save-error', { error: err.message })
+      })
     }, SAVE_INTERVAL)
     if (this._interval.unref) this._interval.unref()
   }

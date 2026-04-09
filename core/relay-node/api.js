@@ -40,6 +40,79 @@ function isValidHexKey (str, len) {
   return typeof str === 'string' && str.length === len && /^[0-9a-f]+$/i.test(str)
 }
 
+/**
+ * Validate and sanitize manifest.json content
+ * Prevents prototype pollution and XSS through malicious manifests
+ * @param {object} manifest - Parsed manifest object
+ * @returns {object|null} - Sanitized manifest or null if invalid
+ */
+function validateManifest (manifest) {
+  if (!manifest || typeof manifest !== 'object') return null
+
+  // Reject objects with dangerous property names (prototype pollution)
+  const dangerousProps = ['__proto__', 'constructor', 'prototype']
+  const keys = Object.keys(manifest)
+  for (const key of keys) {
+    if (dangerousProps.includes(key)) return null
+  }
+
+  // Sanitize string fields
+  const sanitizeString = (str, maxLen = 200) => {
+    if (typeof str !== 'string') return null
+    // Remove control characters and trim
+    const cleaned = str.replace(/[\x00-\x1F\x7F]/g, '').trim()
+    return cleaned.slice(0, maxLen)
+  }
+
+  const validated = {}
+
+  // id: alphanumeric, dash, underscore only
+  if (manifest.id) {
+    const id = sanitizeString(manifest.id, 50)
+    if (id && /^[a-zA-Z0-9_-]+$/.test(id)) validated.id = id
+  }
+
+  // name: any reasonable string
+  if (manifest.name) {
+    const name = sanitizeString(manifest.name, 100)
+    if (name) validated.name = name
+  }
+
+  // description: longer text
+  if (manifest.description) {
+    const desc = sanitizeString(manifest.description, 500)
+    if (desc) validated.description = desc
+  }
+
+  // author: string
+  if (manifest.author) {
+    const author = sanitizeString(manifest.author, 100)
+    if (author) validated.author = author
+  }
+
+  // version: semver-like
+  if (manifest.version) {
+    const version = sanitizeString(manifest.version, 20)
+    if (version && /^[\d.]+$/.test(version)) validated.version = version
+  }
+
+  // categories: array of strings
+  if (Array.isArray(manifest.categories)) {
+    validated.categories = manifest.categories
+      .map(c => sanitizeString(c, 30))
+      .filter(Boolean)
+      .slice(0, 10) // Max 10 categories
+  }
+
+  // publishedAt: ISO date string
+  if (manifest.publishedAt) {
+    const date = sanitizeString(manifest.publishedAt, 30)
+    if (date && /^\d{4}-\d{2}-\d{2}/.test(date)) validated.publishedAt = date
+  }
+
+  return validated
+}
+
 export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
     super()
@@ -188,7 +261,10 @@ export class RelayAPI extends EventEmitter {
             ])
             if (!manifestBuf) continue
 
-            const manifest = JSON.parse(manifestBuf.toString())
+            const rawManifest = JSON.parse(manifestBuf.toString())
+            const manifest = validateManifest(rawManifest)
+            if (!manifest) continue // Skip invalid/manipulated manifests
+
             const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : appKey.slice(0, 12))
             const version = manifest.version || '1.0.0'
 
@@ -453,7 +529,7 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { count: pending.length, requests: pending })
         }
 
-        if (path === '/api/registry') {
+        if (path === '/api/seeding-registry') {
           if (!this.node.seedingRegistry) {
             return this._json(res, { error: 'Registry not running' }, 503)
           }
@@ -498,8 +574,15 @@ export class RelayAPI extends EventEmitter {
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const seedOpts = body.opts || {}
           // Forward appId from request body for deduplication
-          if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
-          if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          if (body.appId && typeof body.appId === 'string') {
+            if (body.appId.length > 128) return this._json(res, { error: 'appId must be 128 characters or less' }, 400)
+            if (!/^[a-zA-Z0-9._-]+$/.test(body.appId)) return this._json(res, { error: 'appId must contain only alphanumeric, dot, dash, underscore' }, 400)
+            seedOpts.appId = body.appId
+          }
+          if (body.version && typeof body.version === 'string') {
+            if (body.version.length > 32) return this._json(res, { error: 'version must be 32 characters or less' }, 400)
+            seedOpts.version = body.version
+          }
           if (body.blind === true) seedOpts.blind = true
           const result = await this.node.seedApp(body.appKey, seedOpts)
           return this._json(res, { ok: true, ...result })

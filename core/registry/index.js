@@ -192,12 +192,18 @@ export class SeedingRegistry extends EventEmitter {
 
   async stop () {
     this.running = false
-    try { await this.swarm.leave(REGISTRY_TOPIC) } catch (_) {}
+    try { await this.swarm.leave(REGISTRY_TOPIC) } catch (err) {
+      this.emit('stop-error', { operation: 'swarm.leave', error: err.message })
+    }
     if (this.localLog) {
-      try { await this.localLog.close() } catch (_) {}
+      try { await this.localLog.close() } catch (err) {
+        this.emit('stop-error', { operation: 'localLog.close', error: err.message })
+      }
     }
     for (const log of this.peerLogs.values()) {
-      try { await log.close() } catch (_) {}
+      try { await log.close() } catch (err) {
+        this.emit('stop-error', { operation: 'peerLog.close', error: err.message })
+      }
     }
     this.peerLogs.clear()
     this.emit('stopped')

@@ -78,7 +78,9 @@ export class SelfHeal extends EventEmitter {
       // Re-announce on discovery topic and flush DHT
       if (this.node.swarm && !this.node.swarm.destroyed) {
         this.node.swarm.join(RELAY_DISCOVERY_TOPIC, { server: true, client: false })
-        this.node.swarm.flush().catch(() => {})
+        this.node.swarm.flush().catch(err => {
+          this.emit('heal-error', { type: 'dht-flush', error: err.message })
+        })
         this._recordAction({ type: 'dht-reannounce', check, details })
       }
       return

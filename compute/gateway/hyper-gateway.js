@@ -49,17 +49,82 @@ const CONTENT_TYPES = {
 }
 
 function guessType (filePath) {
-  const ext = filePath.split('.').pop().toLowerCase()
+  // Extract extension safely, handling edge cases
+  const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'))
+  const filename = filePath.slice(lastSlash + 1)
+  const lastDot = filename.lastIndexOf('.')
+  if (lastDot <= 0) return 'application/octet-stream' // No extension or hidden file
+  const ext = filename.slice(lastDot + 1).toLowerCase()
   return CONTENT_TYPES[ext] || 'application/octet-stream'
 }
 
+/**
+ * Simple LRU cache for Hyperdrive instances
+ * Tracks access order and evicts least recently used when limit exceeded
+ */
+class DriveCache {
+  constructor (maxSize = 50) {
+    this.maxSize = maxSize
+    this.cache = new Map() // key → { drive, lastAccess }
+  }
+
+  get (key) {
+    const entry = this.cache.get(key)
+    if (entry) {
+      entry.lastAccess = Date.now()
+      // Re-insert to maintain access order
+      this.cache.delete(key)
+      this.cache.set(key, entry)
+    }
+    return entry?.drive || null
+  }
+
+  set (key, drive) {
+    // Evict oldest if at capacity
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const oldestKey = this.cache.keys().next().value
+      const oldestEntry = this.cache.get(oldestKey)
+      this.cache.delete(oldestKey)
+      // Close the evicted drive (non-blocking)
+      if (oldestEntry?.drive && !oldestEntry.drive.closed) {
+        oldestEntry.drive.close().catch(err => {
+          this.emit?.('drive-cache-error', { operation: 'evict-close', error: err.message })
+        })
+      }
+    }
+    this.cache.delete(key)
+    this.cache.set(key, { drive, lastAccess: Date.now() })
+  }
+
+  has (key) {
+    return this.cache.has(key)
+  }
+
+  delete (key) {
+    this.cache.delete(key)
+  }
+
+  clear () {
+    this.cache.clear()
+  }
+
+  get size () {
+    return this.cache.size
+  }
+
+  entries () {
+    return this.cache.entries()
+  }
+}
+
 export class HyperGateway extends EventEmitter {
-  constructor (relayNode) {
+  constructor (relayNode, opts = {}) {
     super()
     this.node = relayNode
-    this._drives = new Map() // keyHex → Hyperdrive
+    this._drives = new DriveCache(opts.maxCachedDrives || 50) // LRU cache
     this._totalRequests = 0
     this._totalBytesServed = 0
+    this._driveOperationTimeout = opts.driveOperationTimeout || 30000 // 30s default
 
     // Dedicated content delivery store + swarm
     // Separate from the relay node's protocol swarm to ensure
@@ -67,6 +132,18 @@ export class HyperGateway extends EventEmitter {
     this._store = null
     this._swarm = null
     this._ready = false
+  }
+
+  /**
+   * Wrap a promise with a timeout
+   */
+  _withTimeout (promise, ms, context) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${context} timed out after ${ms}ms`)), ms)
+      )
+    ])
   }
 
   /**
@@ -111,7 +188,24 @@ export class HyperGateway extends EventEmitter {
     const keyHex = slashIdx === -1 ? rest : rest.slice(0, slashIdx)
     let filePath = slashIdx === -1 ? '/' : rest.slice(slashIdx)
 
-    if (!keyHex || keyHex.length < 52) {
+    // Reject path traversal attempts
+    // Block: .. (parent dir), null bytes, absolute paths, URL-encoded variants
+    const decodedPath = decodeURIComponent(filePath)
+    const doubleDecodedPath = decodeURIComponent(decodedPath)
+    
+    if (
+      decodedPath.includes('..') ||
+      doubleDecodedPath.includes('..') ||
+      filePath.includes('\x00') ||
+      decodedPath.includes('\x00') ||
+      /^[a-zA-Z]:/.test(decodedPath) // Windows absolute paths
+    ) {
+      res.writeHead(400)
+      res.end(JSON.stringify({ error: 'Invalid path' }))
+      return
+    }
+
+    if (!keyHex || keyHex.length !== 64 || !/^[0-9a-f]+$/i.test(keyHex)) {
       res.writeHead(400)
       res.end(JSON.stringify({ error: 'Invalid drive key' }))
       return
@@ -146,9 +240,13 @@ export class HyperGateway extends EventEmitter {
         return
       }
 
-      // Resolve directory → index.html
+      // Resolve directory → index.html (with timeout)
       if (filePath.endsWith('/') || filePath === '') {
-        const entry = await drive.entry((filePath || '/') + 'index.html').catch(() => null)
+        const entry = await this._withTimeout(
+          drive.entry((filePath || '/') + 'index.html'),
+          this._driveOperationTimeout,
+          'drive.entry()'
+        ).catch(() => null)
         if (entry) {
           filePath = (filePath || '/') + 'index.html'
         } else {
@@ -157,7 +255,11 @@ export class HyperGateway extends EventEmitter {
         }
       }
 
-      const content = await drive.get(filePath)
+      const content = await this._withTimeout(
+        drive.get(filePath),
+        this._driveOperationTimeout,
+        'drive.get()'
+      )
       if (!content) {
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'File not found', path: filePath }))
@@ -199,7 +301,9 @@ export class HyperGateway extends EventEmitter {
     if (this._drives.has(keyHex)) {
       const cached = this._drives.get(keyHex)
       // Refresh in background for next request
-      cached.update().catch(() => {})
+      cached.update().catch(err => {
+        this.emit('drive-update-error', { key: keyHex, error: err.message })
+      })
       return cached
     }
 
@@ -222,7 +326,9 @@ export class HyperGateway extends EventEmitter {
             drive.update({ wait: true }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ])
-        } catch (_) {}
+        } catch (err) {
+          this.emit('drive-wait-error', { key: keyHex, error: err.message })
+        }
       }
 
       // Still no content
@@ -235,8 +341,12 @@ export class HyperGateway extends EventEmitter {
       try {
         const dl = drive.download('/')
         // Don't await — let it download in background
-        dl.done().catch(() => {})
-      } catch (_) {}
+        dl.done().catch(err => {
+          this.emit('drive-download-error', { key: keyHex, error: err.message })
+        })
+      } catch (err) {
+        this.emit('drive-download-init-error', { key: keyHex, error: err.message })
+      }
 
       this._drives.set(keyHex, drive)
       return drive
@@ -248,12 +358,25 @@ export class HyperGateway extends EventEmitter {
 
   async _serveDirectoryListing (res, drive, keyHex, dirPath) {
     const entries = []
+    const MAX_ENTRIES = 1000 // Prevent memory exhaustion from huge directories
+    const startTime = Date.now()
+    const TIMEOUT = this._driveOperationTimeout
+
     try {
       for await (const entry of drive.list(dirPath)) {
+        // Check timeout
+        if (Date.now() - startTime > TIMEOUT) {
+          throw new Error('Directory listing timeout')
+        }
         entries.push(entry.key)
+        // Limit entries
+        if (entries.length >= MAX_ENTRIES) {
+          entries.push('... (truncated)')
+          break
+        }
       }
     } catch (err) {
-      this.emit('drive-error', { context: 'directoryListing', key: keyHex, path: dirPath, error: err })
+      this.emit('drive-error', { context: 'directoryListing', key: keyHex, path: dirPath, error: err.message })
     }
 
     res.setHeader('Content-Type', 'application/json')
@@ -273,15 +396,21 @@ export class HyperGateway extends EventEmitter {
 
   async close () {
     for (const [, drive] of this._drives) {
-      try { await drive.close() } catch (_) {}
+      try { await drive.close() } catch (err) {
+        this.emit('drive-close-error', { error: err.message })
+      }
     }
     this._drives.clear()
 
     if (this._swarm) {
-      try { await this._swarm.destroy() } catch (_) {}
+      try { await this._swarm.destroy() } catch (err) {
+        this.emit('swarm-destroy-error', { error: err.message })
+      }
     }
     if (this._store) {
-      try { await this._store.close() } catch (_) {}
+      try { await this._store.close() } catch (err) {
+        this.emit('store-close-error', { error: err.message })
+      }
     }
   }
 }

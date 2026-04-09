@@ -70,7 +70,7 @@ export class ProofOfRelay extends EventEmitter {
    */
   challengeBatch (channel, coreKey, blockIndices, relayPubkey) {
     const nonce = b4a.alloc(32)
-    sodium.crypto_generichash(nonce, b4a.from(Date.now().toString()))
+    sodium.randombytes_buf(nonce)
 
     const batchId = b4a.toString(nonce, 'hex').slice(0, 16)
     const relayPubkeyHex = b4a.toString(relayPubkey, 'hex')

@@ -15,9 +15,14 @@ import {
   seedRequestEncoding,
   seedAcceptEncoding
 } from './messages.js'
+import { TokenBucketRateLimiter } from './rate-limiter.js'
 
 const PROTOCOL_NAME = 'hiverelay-seed'
 const PROTOCOL_VERSION = { major: 1, minor: 0 }
+
+// Rate limit: 100 requests per minute, burst of 20
+const RATE_LIMIT_TOKENS_PER_MIN = 100
+const RATE_LIMIT_BURST = 20
 
 export class SeedProtocol extends EventEmitter {
   constructor (swarm, opts = {}) {
@@ -27,6 +32,10 @@ export class SeedProtocol extends EventEmitter {
     this.pendingRequests = new Map() // appKey hex -> seed request
     this.acceptedSeeds = new Map() // appKey hex -> { relay pubkey, accepted at }
     this.channels = new Set()
+    this.rateLimiter = new TokenBucketRateLimiter({
+      tokensPerMinute: opts.rateLimitTokens || RATE_LIMIT_TOKENS_PER_MIN,
+      burstSize: opts.rateLimitBurst || RATE_LIMIT_BURST
+    })
   }
 
   /**
@@ -116,6 +125,20 @@ export class SeedProtocol extends EventEmitter {
   }
 
   _onSeedRequest (channel, msg) {
+    // Get peer key for rate limiting
+    const peerKey = channel.stream && channel.stream.remotePublicKey
+      ? b4a.toString(channel.stream.remotePublicKey, 'hex')
+      : 'unknown'
+
+    // Check rate limit
+    const rateCheck = this.rateLimiter.check(peerKey)
+    if (!rateCheck.allowed) {
+      if (rateCheck.banned) {
+        this.emit('rate-limit-exceeded', { peer: peerKey, banned: true, until: rateCheck.bannedUntil })
+      }
+      return
+    }
+
     // Verify publisher signature
     if (!this._verifyRequestSignature(msg)) {
       this.emit('invalid-request', { appKey: b4a.toString(msg.appKey, 'hex'), reason: 'bad signature' })
@@ -126,6 +149,26 @@ export class SeedProtocol extends EventEmitter {
   }
 
   _onSeedAccept (channel, msg) {
+    // Get peer key for rate limiting
+    const peerKey = channel.stream && channel.stream.remotePublicKey
+      ? b4a.toString(channel.stream.remotePublicKey, 'hex')
+      : 'unknown'
+
+    // Check rate limit
+    const rateCheck = this.rateLimiter.check(peerKey)
+    if (!rateCheck.allowed) {
+      if (rateCheck.banned) {
+        this.emit('rate-limit-exceeded', { peer: peerKey, banned: true, until: rateCheck.bannedUntil })
+      }
+      return
+    }
+
+    // Verify relay signature before processing acceptance
+    if (!this._verifyAcceptSignature(msg)) {
+      this.emit('invalid-accept', { appKey: b4a.toString(msg.appKey, 'hex'), reason: 'bad signature' })
+      return
+    }
+
     const appKeyHex = b4a.toString(msg.appKey, 'hex')
     this.acceptedSeeds.set(appKeyHex, {
       relayPubkey: msg.relayPubkey,
@@ -158,9 +201,24 @@ export class SeedProtocol extends EventEmitter {
     return sodium.crypto_sign_verify_detached(msg.publisherSignature, payload, msg.publisherPubkey)
   }
 
+  _verifyAcceptSignature (msg) {
+    if (!msg.relayPubkey || !msg.relaySignature) return false
+    const payload = b4a.concat([msg.appKey, msg.relayPubkey, b4a.from(msg.region)])
+    return sodium.crypto_sign_verify_detached(msg.relaySignature, payload, msg.relayPubkey)
+  }
+
   _serializeForSigning (msg) {
     const parts = [msg.appKey]
-    for (const dk of msg.discoveryKeys) parts.push(dk)
+    
+    // Hash discoveryKeys array to prevent tampering
+    // This ensures the entire array is committed to, not just individual elements
+    const discoveryKeysHash = b4a.alloc(32)
+    if (msg.discoveryKeys && msg.discoveryKeys.length > 0) {
+      const dkConcat = b4a.concat(msg.discoveryKeys)
+      sodium.crypto_generichash(discoveryKeysHash, dkConcat)
+    }
+    parts.push(discoveryKeysHash)
+    
     const meta = Buffer.alloc(24)
     const view = new DataView(meta.buffer, meta.byteOffset)
     view.setUint8(0, msg.replicationFactor)
@@ -177,5 +235,6 @@ export class SeedProtocol extends EventEmitter {
     this.channels.clear()
     this.pendingRequests.clear()
     this.acceptedSeeds.clear()
+    this.rateLimiter.destroy()
   }
 }

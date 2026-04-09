@@ -33,7 +33,7 @@ import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
-import { readdir, readFile, writeFile, stat, mkdir } from 'fs/promises'
+import { readdir, readFile, writeFile, stat, mkdir, rename } from 'fs/promises'
 import { join, relative, resolve } from 'path'
 import { existsSync } from 'fs'
 
@@ -73,9 +73,23 @@ function parseArgs (argv) {
     if (arg === '--storage') { opts.storage = args[++i]; continue }
     if (arg === '--key') { opts.key = args[++i]; continue }
     if (arg === '--blind') { opts.blind = true; continue }
-    if (arg === '--encryption-key') { opts.encryptionKey = args[++i]; continue }
+    if (arg === '--encryption-key') {
+      const keyVal = args[++i]
+      if (!keyVal || !/^[0-9a-f]{64}$/i.test(keyVal)) {
+        console.error('Error: --encryption-key must be exactly 64 hex characters (32 bytes)')
+        process.exit(1)
+      }
+      opts.encryptionKey = keyVal
+      continue
+    }
     if (arg === '--no-stay') { opts.stay = false; continue }
     if (!arg.startsWith('-') && !opts.directory) { opts.directory = arg; continue }
+  }
+
+  // --encryption-key without --blind is almost certainly a mistake
+  if (opts.encryptionKey && !opts.blind) {
+    console.error('Error: --encryption-key requires --blind flag (otherwise content is published unencrypted)')
+    process.exit(1)
   }
 
   return opts
@@ -128,8 +142,15 @@ async function loadOrCreateEncryptionKey (storagePath, appId) {
   const keyFile = join(storagePath, 'encryption-keys.json')
   let keys = {}
   try {
-    keys = JSON.parse(await readFile(keyFile, 'utf8'))
-  } catch (_) {}
+    const data = await readFile(keyFile, 'utf8')
+    keys = JSON.parse(data)
+  } catch (err) {
+    // Warn if file exists but is corrupted (not just missing)
+    if (err.code !== 'ENOENT') {
+      console.error(`Warning: ${keyFile} exists but could not be parsed — generating new keys`)
+      console.error('  If you had existing blind apps, their encryption keys may be lost')
+    }
+  }
 
   const id = appId || '_default'
   if (keys[id]) {
@@ -140,7 +161,11 @@ async function loadOrCreateEncryptionKey (storagePath, appId) {
   const key = b4a.alloc(32)
   sodium.randombytes_buf(key)
   keys[id] = b4a.toString(key, 'hex')
-  await writeFile(keyFile, JSON.stringify(keys, null, 2))
+
+  // Write with restricted permissions (owner-only) — these are secret keys
+  const tmpFile = keyFile + '.tmp'
+  await writeFile(tmpFile, JSON.stringify(keys, null, 2), { mode: 0o600 })
+  await rename(tmpFile, keyFile)
   return key
 }
 
@@ -383,8 +408,12 @@ async function run () {
   if (opts.blind) {
     console.log('  === BLIND / ENCRYPTED APP ===')
     console.log()
+    const ekHex = b4a.toString(encryptionKey, 'hex')
     console.log('    Drive key:       ', driveKey)
-    console.log('    Encryption key:  ', b4a.toString(encryptionKey, 'hex'))
+    console.log('    Encryption key:  ', ekHex.slice(0, 8) + '...' + ekHex.slice(-8) + '  (use --show-key for full key)')
+    if (process.argv.includes('--show-key')) {
+      console.log('    Full enc key:    ', ekHex)
+    }
     console.log()
     console.log('    Access: P2P only (PearBrowser / Hyperswarm)')
     console.log('    HTTP gateway:    BLOCKED (relay has ciphertext only)')

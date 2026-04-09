@@ -243,9 +243,12 @@ export class TorTransport extends EventEmitter {
 
     // Try password auth
     if (this.controlPassword) {
+      // Escape quotes in password to prevent command injection
+      // Tor control protocol uses double-quoted strings
+      const escapedPassword = this.controlPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
       const response = await this._controlCommand(
         socket,
-        `AUTHENTICATE "${this.controlPassword}"`
+        `AUTHENTICATE "${escapedPassword}"`
       )
       if (response.startsWith('250')) return
       throw new Error('Tor control authentication failed with password')

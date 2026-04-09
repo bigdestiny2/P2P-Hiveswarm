@@ -4,7 +4,7 @@ import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
-import { readFile, writeFile, mkdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'fs/promises'
 import { join } from 'path'
 import { Seeder } from './seeder.js'
 import { Relay } from './relay.js'
@@ -41,7 +41,15 @@ const DEFAULT_CONFIG = {
   apiPort: 9100,
   bootstrapNodes: null, // null = use HyperDHT defaults
   shutdownTimeoutMs: 10_000,
-  enableEviction: true
+  enableEviction: true,
+  timeouts: {
+    driveReady: 15_000,
+    driveUpdate: 30_000,
+    driveDownload: 120_000,
+    manifestRead: 5_000,
+    eagerReplicationRetry: 5_000, // Initial retry delay
+    eagerReplicationMaxRetry: 120_000 // Max retry delay
+  }
 }
 
 function isValidHexKey (hex) {
@@ -55,6 +63,14 @@ function withTimeout (promise, ms, label) {
       setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
     )
   ])
+}
+
+function getTimeout (config, key) {
+  return config.timeouts?.[key] ?? DEFAULT_CONFIG.timeouts[key]
+}
+
+function exponentialBackoffDelay (attempt, baseDelay, maxDelay) {
+  return Math.min(baseDelay * Math.pow(2, attempt), maxDelay)
 }
 
 export class RelayNode extends EventEmitter {
@@ -91,7 +107,31 @@ export class RelayNode extends EventEmitter {
     this.seedingRegistry = null
     this._registryScanInterval = null
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
+    this._seedLocks = new Map() // appKey hex -> Promise (per-key locking for seedApp)
     this.running = false
+  }
+
+  /**
+   * Acquire a per-key lock for seedApp operations
+   * Prevents race conditions when multiple concurrent calls target the same appKey
+   */
+  async _acquireSeedLock (appKeyHex) {
+    // Wait for any existing lock on this key
+    while (this._seedLocks.has(appKeyHex)) {
+      try {
+        await this._seedLocks.get(appKeyHex)
+      } catch {
+        // Previous operation failed, we can try to acquire
+      }
+    }
+
+    // Create a new lock
+    let release
+    const lock = new Promise((resolve) => {
+      release = resolve
+    })
+    this._seedLocks.set(appKeyHex, lock)
+    return release
   }
 
   async start () {
@@ -167,7 +207,8 @@ export class RelayNode extends EventEmitter {
       const reputationPath = join(this.config.storage, 'reputation.json')
       try {
         this.reputation = await ReputationSystem.load(reputationPath)
-      } catch (_) {
+      } catch (err) {
+        this.emit('reputation-load-error', { error: err.message, path: reputationPath })
         this.reputation = new ReputationSystem()
       }
 
@@ -179,7 +220,9 @@ export class RelayNode extends EventEmitter {
 
       // Periodic reputation save every 5 minutes
       this._reputationSaveInterval = setInterval(() => {
-        this.reputation.save(reputationPath).catch(() => {})
+        this.reputation.save(reputationPath).catch(err => {
+        this.emit('reputation-save-error', { error: err.message })
+      })
       }, 5 * 60 * 1000)
       if (this._reputationSaveInterval.unref) this._reputationSaveInterval.unref()
 
@@ -276,7 +319,9 @@ export class RelayNode extends EventEmitter {
 
           // Run initial scan after a short delay to let the registry sync
           setTimeout(() => {
-            this._scanRegistry().catch(() => {})
+            this._scanRegistry().catch(err => {
+              this.emit('registry-scan-error', { error: err.message })
+            })
           }, 5000)
         } catch (err) {
           this.emit('registry-error', { error: err })
@@ -294,7 +339,9 @@ export class RelayNode extends EventEmitter {
 
       // Start network discovery — shares this node's swarm to discover other relays
       this.networkDiscovery = new NetworkDiscovery({ swarm: this.swarm })
-      this.networkDiscovery.start().catch(() => {})
+      this.networkDiscovery.start().catch(err => {
+        this.emit('network-discovery-error', { error: err.message })
+      })
 
       this.running = true
 
@@ -314,15 +361,15 @@ export class RelayNode extends EventEmitter {
       if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
       if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
       if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
-      if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
+      if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
-      if (this.torTransport) { try { await this.torTransport.stop() } catch (_) {} this.torTransport = null }
-      if (this.wsTransport) { try { await this.wsTransport.stop() } catch (_) {} this.wsTransport = null }
-      if (this.api) { try { await this.api.stop() } catch (_) {} this.api = null }
+      if (this.torTransport) { try { await this.torTransport.stop() } catch (err) { this.emit('stop-error', { component: 'torTransport', error: err.message }) } this.torTransport = null }
+      if (this.wsTransport) { try { await this.wsTransport.stop() } catch (err) { this.emit('stop-error', { component: 'wsTransport', error: err.message }) } this.wsTransport = null }
+      if (this.api) { try { await this.api.stop() } catch (err) { this.emit('stop-error', { component: 'api', error: err.message }) } this.api = null }
       if (this.metrics) { this.metrics.stop(); this.metrics = null }
-      if (this.relay) { try { await this.relay.stop() } catch (_) {} this.relay = null }
-      if (this.seeder) { try { await this.seeder.stop() } catch (_) {} this.seeder = null }
-      if (this.swarm) { try { await this.swarm.destroy() } catch (_) {} this.swarm = null }
+      if (this.relay) { try { await this.relay.stop() } catch (err) { this.emit('stop-error', { component: 'relay', error: err.message }) } this.relay = null }
+      if (this.seeder) { try { await this.seeder.stop() } catch (err) { this.emit('stop-error', { component: 'seeder', error: err.message }) } this.seeder = null }
+      if (this.swarm) { try { await this.swarm.destroy() } catch (err) { this.emit('stop-error', { component: 'swarm', error: err.message }) } this.swarm = null }
       this.running = false
       throw err
     }
@@ -341,17 +388,23 @@ export class RelayNode extends EventEmitter {
           this.appRegistry.set(appId, entry)
         }
       }
-    } catch (_) {}
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        this.emit('registry-load-error', { error: err.message, path: regPath })
+      }
+    }
   }
 
   async _saveAppRegistry () {
     const regPath = join(this.config.storage, 'app-registry.json')
+    const tmpPath = regPath + '.tmp'
     const obj = {}
     for (const [appId, entry] of this.appRegistry) {
       obj[appId] = entry
     }
     try {
-      await writeFile(regPath, JSON.stringify(obj, null, 2))
+      await writeFile(tmpPath, JSON.stringify(obj, null, 2))
+      await rename(tmpPath, regPath)
     } catch (err) {
       this.emit('error', { context: 'app-registry-save', error: err })
     }
@@ -370,7 +423,10 @@ export class RelayNode extends EventEmitter {
     try {
       const data = JSON.parse(await readFile(logPath, 'utf8'))
       return Array.isArray(data) ? data : []
-    } catch (_) {
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        this.emit('seeded-log-load-error', { error: err.message, path: logPath })
+      }
       return []
     }
   }
@@ -388,7 +444,9 @@ export class RelayNode extends EventEmitter {
       })
     }
     try {
-      await writeFile(logPath, JSON.stringify(entries, null, 2))
+      const tmpPath = logPath + '.tmp'
+      await writeFile(tmpPath, JSON.stringify(entries, null, 2))
+      await rename(tmpPath, logPath)
     } catch (err) {
       this.emit('error', { context: 'seeded-apps-log', error: err })
     }
@@ -420,6 +478,20 @@ export class RelayNode extends EventEmitter {
   async seedApp (appKeyHex, opts = {}) {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
+    appKeyHex = appKeyHex.toLowerCase()
+
+    // Acquire per-key lock to prevent race conditions
+    const releaseLock = await this._acquireSeedLock(appKeyHex)
+    
+    try {
+      return await this._seedAppInternal(appKeyHex, opts)
+    } finally {
+      this._seedLocks.delete(appKeyHex)
+      releaseLock()
+    }
+  }
+
+  async _seedAppInternal (appKeyHex, opts = {}) {
 
     // If publisher provides an appId, check if we already have a canonical key for it.
     // This handles the case where publisher lost storage and created a new drive key —
@@ -432,9 +504,10 @@ export class RelayNode extends EventEmitter {
         if (this.seededApps.has(canonical)) {
           const existing = this.seededApps.get(canonical)
           return {
-            discoveryKey: b4a.toString(existing.discoveryKey, 'hex'),
+            discoveryKey: existing.discoveryKey ? b4a.toString(existing.discoveryKey, 'hex') : null,
             alreadySeeded: true,
             canonicalKey: canonical,
+            blind: existing.blind || false,
             message: `App "${opts.appId}" already registered with key ${canonical.slice(0, 12)}... — use this key instead`
           }
         }
@@ -444,7 +517,23 @@ export class RelayNode extends EventEmitter {
     // Already seeding this exact key — no-op
     if (this.seededApps.has(appKeyHex)) {
       const existing = this.seededApps.get(appKeyHex)
-      return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
+      return {
+        discoveryKey: existing.discoveryKey ? b4a.toString(existing.discoveryKey, 'hex') : null,
+        alreadySeeded: true,
+        blind: existing.blind || false
+      }
+    }
+
+    // Cap blind registrations to prevent registry flooding
+    if (opts.blind) {
+      const maxBlind = this.config.maxBlindApps || 500
+      let blindCount = 0
+      for (const entry of this.seededApps.values()) {
+        if (entry.blind) blindCount++
+      }
+      if (blindCount >= maxBlind) {
+        throw new Error(`Maximum blind app registrations reached (${maxBlind})`)
+      }
     }
 
     // Evict oldest app if storage capacity would be exceeded
@@ -503,11 +592,15 @@ export class RelayNode extends EventEmitter {
           updatedAt: Date.now()
         })
         this.appIndex.set(opts.appId, appKeyHex)
-        this._saveAppRegistry().catch(() => {})
+        this._saveAppRegistry().catch(err => {
+          this.emit('save-registry-error', { error: err.message })
+        })
       }
 
       this.emit('seeding', { appKey: appKeyHex, blind: true, discoveryOnly: true })
-      this._saveSeededAppsLog().catch(() => {})
+      this._saveSeededAppsLog().catch(err => {
+        this.emit('save-seeded-log-error', { error: err.message })
+      })
       return { blind: true, discoveryOnly: true }
     }
 
@@ -515,19 +608,23 @@ export class RelayNode extends EventEmitter {
     const drive = new Hyperdrive(this.store, appKey)
 
     try {
-      await withTimeout(drive.ready(), 15000, 'drive.ready()')
+      await withTimeout(drive.ready(), getTimeout(this.config, 'driveReady'), 'drive.ready()')
 
       const discoveryKey = drive.discoveryKey
 
       // Signal that we're looking for peers for this drive's cores
       const done = drive.findingPeers ? drive.findingPeers() : null
       this.swarm.join(discoveryKey, { server: true, client: true })
-      this.swarm.flush().then(() => { if (done) done() }).catch(() => { if (done) done() })
+      this.swarm.flush().then(() => { if (done) done() }).catch((err) => {
+        if (done) done()
+        this.emit('swarm-flush-error', { appKey: appKeyHex, error: err.message })
+      })
 
       // Eagerly replicate drive content with retry loop
       const eagerReplicate = async () => {
         const MAX_RETRIES = 6
-        const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
+        const baseRetryDelay = getTimeout(this.config, 'eagerReplicationRetry')
+        const maxRetryDelay = getTimeout(this.config, 'eagerReplicationMaxRetry')
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
           if (drive.closed) return
@@ -540,7 +637,7 @@ export class RelayNode extends EventEmitter {
 
             await Promise.race([
               drive.update({ wait: true }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
+              new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), getTimeout(this.config, 'driveUpdate')))
             ])
 
             if (drive.closed || drive.closing) return
@@ -550,10 +647,13 @@ export class RelayNode extends EventEmitter {
               let dl
               try {
                 dl = drive.download('/')
-              } catch (_) { return }
+              } catch (err) {
+                this.emit('replicate-error', { appKey: appKeyHex, error: err.message, phase: 'download-init' })
+                return
+              }
               await Promise.race([
                 dl.done(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), getTimeout(this.config, 'driveDownload')))
               ])
 
               if (drive.closed || drive.closing) return
@@ -563,15 +663,20 @@ export class RelayNode extends EventEmitter {
               this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
               return
             }
-          } catch (_) {}
+          } catch (err) {
+            this.emit('replicate-attempt-failed', { appKey: appKeyHex, attempt: attempt + 1, error: err.message })
+          }
 
           if (attempt < MAX_RETRIES - 1) {
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+            const delay = exponentialBackoffDelay(attempt, baseRetryDelay, maxRetryDelay)
+            await new Promise(resolve => setTimeout(resolve, delay))
           }
         }
         this.emit('reseed-error', { appKey: appKeyHex, error: 'max retries exceeded' })
       }
-      eagerReplicate().catch(() => {})
+      eagerReplicate().catch(err => {
+        this.emit('replicate-error', { appKey: appKeyHex, error: err.message, phase: 'eager-replicate' })
+      })
 
       this.seededApps.set(appKeyHex, {
         drive,
@@ -584,10 +689,14 @@ export class RelayNode extends EventEmitter {
       })
 
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
-      this._saveSeededAppsLog().catch(() => {})
+      this._saveSeededAppsLog().catch(err => {
+        this.emit('save-seeded-log-error', { error: err.message })
+      })
       return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
-      try { await drive.close() } catch (_) {}
+      try { await drive.close() } catch (closeErr) {
+        this.emit('drive-close-error', { appKey: appKeyHex, error: closeErr.message })
+      }
       throw err
     }
   }
@@ -600,7 +709,7 @@ export class RelayNode extends EventEmitter {
     try {
       const manifestBuf = await Promise.race([
         drive.get('/manifest.json'),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('manifest timeout')), 5000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('manifest timeout')), getTimeout(this.config, 'manifestRead')))
       ])
       if (!manifestBuf) return
 
@@ -661,10 +770,17 @@ export class RelayNode extends EventEmitter {
         blind: existingReg?.blind || false,
         updatedAt: Date.now()
       })
-      this._saveAppRegistry().catch(() => {})
-      this._saveSeededAppsLog().catch(() => {})
-    } catch (_) {
+      this._saveAppRegistry().catch(err => {
+        this.emit('save-registry-error', { error: err.message })
+      })
+      this._saveSeededAppsLog().catch(err => {
+        this.emit('save-seeded-log-error', { error: err.message })
+      })
+    } catch (err) {
       // No manifest or parse error — skip deduplication silently
+      if (err instanceof SyntaxError) {
+        this.emit('manifest-parse-error', { appKey: appKeyHex, error: err.message })
+      }
     }
   }
 
@@ -696,11 +812,19 @@ export class RelayNode extends EventEmitter {
     }
 
     if (entry.discoveryKey) {
-      try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
+      try { await this.swarm.leave(entry.discoveryKey) } catch (err) {
+        this.emit('unseed-error', { appKey: appKeyHex, operation: 'swarm.leave', error: err.message })
+      }
     }
-    if (entry.drive) { try { await entry.drive.close() } catch (_) {} }
+    if (entry.drive) {
+      try { await entry.drive.close() } catch (err) {
+        this.emit('unseed-error', { appKey: appKeyHex, operation: 'drive.close', error: err.message })
+      }
+    }
     this.seededApps.delete(appKeyHex)
-    this._saveSeededAppsLog().catch(() => {})
+    this._saveSeededAppsLog().catch(err => {
+      this.emit('save-seeded-log-error', { appKey: appKeyHex, error: err.message })
+    })
 
     this.emit('unseeded', { appKey: appKeyHex })
   }
@@ -803,6 +927,7 @@ export class RelayNode extends EventEmitter {
     })
 
     conn.on('error', (err) => {
+      this.connections.delete(conn)
       this.emit('connection-error', { error: err, info })
     })
 
@@ -978,7 +1103,9 @@ export class RelayNode extends EventEmitter {
 
     // Stop bootstrap cache and persist peers
     this.bootstrapCache.stop()
-    try { await this.bootstrapCache.save() } catch (_) {}
+    try { await this.bootstrapCache.save() } catch (err) {
+      this.emit('stop-error', { component: 'bootstrapCache.save', error: err.message })
+    }
 
     // Stop health checks, settlement, WebSocket, API, and metrics first
     if (this.selfHeal) { this.selfHeal.stop(); this.selfHeal = null }
@@ -986,15 +1113,21 @@ export class RelayNode extends EventEmitter {
     if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
     if (this.torTransport) {
-      try { await withTimeout(this.torTransport.stop(), timeout, 'torTransport.stop') } catch (_) {}
+      try { await withTimeout(this.torTransport.stop(), timeout, 'torTransport.stop') } catch (err) {
+        this.emit('stop-error', { component: 'torTransport', error: err.message })
+      }
       this.torTransport = null
     }
     if (this.wsTransport) {
-      try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch (_) {}
+      try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch (err) {
+        this.emit('stop-error', { component: 'wsTransport', error: err.message })
+      }
       this.wsTransport = null
     }
     if (this.api) {
-      try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch (_) {}
+      try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch (err) {
+        this.emit('stop-error', { component: 'api', error: err.message })
+      }
       this.api = null
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
@@ -1006,35 +1139,47 @@ export class RelayNode extends EventEmitter {
       this._circuitRelay = null
     }
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
-    if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
-    if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (_) {} this.networkDiscovery = null }
+    if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
+    if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'networkDiscovery', error: err.message }) } this.networkDiscovery = null }
     if (this._proofOfRelay) { this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
     if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
     if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
     // Persist reputation before shutdown
     if (this.reputation) {
-      try { await this.reputation.save(join(this.config.storage, 'reputation.json')) } catch (_) {}
+      try { await this.reputation.save(join(this.config.storage, 'reputation.json')) } catch (err) {
+        this.emit('stop-error', { component: 'reputation.save', error: err.message })
+      }
     }
 
     // Unseed all apps
     for (const appKeyHex of this.seededApps.keys()) {
       try {
         await withTimeout(this.unseedApp(appKeyHex), timeout, `unseedApp(${appKeyHex.slice(0, 8)})`)
-      } catch (_) {}
+      } catch (err) {
+        this.emit('stop-error', { component: 'unseedApp', appKey: appKeyHex.slice(0, 16), error: err.message })
+      }
     }
 
     if (this.relay) {
-      try { await withTimeout(this.relay.stop(), timeout, 'relay.stop') } catch (_) {}
+      try { await withTimeout(this.relay.stop(), timeout, 'relay.stop') } catch (err) {
+        this.emit('stop-error', { component: 'relay', error: err.message })
+      }
     }
     if (this.seeder) {
-      try { await withTimeout(this.seeder.stop(), timeout, 'seeder.stop') } catch (_) {}
+      try { await withTimeout(this.seeder.stop(), timeout, 'seeder.stop') } catch (err) {
+        this.emit('stop-error', { component: 'seeder', error: err.message })
+      }
     }
     if (this.swarm) {
-      try { await withTimeout(this.swarm.destroy(), timeout, 'swarm.destroy') } catch (_) {}
+      try { await withTimeout(this.swarm.destroy(), timeout, 'swarm.destroy') } catch (err) {
+        this.emit('stop-error', { component: 'swarm', error: err.message })
+      }
     }
     if (this.store) {
-      try { await withTimeout(this.store.close(), timeout, 'store.close') } catch (_) {}
+      try { await withTimeout(this.store.close(), timeout, 'store.close') } catch (err) {
+        this.emit('stop-error', { component: 'store', error: err.message })
+      }
     }
 
     this.running = false

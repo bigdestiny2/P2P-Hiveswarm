@@ -55,7 +55,9 @@ export class NetworkDiscovery extends EventEmitter {
 
     // Poll known relays for stats
     this._pollInterval = setInterval(() => {
-      this._pollAll().catch(() => {})
+      this._pollAll().catch(err => {
+        this.emit('poll-error', { error: err.message })
+      })
     }, POLL_INTERVAL)
     if (this._pollInterval.unref) this._pollInterval.unref()
 
@@ -107,7 +109,9 @@ export class NetworkDiscovery extends EventEmitter {
 
     // Try to discover the API port by probing common ports
     if (remoteHost) {
-      this._probeApiPort(pubkey, remoteHost).catch(() => {})
+      this._probeApiPort(pubkey, remoteHost).catch(err => {
+        this.emit('probe-error', { pubkey: pubkey.slice(0, 16), host: remoteHost, error: err.message })
+      })
     }
 
     conn.on('close', () => {

@@ -89,5 +89,15 @@ export default {
   },
 
   // Shutdown
-  shutdownTimeoutMs: 10_000
+  shutdownTimeoutMs: 10_000,
+
+  // Timeouts (all in milliseconds)
+  timeouts: {
+    driveReady: 15_000,
+    driveUpdate: 30_000,
+    driveDownload: 120_000,
+    manifestRead: 5_000,
+    eagerReplicationRetry: 5_000, // Initial retry delay
+    eagerReplicationMaxRetry: 120_000 // Max retry delay
+  }
 }
