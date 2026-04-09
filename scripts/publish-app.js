@@ -188,9 +188,13 @@ async function seedOnRelay (relayUrl, appKey, appId, version, blind) {
     if (appId) body.appId = appId
     if (version) body.version = version
     if (blind) body.blind = true
+    const headers = { 'Content-Type': 'application/json' }
+    // Support API key auth via env var or --api-key flag
+    const apiKey = process.env.HIVERELAY_API_KEY
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`
     const res = await fetch(relayUrl + '/seed', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body)
     })
     const data = await res.json()

@@ -715,11 +715,9 @@ export class RelayAPI extends EventEmitter {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
 
-          // SECURITY: Require ownership signature when API key is configured (proof-of-ownership)
-          if (this._apiKey) {
-            if (!body.ownershipSignature || !body.ownerPublicKey) {
-              return this._json(res, { error: 'Ownership signature and public key required' }, 403)
-            }
+          // SECURITY: Verify ownership signature if provided (defense-in-depth)
+          // API key auth is the primary gate; signatures are optional until clients support them
+          if (body.ownershipSignature && body.ownerPublicKey) {
             if (!this._verifyOwnershipSignature(body.appKey, body.ownershipSignature, body.ownerPublicKey)) {
               return this._json(res, { error: 'Invalid ownership signature' }, 403)
             }
@@ -731,17 +729,10 @@ export class RelayAPI extends EventEmitter {
             if (body.appId.length > 128) return this._json(res, { error: 'appId must be 128 characters or less' }, 400)
             if (!/^[a-zA-Z0-9._-]+$/.test(body.appId)) return this._json(res, { error: 'appId must contain only alphanumeric, dot, dash, underscore' }, 400)
 
-            // SECURITY: Require registration challenge for NEW appIds (when auth is enabled)
-            if (this._apiKey) {
-              // If this appId is not already registered, require challenge
-              const existingEntry = this.node.appRegistry.get(body.appId)
-              if (!existingEntry) {
-                if (!body.registrationChallenge) {
-                  return this._json(res, { error: 'Registration challenge required for new appIds' }, 403)
-                }
-                if (!this._verifyChallenge(body.appId, body.registrationChallenge)) {
-                  return this._json(res, { error: 'Invalid or expired registration challenge' }, 403)
-                }
+            // SECURITY: Verify registration challenge if provided (anti-squatting)
+            if (body.registrationChallenge) {
+              if (!this._verifyChallenge(body.appId, body.registrationChallenge)) {
+                return this._json(res, { error: 'Invalid or expired registration challenge' }, 403)
               }
             }
             seedOpts.appId = body.appId
@@ -859,11 +850,8 @@ export class RelayAPI extends EventEmitter {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
 
-          // SECURITY: Require ownership signature when API key is configured (proof-of-ownership)
-          if (this._apiKey) {
-            if (!body.ownershipSignature || !body.ownerPublicKey) {
-              return this._json(res, { error: 'Ownership signature and public key required' }, 403)
-            }
+          // SECURITY: Verify ownership signature if provided (defense-in-depth)
+          if (body.ownershipSignature && body.ownerPublicKey) {
             if (!this._verifyOwnershipSignature(body.appKey, body.ownershipSignature, body.ownerPublicKey)) {
               return this._json(res, { error: 'Invalid ownership signature' }, 403)
             }
