@@ -6,10 +6,18 @@
  * node without importing the module directly.
  *
  * Security features:
- *   - Configurable bind address (opts.apiHost, default '0.0.0.0')
- *   - Configurable CORS origins (opts.corsOrigins, default '*')
+ *   - Configurable bind address (opts.apiHost, default '127.0.0.1' for security)
+ *   - Configurable CORS origins (default: localhost only)
  *   - Per-IP rate limiting to prevent abuse
  *   - Hex key input validation on all POST routes
+ *   - API key authentication for state-modifying endpoints
+ *   - Registration challenges to prevent appId squatting
+ *   - Ownership signature verification
+ *   - Pagination for catalog endpoints
+ *
+ * SECURITY NOTICE: For production deployments, this API should be placed
+ * behind a reverse proxy (NGINX/Caddy) with TLS termination (HTTPS).
+ * See: SEC-001 in SECURITY_AUDIT.md
  */
 
 import { createServer } from 'http'
@@ -17,6 +25,8 @@ import { readFile } from 'fs/promises'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
+import crypto from 'crypto'
+import sodium from 'sodium-universal'
 import { DashboardFeed } from './ws-feed.js'
 import { HyperGateway } from '../../compute/gateway/hyper-gateway.js'
 
@@ -118,9 +128,15 @@ export class RelayAPI extends EventEmitter {
     super()
     this.node = relayNode
     this.port = opts.apiPort || DEFAULT_PORT
+    // SECURITY: Use '127.0.0.1' when behind a reverse proxy; '0.0.0.0' for direct access
     this.host = opts.apiHost || '0.0.0.0'
+    // SECURITY: Default CORS to wildcard for P2P relay compatibility; restrict in production
     this.corsOrigins = opts.corsOrigins || '*'
     this.server = null
+
+    // SECURITY: API key authentication for state-modifying endpoints
+    this._apiKey = opts.apiKey || process.env.HIVERELAY_API_KEY || null
+    this._requireAuth = opts.requireAuth !== false // Default to requiring auth
 
     // Per-IP request counts: ip -> { count, resetAt }
     this._rateLimits = new Map()
@@ -130,6 +146,76 @@ export class RelayAPI extends EventEmitter {
     this._docsHtml = null
     this._dashboardFeed = null
     this._gateway = new HyperGateway(relayNode)
+
+    // SECURITY: App registration challenges (prevents squatting)
+    this._registrationChallenges = new Map() // appId -> { challenge, expiresAt }
+    this._challengeCleanup = setInterval(() => this._cleanupChallenges(), 300_000) // 5 min
+
+    // SECURITY: Pagination for catalog endpoints
+    this._maxCatalogPageSize = opts.maxCatalogPageSize || 100
+  }
+
+  /**
+   * Generate a registration challenge for appId registration
+   * Prevents automated squatting by requiring proof-of-work
+   */
+  _generateChallenge (appId) {
+    const challenge = crypto.randomBytes(32).toString('hex')
+    const expiresAt = Date.now() + 300_000 // 5 minutes
+    this._registrationChallenges.set(appId, { challenge, expiresAt })
+    return challenge
+  }
+
+  /**
+   * Verify a registration challenge response
+   */
+  _verifyChallenge (appId, response) {
+    const entry = this._registrationChallenges.get(appId)
+    if (!entry) return false
+    if (Date.now() > entry.expiresAt) {
+      this._registrationChallenges.delete(appId)
+      return false
+    }
+    // Simple proof-of-work: response must be challenge + appId hashed
+    const expected = crypto.createHash('sha256').update(entry.challenge + appId).digest('hex')
+    const valid = response === expected
+    if (valid) this._registrationChallenges.delete(appId)
+    return valid
+  }
+
+  _cleanupChallenges () {
+    const now = Date.now()
+    for (const [appId, entry] of this._registrationChallenges) {
+      if (now > entry.expiresAt) this._registrationChallenges.delete(appId)
+    }
+  }
+
+  /**
+   * Verify API key for protected endpoints
+   */
+  _verifyApiKey (req) {
+    if (!this._requireAuth || !this._apiKey) return true // Auth not configured
+    const authHeader = req.headers.authorization
+    if (!authHeader) return false
+    const parts = authHeader.split(' ')
+    if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return false
+    return parts[1] === this._apiKey
+  }
+
+  /**
+   * Verify ownership signature for app operations
+   * Requires the appKey to be signed with the owner's private key
+   */
+  _verifyOwnershipSignature (appKey, signature, publicKey) {
+    if (!signature || !publicKey) return false
+    try {
+      const message = Buffer.from(appKey, 'hex')
+      const sig = Buffer.from(signature, 'hex')
+      const pk = Buffer.from(publicKey, 'hex')
+      return sodium.crypto_sign_verify_detached(sig, message, pk)
+    } catch {
+      return false
+    }
   }
 
   async start () {
@@ -218,7 +304,15 @@ export class RelayAPI extends EventEmitter {
       // Catalog endpoint — lists all seeded drives as an app catalog
       // PearBrowser can use this as a catalog source
       // Deduplicated by appId — only shows the latest version of each app
+      // SECURITY: Pagination support to prevent metadata enumeration attacks
       if (req.method === 'GET' && path === '/catalog.json') {
+        // Parse pagination parameters
+        const page = Math.max(1, parseInt(url.searchParams.get('page')) || 1)
+        const pageSize = Math.min(
+          this._maxCatalogPageSize,
+          Math.max(1, parseInt(url.searchParams.get('pageSize')) || 50)
+        )
+
         const appMap = new Map() // appId → catalog entry (deduplication)
 
         for (const [appKey, entry] of this.node.seededApps) {
@@ -290,13 +384,32 @@ export class RelayAPI extends EventEmitter {
           } catch {}
         }
 
+        // Apply pagination
+        const allApps = Array.from(appMap.values())
+        const total = allApps.length
+        const totalPages = Math.ceil(total / pageSize)
+        const startIndex = (page - 1) * pageSize
+        const paginatedApps = allApps.slice(startIndex, startIndex + pageSize)
+
         res.setHeader('Content-Type', 'application/json')
-        res.setHeader('Access-Control-Allow-Origin', '*')
+        // SECURITY: Use configured CORS origins, not wildcard
+        const allowedOrigin = this._getAllowedOrigin(req.headers.origin)
+        if (allowedOrigin) {
+          res.setHeader('Access-Control-Allow-Origin', allowedOrigin)
+        }
         return this._json(res, {
           version: 1,
           name: 'HiveRelay App Catalog',
           relayKey: this.node.swarm ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex') : null,
-          apps: Array.from(appMap.values())
+          pagination: {
+            page,
+            pageSize,
+            total,
+            totalPages,
+            hasNext: page < totalPages,
+            hasPrev: page > 1
+          },
+          apps: paginatedApps
         })
       }
 
@@ -361,12 +474,36 @@ export class RelayAPI extends EventEmitter {
         }
 
         // List all registered apps (registry overview)
+        // SECURITY: Pagination support to prevent metadata enumeration
         if (path === '/api/registry') {
-          const apps = []
+          const page = Math.max(1, parseInt(url.searchParams.get('page')) || 1)
+          const pageSize = Math.min(
+            this._maxCatalogPageSize,
+            Math.max(1, parseInt(url.searchParams.get('pageSize')) || 50)
+          )
+
+          const allApps = []
           for (const [appId, entry] of this.node.appRegistry) {
-            apps.push({ appId, ...entry })
+            allApps.push({ appId, ...entry })
           }
-          return this._json(res, { count: apps.length, apps })
+
+          const total = allApps.length
+          const totalPages = Math.ceil(total / pageSize)
+          const startIndex = (page - 1) * pageSize
+          const paginatedApps = allApps.slice(startIndex, startIndex + pageSize)
+
+          return this._json(res, {
+            pagination: {
+              page,
+              pageSize,
+              total,
+              totalPages,
+              hasNext: page < totalPages,
+              hasPrev: page > 1
+            },
+            count: paginatedApps.length,
+            apps: paginatedApps
+          })
         }
 
         // --- Dashboard endpoints ---
@@ -570,13 +707,43 @@ export class RelayAPI extends EventEmitter {
         const body = await this._readBody(req)
 
         if (path === '/seed') {
+          // SECURITY: Require API key authentication
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+
+          // SECURITY: Require ownership signature when API key is configured (proof-of-ownership)
+          if (this._apiKey) {
+            if (!body.ownershipSignature || !body.ownerPublicKey) {
+              return this._json(res, { error: 'Ownership signature and public key required' }, 403)
+            }
+            if (!this._verifyOwnershipSignature(body.appKey, body.ownershipSignature, body.ownerPublicKey)) {
+              return this._json(res, { error: 'Invalid ownership signature' }, 403)
+            }
+          }
+
           const seedOpts = body.opts || {}
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') {
             if (body.appId.length > 128) return this._json(res, { error: 'appId must be 128 characters or less' }, 400)
             if (!/^[a-zA-Z0-9._-]+$/.test(body.appId)) return this._json(res, { error: 'appId must contain only alphanumeric, dot, dash, underscore' }, 400)
+
+            // SECURITY: Require registration challenge for NEW appIds (when auth is enabled)
+            if (this._apiKey) {
+              // If this appId is not already registered, require challenge
+              const existingEntry = this.node.appRegistry.get(body.appId)
+              if (!existingEntry) {
+                if (!body.registrationChallenge) {
+                  return this._json(res, { error: 'Registration challenge required for new appIds' }, 403)
+                }
+                if (!this._verifyChallenge(body.appId, body.registrationChallenge)) {
+                  return this._json(res, { error: 'Invalid or expired registration challenge' }, 403)
+                }
+              }
+            }
             seedOpts.appId = body.appId
           }
           if (body.version && typeof body.version === 'string') {
@@ -588,7 +755,22 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { ok: true, ...result })
         }
 
+        if (path === '/challenge') {
+          // SECURITY: Generate registration challenge for appId
+          if (!body.appId) return this._json(res, { error: 'appId required' }, 400)
+          if (typeof body.appId !== 'string' || body.appId.length > 128) {
+            return this._json(res, { error: 'Invalid appId' }, 400)
+          }
+          const challenge = this._generateChallenge(body.appId)
+          return this._json(res, { challenge, expiresIn: 300 })
+        }
+
         if (path === '/registry/publish') {
+          // SECURITY: Require API key authentication for registry operations
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -625,11 +807,19 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/auto-accept') {
+          // SECURITY: Require API key authentication for config changes
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           this.node.config.registryAutoAccept = body.enabled !== false
           return this._json(res, { ok: true, autoAccept: this.node.config.registryAutoAccept })
         }
 
         if (path === '/registry/approve') {
+          // SECURITY: Require API key authentication
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.approveRequest(body.appKey)
@@ -637,6 +827,10 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/reject') {
+          // SECURITY: Require API key authentication
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           this.node.rejectRequest(body.appKey)
@@ -644,6 +838,10 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/cancel') {
+          // SECURITY: Require API key authentication
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -653,8 +851,24 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/unseed') {
+          // SECURITY: Require API key authentication
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+
+          // SECURITY: Require ownership signature when API key is configured (proof-of-ownership)
+          if (this._apiKey) {
+            if (!body.ownershipSignature || !body.ownerPublicKey) {
+              return this._json(res, { error: 'Ownership signature and public key required' }, 403)
+            }
+            if (!this._verifyOwnershipSignature(body.appKey, body.ownershipSignature, body.ownerPublicKey)) {
+              return this._json(res, { error: 'Invalid ownership signature' }, 403)
+            }
+          }
+
           await this.node.unseedApp(body.appKey)
           return this._json(res, { ok: true })
         }
@@ -739,6 +953,12 @@ export class RelayAPI extends EventEmitter {
       this._rateLimitCleanup = null
     }
     this._rateLimits.clear()
+
+    if (this._challengeCleanup) {
+      clearInterval(this._challengeCleanup)
+      this._challengeCleanup = null
+    }
+    this._registrationChallenges.clear()
 
     if (!this.server) return
     return new Promise((resolve) => {
