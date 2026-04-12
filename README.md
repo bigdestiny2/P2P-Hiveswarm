@@ -588,6 +588,9 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Auto-registration** — Routes generated automatically from ServiceRegistry manifest capabilities
 
 ### Services Layer
+
+Apps consume services via RPC over Protomux. Eight built-in services ship with every relay node:
+
 - **Storage** — Hyperdrive/Hypercore CRUD operations (9 capabilities)
 - **Identity** — Keypair management, Ed25519 signing/verification, peer resolution
 - **Compute** — Task queue with job lifecycle (submit, status, result, cancel)
@@ -597,6 +600,31 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Schema Registry** — JSON Schema registration and inline validation for cross-app data interoperability. Multi-version support with optional Hypercore persistence
 - **Arbitration** — Peer-adjudicated dispute resolution. High-reputation nodes vote on evidence (bandwidth receipts, proof results). Winners gain reputation, losers are slashed
 - **Pluggable** — Custom services extend `ServiceProvider` and register via config
+
+See **[docs/SERVICES.md](docs/SERVICES.md)** for the full architecture, RPC protocol, and custom service guide.
+
+### HomeHive (Private Mode)
+
+Run a personal relay that serves only your devices — no public DHT, no open connections.
+
+- **Private mode** — LAN-only with mDNS zero-config discovery and device allowlist
+- **Hybrid mode** — LAN-first with optional DHT connectivity (no announcement)
+- **Device pairing** — Time-limited tokens for adding new devices to the allowlist
+- **Relay tunnel** — Reach your private node from outside the LAN through a trusted public relay (outbound-only, end-to-end encrypted)
+- **Encrypted backups** — XSalsa20-Poly1305 encrypted device allowlist exports
+
+```bash
+# Start a private node
+hiverelay start --mode private --allowlist <device-pubkey>
+
+# Private with browser access
+hiverelay start --mode private --websocket --allowlist <pubkey>
+
+# Hybrid: LAN + remote access
+hiverelay start --mode hybrid --allowlist <pubkey1>,<pubkey2>
+```
+
+See **[docs/HOMEHIVE.md](docs/HOMEHIVE.md)** for setup, pairing, relay tunnel, and security model.
 
 ### Incentive Layer (Phase 2)
 - **Lightning micropayments** — LND integration for paying relay operators
@@ -937,6 +965,20 @@ Environment variables:
 - Cross-region relay routing
 - Predictive load balancing (historical data-driven routing)
 - Distributed tracing (OpenTelemetry integration)
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[docs/DEVELOPER.md](docs/DEVELOPER.md)** | Comprehensive developer guide — architecture, SDK reference, wire protocol, all APIs, testing, deployment |
+| **[docs/SERVICES.md](docs/SERVICES.md)** | Services layer architecture, all 8 built-in services, custom service guide, RPC protocol |
+| **[docs/HOMEHIVE.md](docs/HOMEHIVE.md)** | Private mode setup, device pairing, relay tunnel, mDNS discovery, mode comparison |
+| **[docs/PROTOCOL-SPEC.md](docs/PROTOCOL-SPEC.md)** | Wire protocol specification — message types, framing, proof-of-relay, bandwidth receipts |
+| **[docs/HIVERELAY_OVERVIEW.md](docs/HIVERELAY_OVERVIEW.md)** | High-level architecture overview, use cases, strategic roadmap |
+| **[docs/ECONOMICS.md](docs/ECONOMICS.md)** | Incentive models, payment mechanics, economic design |
+| **[PRODUCTION.md](PRODUCTION.md)** | Deployment guide — bare metal, VPS, Docker, systemd |
 
 ---
 
