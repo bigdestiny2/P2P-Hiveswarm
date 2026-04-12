@@ -126,6 +126,30 @@ const tx = await pm.retrieveJSON('tx-001')
 const blobs = await pm.prepareSyncExport()
 ```
 
+### PolicyGuard (Fail-Safe Enforcement)
+
+Privacy tiers are enforced by **PolicyGuard** — a single-constraint guardrail that checks whether an operation violates the relay exposure rules for an app's declared tier:
+
+| Tier | Relay Allowed To |
+|------|-----------------|
+| **Public** | Store and serve code + user data |
+| **Local-First** | Store and serve code only (user data never reaches relay) |
+| **P2P-Only** | Nothing (relay must not be involved at all) |
+
+**Enforcement is fail-safe**: violations trigger immediate service suspension (not warnings). The app is unseeded and all future operations are blocked until an operator manually reinstates it via the API. PolicyGuard checks are enforced at:
+- App seeding (before any data is stored)
+- Storage service write operations (drive-write, core-append)
+- Manifest indexing (serve-code permission)
+
+```bash
+# Query suspended apps
+curl http://localhost:9100/api/policy/violations
+
+# Reinstate after review
+curl -X POST http://localhost:9100/api/policy/reinstate \
+  -H "X-API-Key: $KEY" -d '{"appKey": "..."}'
+```
+
 ### Blind Mode (Encrypted Apps)
 
 Apps can be published in **blind mode** for privacy. In blind mode:

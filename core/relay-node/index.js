@@ -27,6 +27,7 @@ import { MDNSDiscovery } from './mdns-discovery.js'
 import { RelayTunnel } from './relay-tunnel.js'
 import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService, SLAService, SchemaService, ArbitrationService } from '../services/index.js'
 import { Router } from '../router/index.js'
+import { PolicyGuard } from '../policy-guard.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -185,6 +186,10 @@ export class RelayNode extends EventEmitter {
     this._registryScanInterval = null
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this._seedLocks = new Map() // appKey hex -> Promise (per-key locking for seedApp)
+
+    // Policy enforcement (fail-safe guardrail)
+    this.policyGuard = new PolicyGuard()
+    this.policyGuard.on('violation', (v) => this.emit('policy-violation', v))
 
     // Services layer
     this.serviceRegistry = null
@@ -465,7 +470,10 @@ export class RelayNode extends EventEmitter {
         this.serviceProtocol = new ServiceProtocol(this.serviceRegistry)
 
         // Register built-in services (core only — zk, ai are opt-in via config.services)
-        const storageService = new StorageService()
+        const storageService = new StorageService({
+          policyGuard: this.policyGuard,
+          getAppTier: (keyHex) => this.seededApps.get(keyHex)?.privacyTier || null
+        })
         const identityService = new IdentityService()
         const computeService = new ComputeService()
 
@@ -782,6 +790,22 @@ export class RelayNode extends EventEmitter {
     const isBlind = opts.blind === true
     const appKey = b4a.from(appKeyHex, 'hex')
 
+    // ─── PolicyGuard: pre-storage check ───
+    // Before storing ANY data (blind or public), verify the app's tier
+    // allows relay storage. This prevents p2p-only and local-first apps
+    // from having user data written to the relay in the first place.
+    const tier = opts.privacyTier || 'public'
+    const storageCheck = this.policyGuard.check(appKeyHex, tier, 'store-on-relay')
+    if (!storageCheck.allowed) {
+      this.emit('policy-violation', {
+        appKey: appKeyHex,
+        tier,
+        reason: storageCheck.reason,
+        action: 'seed-denied'
+      })
+      throw new Error(`POLICY_VIOLATION: ${storageCheck.reason}`)
+    }
+
     // ─── Blind mode: encrypted replication ───
     // The relay replicates encrypted Hypercore blocks it CANNOT decrypt.
     // It joins the swarm, downloads opaque ciphertext, and re-serves it to
@@ -1021,12 +1045,30 @@ export class RelayNode extends EventEmitter {
       if (!appId) return
 
       const version = manifest.version || '0.0.0'
+      const tier = manifest.privacyTier || 'public'
+
+      // ─── PolicyGuard enforcement ───
+      // Check if this relay is allowed to serve this app's code.
+      // A p2p-only app should never be served by a relay at all.
+      const check = this.policyGuard.check(appKeyHex, tier, 'serve-code')
+      if (!check.allowed) {
+        this.emit('policy-violation', {
+          appKey: appKeyHex,
+          appId,
+          tier,
+          reason: check.reason,
+          action: 'unseed'
+        })
+        await this.unseedApp(appKeyHex)
+        return
+      }
 
       // Update this entry's metadata
       const entry = this.seededApps.get(appKeyHex)
       if (entry) {
         entry.appId = appId
         entry.version = version
+        entry.privacyTier = tier
       }
 
       // Check if we already have a different drive for the same appId

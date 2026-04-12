@@ -1862,7 +1862,44 @@ Apps declare a privacy tier in their manifest. The `PrivacyManager` enforces the
 | `local-first` | App code only | Device | P2P only | XChaCha20-Poly1305 |
 | `p2p-only` | Nothing | Device | P2P only | XChaCha20-Poly1305 |
 
-### 17.2 Crypto API (`platform/crypto.js`)
+### 17.2 PolicyGuard (Relay-Side Enforcement)
+
+While `PrivacyManager` runs on the client/app side, **PolicyGuard** (`core/policy-guard.js`) enforces privacy tiers on the relay itself. It ensures the relay never stores or serves data that violates an app's declared tier.
+
+**Single constraint:** Does the relay's exposure level match what this tier allows?
+
+```
+RELAY_EXPOSURE:
+  public      → 'full'      (relay sees code + user data)
+  local-first → 'code-only' (relay sees app code, never user data)
+  p2p-only    → 'none'      (relay touches nothing)
+```
+
+**Operations checked:**
+- `serve-code` — Is the relay allowed to serve this app? (blocked for p2p-only)
+- `store-on-relay` — Is the relay allowed to store data? (blocked for local-first, p2p-only)
+- `replicate-user-data` — Can user data flow through? (allowed only for public)
+
+**Enforcement points in RelayNode:**
+1. `seedApp()` — Before any data is stored (pre-storage gate)
+2. `_indexAppManifest()` — After reading manifest (serve-code permission)
+3. `StorageService.drive-write / core-append` — RPC write operations
+
+**Violation behavior:**
+- Immediate suspension (not a warning)
+- App is unseeded from the relay
+- All future operations blocked for that appKey
+- Operator must manually call `reinstate(appKey)` after reviewing
+
+**API endpoints:**
+- `GET /api/policy/violations` — List all suspended apps
+- `POST /api/policy/reinstate` — Reinstate a suspended app (requires API key)
+
+**Events emitted:**
+- `policy-violation` — On suspension (includes appKey, tier, reason)
+- `reinstated` — When operator reinstates
+
+### 17.3 Crypto API (`platform/crypto.js`)
 
 All encryption uses `sodium-universal` (libsodium):
 

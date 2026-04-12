@@ -82,6 +82,12 @@ Apps declare their own privacy tier:
 
 Blind mode allows encrypted app replication where the relay stores ciphertext it cannot decrypt. Peers discover the app via the relay catalog, then connect directly with the encryption key.
 
+**Enforcement is fail-safe.** Privacy tiers are not advisory — they are enforced by **PolicyGuard**, a single-purpose guardrail on every relay node. If a `local-first` app's user data attempts to reach the relay, or a `p2p-only` app attempts to be served by a relay, the app is immediately suspended. No warnings, no grace period. The three-layer privacy stack:
+
+1. **Privacy Tiers** (app manifest) — Developer declares intent
+2. **PolicyGuard** (relay core) — Relay enforces the tier's relay exposure rules at seeding, storage writes, and manifest indexing
+3. **AccessControl** (HomeHive mode) — Operator controls which devices can connect at all
+
 ---
 
 ## Use Cases

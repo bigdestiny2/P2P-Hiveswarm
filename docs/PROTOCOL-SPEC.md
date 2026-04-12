@@ -680,7 +680,27 @@ The platform privacy APIs (`platform/privacy.js`) enforce data flow rules per ti
 
 The `PrivacyManager` generates an audit log tracking every data operation. The `getPrivacyReport()` method produces a summary showing encrypted vs plaintext stores, warnings, and relay exposure level.
 
-### 13.12 Encryption at Rest (Local Storage)
+### 13.12 PolicyGuard (Relay-Side Fail-Safe)
+
+In addition to client-side enforcement via `PrivacyManager`, the relay itself enforces privacy tiers through `PolicyGuard` (`core/policy-guard.js`). This is a single-constraint guardrail — it checks one thing: does the requested operation violate the relay exposure allowed by the app's declared privacy tier?
+
+**Relay exposure per tier:**
+
+| Tier | Allowed Exposure | `serve-code` | `store-on-relay` | `replicate-user-data` |
+|------|-----------------|--------------|-------------------|----------------------|
+| `public` | `full` | Allowed | Allowed | Allowed |
+| `local-first` | `code-only` | Allowed | **Suspended** | **Suspended** |
+| `p2p-only` | `none` | **Suspended** | **Suspended** | **Suspended** |
+
+**Violation response:**
+1. App is immediately suspended (all operations blocked)
+2. App is unseeded from the relay
+3. `policy-violation` event emitted with `{ appKey, tier, reason, action: 'suspended' }`
+4. Suspension persists until operator calls `reinstate(appKey)`
+
+**Design rationale:** Violations are security failures, not configuration warnings. A `local-first` app's user data reaching a relay is a privacy breach — the correct response is immediate service suspension, not a log entry. This is deliberately not a multi-dimensional policy resolution engine; it enforces one constraint with zero ambiguity.
+
+### 13.13 Encryption at Rest (Local Storage)
 
 Data stored via `platform/storage.js` is encrypted with XChaCha20-Poly1305 (AEAD):
 - 24-byte random nonce prepended to each ciphertext

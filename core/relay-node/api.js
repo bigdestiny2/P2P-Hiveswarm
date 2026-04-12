@@ -714,6 +714,18 @@ export class RelayAPI extends EventEmitter {
           const record = this.node.reputation.getRecord(pubkey)
           return this._json(res, record)
         }
+
+        if (path === '/api/policy/violations') {
+          return this._json(res, this.node.policyGuard.getViolations())
+        }
+
+        if (path === '/api/policy/suspended') {
+          const violations = this.node.policyGuard.getViolations()
+          return this._json(res, {
+            count: violations.length,
+            apps: violations
+          })
+        }
       }
 
       // POST routes
@@ -873,6 +885,17 @@ export class RelayAPI extends EventEmitter {
 
           await this.node.unseedApp(body.appKey)
           return this._json(res, { ok: true })
+        }
+
+        if (path === '/api/policy/reinstate') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+          const reinstated = this.node.policyGuard.reinstate(body.appKey)
+          if (!reinstated) return this._json(res, { error: 'App not suspended' }, 404)
+          return this._json(res, { ok: true, reinstated: body.appKey })
         }
       }
 

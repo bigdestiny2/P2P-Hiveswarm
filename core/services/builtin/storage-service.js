@@ -22,11 +22,13 @@ import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 
 export class StorageService extends ServiceProvider {
-  constructor () {
+  constructor (opts = {}) {
     super()
     this.store = null
     this.drives = new Map() // keyHex -> Hyperdrive
     this.maxDrives = 256
+    this.policyGuard = opts.policyGuard || null
+    this.getAppTier = opts.getAppTier || null // fn(keyHex) → tier string
   }
 
   manifest () {
@@ -101,6 +103,7 @@ export class StorageService extends ServiceProvider {
   }
 
   async 'drive-write' (params) {
+    this._checkPolicy(params.key, 'store-on-relay')
     const drive = this._getDrive(params.key)
     if (!drive.writable) throw new Error('DRIVE_READONLY')
     const data = b4a.from(params.data, params.encoding || 'base64')
@@ -126,6 +129,7 @@ export class StorageService extends ServiceProvider {
   }
 
   async 'core-append' (params) {
+    this._checkPolicy(params.key, 'store-on-relay')
     const core = this.store.get(b4a.from(params.key, 'hex'))
     await core.ready()
     if (!core.writable) throw new Error('CORE_READONLY')
@@ -140,6 +144,16 @@ export class StorageService extends ServiceProvider {
     const block = await core.get(params.index)
     if (!block) throw new Error('BLOCK_NOT_FOUND')
     return { index: params.index, data: b4a.toString(block, 'base64') }
+  }
+
+  _checkPolicy (keyHex, operation) {
+    if (!this.policyGuard || !this.getAppTier) return
+    const tier = this.getAppTier(keyHex)
+    if (!tier) return // Unknown app — no tier info available
+    const check = this.policyGuard.check(keyHex, tier, operation)
+    if (!check.allowed) {
+      throw new Error(`POLICY_VIOLATION: ${check.reason}`)
+    }
   }
 
   _getDrive (keyHex) {

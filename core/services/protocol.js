@@ -189,6 +189,10 @@ export class ServiceProtocol extends EventEmitter {
       case MSG_UNSUBSCRIBE:
         this._handleUnsubscribe(remotePubkey, msg)
         break
+
+      case MSG_EVENT:
+        this.emit('event', { remotePubkey, topic: msg.topic, data: msg.data })
+        break
     }
   }
 
