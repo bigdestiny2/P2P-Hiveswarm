@@ -275,7 +275,7 @@ export class RelayNode extends EventEmitter {
       if (this.config.discovery.mdns) {
         this.mdnsDiscovery = new MDNSDiscovery({
           publicKey: keyPair.publicKey,
-          port: this.swarm.dht ? this.swarm.dht.address().port : 0,
+          port: 0, // Updated after swarm.listen() completes
           mode: this.mode,
           name: this.config.name || 'hiverelay'
         })
