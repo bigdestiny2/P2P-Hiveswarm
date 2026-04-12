@@ -15,24 +15,52 @@
 import { RelayNode } from '../core/relay-node/index.js'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
+import { networkInterfaces } from 'os'
 
 const STORAGE_DIR = process.env.HOMEHIVE_STORAGE || join(process.env.HOME || '.', '.homehive')
+const API_PORT = parseInt(process.env.HOMEHIVE_PORT || '9100', 10)
 const args = process.argv.slice(2)
 
 mkdirSync(STORAGE_DIR, { recursive: true })
 
+function getLocalIPs () {
+  const ifaces = networkInterfaces()
+  const result = []
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    for (const addr of addrs) {
+      if (addr.internal) continue
+      if (addr.family === 'IPv4' || addr.family === 4) {
+        result.push({ interface: name, address: addr.address })
+      }
+    }
+  }
+  return result
+}
+
 async function main () {
+  const localIPs = getLocalIPs()
+
   console.log('=================================================')
   console.log('  HomeHive — Private Relay')
-  console.log('  Mode: private (no DHT, no public discovery)')
+  console.log('  Mode: private (LAN + WiFi, no public internet)')
   console.log(`  Storage: ${STORAGE_DIR}`)
   console.log('=================================================\n')
+
+  console.log('  Network interfaces:')
+  for (const ip of localIPs) {
+    const isWifi = /^(wl|wi|en0|en1|wlan|Wi-Fi)/i.test(ip.interface)
+    const label = isWifi ? '(wifi)' : '(wired)'
+    console.log(`    ${ip.interface}: ${ip.address} ${label}`)
+  }
+  console.log()
 
   const node = new RelayNode({
     mode: 'private',
     storage: STORAGE_DIR,
-    enableAPI: false,
-    enableMetrics: false,
+    enableAPI: true,
+    enableMetrics: true,
+    apiPort: API_PORT,
+    apiHost: '0.0.0.0', // Listen on all interfaces (LAN + wifi)
     discovery: {
       dht: false,
       announce: false,
@@ -46,6 +74,12 @@ async function main () {
   node.on('started', ({ publicKey }) => {
     console.log(`  Public key: ${publicKey.toString('hex')}`)
     console.log(`  Paired devices: ${node.listDevices().length}`)
+    console.log()
+
+    console.log('  Reachable at:')
+    for (const ip of localIPs) {
+      console.log(`    http://${ip.address}:${API_PORT}/dashboard`)
+    }
     console.log()
 
     if (node.listDevices().length === 0) {
@@ -101,12 +135,20 @@ async function main () {
     console.log('  ─────────────────────────────────')
     console.log(`  Token: ${info.token}`)
     console.log(`  Relay pubkey: ${info.relayPubkey}`)
-    if (info.host && info.port) {
-      console.log(`  Address: ${info.host}:${info.port}`)
+    console.log()
+    console.log('  Reachable from any device on this network:')
+    for (const ip of localIPs) {
+      const isWifi = /^(wl|wi|en0|en1|wlan|Wi-Fi)/i.test(ip.interface)
+      console.log(`    ${ip.address}:${API_PORT} ${isWifi ? '(wifi)' : '(wired)'}`)
     }
     console.log()
     console.log('  Share this with the device to pair:')
-    console.log(`  ${JSON.stringify({ pubkey: info.relayPubkey, token: info.token })}`)
+    const pairingPayload = {
+      pubkey: info.relayPubkey,
+      token: info.token,
+      addresses: localIPs.map(ip => `${ip.address}:${API_PORT}`)
+    }
+    console.log(`  ${JSON.stringify(pairingPayload)}`)
     console.log()
   }
 

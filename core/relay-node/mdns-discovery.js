@@ -17,7 +17,7 @@
  */
 
 import { EventEmitter } from 'events'
-import { hostname } from 'os'
+import { hostname, networkInterfaces } from 'os'
 import b4a from 'b4a'
 
 const SERVICE_TYPE = '_hiverelay._udp.local'
@@ -95,41 +95,56 @@ export class MDNSDiscovery extends EventEmitter {
     const host = hostname() + '.local'
     const instanceFull = `${this.instanceName}.${SERVICE_TYPE}`
     const pubkeyHex = b4a.toString(this.publicKey, 'hex')
+    const localAddresses = this.getLocalAddresses()
 
-    this._mdns.respond({
-      answers: [
-        // PTR: _hiverelay._udp.local → instance._hiverelay._udp.local
-        {
-          name: SERVICE_TYPE,
-          type: 'PTR',
-          ttl: 120,
-          data: instanceFull
-        },
-        // SRV: instance → host:port
-        {
-          name: instanceFull,
-          type: 'SRV',
-          ttl: 120,
-          data: {
-            port: this.port,
-            weight: 0,
-            priority: 0,
-            target: host
-          }
-        },
-        // TXT: metadata (pubkey, mode)
-        {
-          name: instanceFull,
-          type: 'TXT',
-          ttl: 120,
-          data: [
-            `pk=${pubkeyHex}`,
-            `mode=${this.mode}`,
-            `v=1`
-          ]
+    const answers = [
+      // PTR: _hiverelay._udp.local → instance._hiverelay._udp.local
+      {
+        name: SERVICE_TYPE,
+        type: 'PTR',
+        ttl: 120,
+        data: instanceFull
+      },
+      // SRV: instance → host:port
+      {
+        name: instanceFull,
+        type: 'SRV',
+        ttl: 120,
+        data: {
+          port: this.port,
+          weight: 0,
+          priority: 0,
+          target: host
         }
-      ]
-    }, (err) => {
+      },
+      // TXT: metadata (pubkey, mode, addresses)
+      {
+        name: instanceFull,
+        type: 'TXT',
+        ttl: 120,
+        data: [
+          `pk=${pubkeyHex}`,
+          `mode=${this.mode}`,
+          `v=1`,
+          `addrs=${localAddresses.map(a => a.address).join(',')}`
+        ]
+      }
+    ]
+
+    // A records for each local IPv4 address — ensures wifi clients can
+    // resolve the relay without depending on hostname resolution
+    for (const addr of localAddresses) {
+      if (addr.family === 'IPv4') {
+        answers.push({
+          name: host,
+          type: 'A',
+          ttl: 120,
+          data: addr.address
+        })
+      }
+    }
+
+    this._mdns.respond({ answers }, (err) => {
       if (err) this.emit('announce-error', { error: err.message })
     })
   }
@@ -185,10 +200,14 @@ export class MDNSDiscovery extends EventEmitter {
     // Ignore our own announcements
     if (this.publicKey && pubkey === b4a.toString(this.publicKey, 'hex')) return
 
+    // Parse advertised addresses from TXT record (wifi + LAN IPs)
+    const advertisedAddrs = txtMap.addrs ? txtMap.addrs.split(',').filter(Boolean) : []
+
     const peer = {
       pubkey,
       host: rinfo.address,
       port: srvRecord.data.port,
+      addresses: advertisedAddrs, // All IPs the relay is reachable on
       mode: txtMap.mode || 'unknown',
       name: srvRecord.name.replace('.' + SERVICE_TYPE, ''),
       lastSeen: Date.now()
@@ -202,6 +221,28 @@ export class MDNSDiscovery extends EventEmitter {
     } else {
       this.emit('peer-seen', peer)
     }
+  }
+
+  /**
+   * Get all non-internal, non-loopback local network addresses.
+   * Returns both wifi and wired LAN interfaces.
+   */
+  getLocalAddresses () {
+    const interfaces = networkInterfaces()
+    const addresses = []
+    for (const [name, addrs] of Object.entries(interfaces)) {
+      for (const addr of addrs) {
+        if (addr.internal) continue
+        addresses.push({
+          interface: name,
+          address: addr.address,
+          family: addr.family === 'IPv4' || addr.family === 4 ? 'IPv4' : 'IPv6',
+          netmask: addr.netmask,
+          mac: addr.mac
+        })
+      }
+    }
+    return addresses
   }
 
   /**
