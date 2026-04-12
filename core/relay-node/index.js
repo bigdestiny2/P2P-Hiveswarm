@@ -32,6 +32,9 @@ import { PaymentManager } from '../../incentive/payment/index.js'
 import { MockProvider } from '../../incentive/payment/mock-provider.js'
 import { ServiceMeter } from '../../incentive/metering/index.js'
 import { FreeTierManager } from '../../incentive/free-tier/index.js'
+import { CreditManager } from '../../incentive/credits/index.js'
+import { PricingEngine } from '../../incentive/credits/pricing.js'
+import { InvoiceManager } from '../../incentive/credits/invoice.js'
 import vm from 'node:vm'
 
 // Well-known discovery topic — clients join this to find relay nodes
@@ -564,11 +567,36 @@ export class RelayNode extends EventEmitter {
         await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
         this.emit('services-started', { count: this.serviceRegistry.services.size })
 
-        // ─── Service Metering + Free Tier ───
+        // ─── Credit System + Metering + Free Tier ───
+        this.pricingEngine = new PricingEngine(this.config.pricing || {})
         this.serviceMeter = new ServiceMeter(this.config.metering || {})
+
+        const creditsStoragePath = this.config.credits?.storagePath ||
+          (this.config.storage ? join(this.config.storage, 'credits.json') : null)
+        this.creditManager = new CreditManager({
+          storagePath: creditsStoragePath,
+          ...(this.config.credits || {})
+        })
+        await this.creditManager.load()
+
         this.freeTier = new FreeTierManager({
           freeLimits: this.config.freeTier?.limits,
-          whitelist: this.config.freeTier?.whitelist
+          whitelist: this.config.freeTier?.whitelist,
+          creditManager: this.creditManager
+        })
+
+        // Invoice manager for Lightning credit purchases
+        const invoiceProvider = this.paymentManager?.paymentProvider || null
+        this.invoiceManager = new InvoiceManager({
+          provider: invoiceProvider,
+          creditManager: this.creditManager,
+          expiryMs: this.config.credits?.invoiceExpiryMs
+        })
+        this.invoiceManager.start()
+
+        this.emit('credits-ready', {
+          wallets: this.creditManager.wallets.size,
+          rateCard: Object.keys(this.pricingEngine.rates).length
         })
 
         // ─── Application-Layer Router ───
@@ -579,19 +607,35 @@ export class RelayNode extends EventEmitter {
           })
           this.router.registerFromRegistry(this.serviceRegistry)
 
-          // Metering + quota middleware — runs on every service dispatch
+          // Metering + quota + credit deduction middleware
           const meter = this.serviceMeter
           const freeTier = this.freeTier
+          const credits = this.creditManager
+          const pricing = this.pricingEngine
           this.router.addMiddleware((route, params, context) => {
             const appKey = context.remotePubkey || context.appKey || 'anonymous'
 
-            // Check free-tier quota
+            // Check free-tier quota (auto-promotes apps with credits to standard)
             const quota = freeTier.check(appKey, route, meter)
             if (!quota.allowed) {
               throw new Error(quota.reason)
             }
 
-            // Record usage
+            // Calculate cost for this call
+            const price = pricing.calculate(route, params)
+
+            // Deduct credits if the app has a wallet and the route costs something
+            if (price.cost > 0 && credits.getBalance(appKey) > 0) {
+              const result = credits.deduct(appKey, price.cost, route, {
+                inputTokens: params.inputTokens,
+                outputTokens: params.outputTokens
+              })
+              if (!result.success) {
+                // Fall through to free tier — don't block, just don't charge
+              }
+            }
+
+            // Record usage (metering always runs — for analytics + relay earnings)
             meter.record(appKey, route)
             return true
           })
@@ -1664,6 +1708,11 @@ export class RelayNode extends EventEmitter {
       this.serviceMeter.flush(this.paymentManager)
     }
 
+    // Persist credit wallets
+    if (this.creditManager) {
+      try { await this.creditManager.save() } catch {}
+    }
+
     if (!this.paymentManager) return
     const minSats = (this.config.payment && this.config.payment.minSettlementSats) || 1000
     for (const [pubkey] of this.paymentManager.accounts) {
@@ -1728,6 +1777,14 @@ export class RelayNode extends EventEmitter {
       this.api = null
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
+
+    // Save credit wallets and stop invoice manager
+    if (this.invoiceManager) { this.invoiceManager.stop(); this.invoiceManager = null }
+    if (this.creditManager) {
+      try { await this.creditManager.save() } catch (err) {
+        this.emit('stop-error', { component: 'creditManager.save', error: err.message })
+      }
+    }
 
     // Destroy router, services, and protocol handlers
     if (this.router) { try { await this.router.stop() } catch (err) { this.emit('stop-error', { component: 'router', error: err.message }) } this.router = null }

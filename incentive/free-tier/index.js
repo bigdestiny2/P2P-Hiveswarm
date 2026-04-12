@@ -44,6 +44,8 @@ export class FreeTierManager extends EventEmitter {
     this.tiers = new Map()
     // Whitelisted apps (unlimited tier)
     this.whitelist = new Set(opts.whitelist || [])
+    // CreditManager reference — if set, apps with credits get 'standard' tier
+    this.creditManager = opts.creditManager || null
   }
 
   /**
@@ -106,7 +108,13 @@ export class FreeTierManager extends EventEmitter {
    */
   getTier (appPubkey) {
     if (this.whitelist.has(appPubkey)) return 'unlimited'
-    return this.tiers.get(appPubkey) || 'free'
+    const explicit = this.tiers.get(appPubkey)
+    if (explicit) return explicit
+    // Auto-promote to 'standard' if app has credit balance
+    if (this.creditManager && this.creditManager.getBalance(appPubkey) > 0) {
+      return 'standard'
+    }
+    return 'free'
   }
 
   /**

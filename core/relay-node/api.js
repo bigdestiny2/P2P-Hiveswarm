@@ -857,6 +857,169 @@ export class RelayAPI extends EventEmitter {
         return this._json(res, { error: 'Unknown billing endpoint' }, 404)
       }
 
+      // ─── Credits / Payments / Invoices ���──
+      if (path.startsWith('/api/v1/credits/')) {
+        if (!this.node.creditManager) {
+          return this._json(res, { error: 'Credit system not enabled' }, 503)
+        }
+
+        // GET /api/v1/credits/balance/:appKey — check credit balance
+        if (req.method === 'GET' && path.startsWith('/api/v1/credits/balance/')) {
+          const appKey = path.split('/').pop()
+          const wallet = this.node.creditManager.getWallet(appKey)
+          if (!wallet) return this._json(res, { balance: 0, wallet: null })
+          return this._json(res, wallet)
+        }
+
+        // GET /api/v1/credits/transactions/:appKey — transaction history
+        if (req.method === 'GET' && path.startsWith('/api/v1/credits/transactions/')) {
+          const appKey = path.split('/').pop()
+          const url = new URL(req.url, 'http://localhost')
+          const limit = parseInt(url.searchParams.get('limit') || '50', 10)
+          const offset = parseInt(url.searchParams.get('offset') || '0', 10)
+          return this._json(res, this.node.creditManager.getTransactions(appKey, { limit, offset }))
+        }
+
+        // GET /api/v1/credits/pricing — rate card
+        if (req.method === 'GET' && path === '/api/v1/credits/pricing') {
+          return this._json(res, this.node.pricingEngine.getRateCard())
+        }
+
+        // GET /api/v1/credits/pricing/compare — price comparison vs cloud APIs
+        if (req.method === 'GET' && path === '/api/v1/credits/pricing/compare') {
+          return this._json(res, this.node.pricingEngine.getComparison())
+        }
+
+        // GET /api/v1/credits/estimate — estimate cost for batch of calls
+        if (req.method === 'GET' && path === '/api/v1/credits/estimate') {
+          const url = new URL(req.url, 'http://localhost')
+          const route = url.searchParams.get('route')
+          const inputTokens = parseInt(url.searchParams.get('inputTokens') || '0', 10)
+          const outputTokens = parseInt(url.searchParams.get('outputTokens') || '0', 10)
+          if (!route) return this._json(res, { error: 'route parameter required' }, 400)
+          const result = this.node.pricingEngine.calculate(route, { inputTokens, outputTokens })
+          return this._json(res, result)
+        }
+
+        // POST /api/v1/credits/invoice — create Lightning invoice to buy credits
+        if (req.method === 'POST' && path === '/api/v1/credits/invoice') {
+          if (!this.node.invoiceManager) {
+            return this._json(res, { error: 'Invoice system not enabled' }, 503)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey || !body.amount) {
+            return this._json(res, { error: 'appKey and amount required' }, 400)
+          }
+          try {
+            const invoice = await this.node.invoiceManager.createInvoice(
+              body.appKey,
+              body.amount,
+              { memo: body.memo }
+            )
+            return this._json(res, invoice)
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // GET /api/v1/credits/invoice/:invoiceId — check invoice status
+        if (req.method === 'GET' && path.startsWith('/api/v1/credits/invoice/')) {
+          if (!this.node.invoiceManager) {
+            return this._json(res, { error: 'Invoice system not enabled' }, 503)
+          }
+          const invoiceId = path.split('/').pop()
+          const inv = this.node.invoiceManager.getInvoice(invoiceId)
+          if (!inv) return this._json(res, { error: 'Invoice not found' }, 404)
+          return this._json(res, inv)
+        }
+
+        // POST /api/v1/credits/invoice/settle — manually settle (for testing / webhook)
+        if (req.method === 'POST' && path === '/api/v1/credits/invoice/settle') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!this.node.invoiceManager) {
+            return this._json(res, { error: 'Invoice system not enabled' }, 503)
+          }
+          const body = await this._readBody(req)
+          if (!body.invoiceId) return this._json(res, { error: 'invoiceId required' }, 400)
+          try {
+            const result = await this.node.invoiceManager.settleInvoice(body.invoiceId)
+            return this._json(res, result)
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // POST /api/v1/credits/topup — direct credit top-up (admin, for testing)
+        if (req.method === 'POST' && path === '/api/v1/credits/topup') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey || !body.amount) {
+            return this._json(res, { error: 'appKey and amount required' }, 400)
+          }
+          try {
+            const tx = this.node.creditManager.topUp(body.appKey, body.amount)
+            return this._json(res, tx)
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // POST /api/v1/credits/freeze — freeze wallet (admin)
+        if (req.method === 'POST' && path === '/api/v1/credits/freeze') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          try {
+            this.node.creditManager.freezeWallet(body.appKey, body.reason || 'admin action')
+            return this._json(res, { ok: true, frozen: true })
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // POST /api/v1/credits/unfreeze — unfreeze wallet (admin)
+        if (req.method === 'POST' && path === '/api/v1/credits/unfreeze') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          try {
+            this.node.creditManager.unfreezeWallet(body.appKey)
+            return this._json(res, { ok: true, frozen: false })
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // GET /api/v1/credits/stats — aggregate credit stats (admin)
+        if (req.method === 'GET' && path === '/api/v1/credits/stats') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const creditStats = this.node.creditManager.stats()
+          const invoiceStats = this.node.invoiceManager ? this.node.invoiceManager.stats() : null
+          return this._json(res, { credits: creditStats, invoices: invoiceStats })
+        }
+
+        // GET /api/v1/credits/invoices/:appKey — list invoices for an app
+        if (req.method === 'GET' && path.startsWith('/api/v1/credits/invoices/')) {
+          if (!this.node.invoiceManager) {
+            return this._json(res, { error: 'Invoice system not enabled' }, 503)
+          }
+          const appKey = path.split('/').pop()
+          return this._json(res, { invoices: this.node.invoiceManager.getAppInvoices(appKey) })
+        }
+
+        return this._json(res, { error: 'Unknown credits endpoint' }, 404)
+      }
+
       // POST routes
       if (req.method === 'POST') {
         const body = await this._readBody(req)

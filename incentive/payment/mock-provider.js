@@ -49,10 +49,13 @@ export class MockProvider extends EventEmitter {
     if (!this.connected) throw new Error('Provider not connected')
 
     const bolt11 = 'lnbc' + amountSats + 'mock' + randomBytes(16).toString('hex')
+    const rHash = randomBytes(32).toString('hex')
     const invoice = {
       bolt11,
       amount: amountSats,
       memo,
+      rHash,
+      settled: false,
       timestamp: Date.now()
     }
     this.invoices.push(invoice)
@@ -73,6 +76,21 @@ export class MockProvider extends EventEmitter {
       channels: { active: 3, inactive: 0, pending: 0 },
       blockHeight: 800000
     }
+  }
+
+  async lookupInvoice (rHash) {
+    if (!this.connected) throw new Error('Provider not connected')
+    // Check if any invoice was marked as settled
+    const inv = this.invoices.find(i => i.rHash === rHash)
+    return inv ? { settled: !!inv.settled, amount: inv.amount } : null
+  }
+
+  /**
+   * Mark a mock invoice as settled (for testing settlement detection).
+   */
+  settleInvoice (rHash) {
+    const inv = this.invoices.find(i => i.rHash === rHash)
+    if (inv) inv.settled = true
   }
 
   async disconnect () {
