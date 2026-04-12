@@ -552,23 +552,50 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Dashboard integration** — Tor-enabled relays show green TOR badge and `.onion` address in network overview
 - **Secure control port auth** — Password escaping prevents command injection in Tor control protocol
 
+### Application-Layer Router
+- **O(1) dispatch** — Map-based route table for instant service dispatch from any transport
+- **Unified transport** — P2P (Protomux) and HTTP requests go through the same dispatch path
+- **Pub/Sub engine** — Two-tier topic subscriptions (exact O(1) + glob patterns). P2P delivery via Protomux, HTTP via Server-Sent Events
+- **Transaction orchestration** — `orchestrate()` chains multi-step service calls (e.g., storage read -> compute -> ZK proof) with automatic rollback on failure
+- **Trace IDs** — Every dispatch generates a trace ID propagated through all middleware and handlers
+- **Per-route rate limiting** — Token bucket per route per peer, configurable burst/sustained profiles
+- **Named worker pools** — Separate `cpu` and `io` thread pools prevent heavy compute from starving I/O
+- **Middleware chain** — Global and per-route middleware for auth, metering, policy enforcement
+- **Auto-registration** — Routes generated automatically from ServiceRegistry manifest capabilities
+
+### Services Layer
+- **Storage** — Hyperdrive/Hypercore CRUD operations (9 capabilities)
+- **Identity** — Keypair management, Ed25519 signing/verification, peer resolution
+- **Compute** — Task queue with job lifecycle (submit, status, result, cancel)
+- **AI Inference** — Wraps local/remote models (Ollama, OpenAI-compatible). Queued inference with URL validation
+- **ZK Proofs** — Pedersen commitments, Merkle membership proofs, range proofs
+- **SLA Contracts** — Staked performance guarantees with automated proof-of-relay enforcement. Collateral slashing on violation, auto-terminate after 3 failures
+- **Schema Registry** — JSON Schema registration and inline validation for cross-app data interoperability. Multi-version support with optional Hypercore persistence
+- **Arbitration** — Peer-adjudicated dispute resolution. High-reputation nodes vote on evidence (bandwidth receipts, proof results). Winners gain reputation, losers are slashed
+- **Pluggable** — Custom services extend `ServiceProvider` and register via config
+
 ### Incentive Layer (Phase 2)
 - **Lightning micropayments** — LND integration for paying relay operators
 - **Bandwidth receipts** — Signed proof of data transfer for accounting, with replay detection (circular buffer, 50K nonces)
 - **Daily settlement** — Automatic settlement when balance exceeds threshold
+- **Held-amount schedule** — New operators have 75%/50%/25%/0% held over months 1-10, returned after 15 months
+- **Slashing** — Provably bad behavior (failed challenges, SLA violations) triggers collateral seizure
 - **Mock provider** — Development/testing without real Lightning node
 
 ### Security Hardening
-- **Optional API authentication** — Bearer token auth via `HIVERELAY_API_KEY` env var (for private relay operators)
-- **Optional ownership signatures** — Ed25519 `crypto_sign_verify_detached` verification on seed/unseed requests (opt-in, verified when provided)
-- **Registration challenges** — SHA256 proof-of-work to prevent appId squatting (opt-in, verified when provided)
+- **API key enforcement** — State-modifying endpoints blocked when no API key configured (not silently bypassed)
+- **Sanitized error responses** — 500 errors return "Internal server error", not stack traces
+- **Bandwidth enforcement** — Sliding-window bandwidth check in circuit relay; circuits closed on exceed
+- **Per-peer RESERVE rate limiting** — Max 5 reserves/minute per peer to prevent memory exhaustion
+- **Pending map eviction** — Seed requests, pending connects, and proof challenges have TTL + max size caps
+- **AI endpoint validation** — Blocks `file://` and private/internal IPs (allows localhost for local models)
+- **Optional ownership signatures** — Ed25519 `crypto_sign_verify_detached` verification on seed/unseed requests
+- **Registration challenges** — SHA256 proof-of-work to prevent appId squatting
 - **Pagination** — Catalog and registry endpoints paginated (default 50, max 100 per page)
-- **CORS configuration** — Default `*` for public relays, configurable per deployment
-- **Token bucket rate limiter** — Per-peer rate limiting on P2P protocol messages
+- **Token bucket rate limiter** — Per-peer rate limiting on P2P protocol messages + per-route rate limits on router
 - **LRU drive cache** — Hyper Gateway limits cached drives (default 50) with LRU eviction
 - **Operation timeouts** — All Hyperdrive operations wrapped with configurable timeouts (default 30s)
-- **Hex key normalization** — All keys normalized to lowercase to prevent duplicate entries
-- **Connection error cleanup** — Failed connections automatically removed from tracking
+- **Version comparison fix** — Semver comparison handles `1.10.0 > 1.9.0` correctly
 
 ### Seeding Registry (Persistence & Catch-Up)
 - **Not the primary path** — DHT + Protomux handles instant seeding when client and relays are both online
@@ -624,6 +651,9 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **`POST /registry/approve`** — Approve a pending request (approval mode)
 - **`POST /registry/reject`** — Reject a pending request
 - **`POST /registry/auto-accept`** — Toggle auto-accept / approval mode
+- **`POST /api/v1/dispatch`** — Universal service dispatch via router (auth required). Body: `{ route, params }`
+- **`GET /api/v1/subscribe?topic=X`** — Server-Sent Events pub/sub stream
+- **`GET /api/v1/router`** — Router stats: routes, pub/sub topics, worker pool status
 
 #### Hyper Gateway (HTTP access to Hyperdrive content)
 - **`GET /v1/hyper/DRIVE_KEY/path`** — Serve files from a seeded Hyperdrive over HTTP. Auto-detects content type, resolves `index.html` for directories, returns JSON directory listings. Vite-built apps have asset paths auto-rewritten. Path traversal protection blocks `..`, null bytes, and double-encoded attacks.
@@ -700,12 +730,31 @@ p2p-hiverelay/
 │   │   ├── ws-feed.js     # WebSocket live feed for dashboards
 │   │   ├── health-monitor.js  # 5-check health monitoring
 │   │   └── self-heal.js   # Auto-recovery (soft + hard actions)
+│   ├── router/            # Application-layer router
+│   │   ├── index.js       # Router — O(1) dispatch, orchestrate, rate limits
+│   │   ├── pubsub.js      # Pub/Sub — exact + glob topic subscriptions
+│   │   ├── worker-pool.js # Named worker thread pools (cpu/io)
+│   │   └── worker.js      # Worker thread entry point
 │   ├── protocol/          # Wire protocol (Protomux)
 │   │   ├── messages.js    # Compact-encoded message schemas
 │   │   ├── seed-request.js    # Seed request/accept protocol
 │   │   ├── relay-circuit.js   # Circuit relay protocol
 │   │   ├── proof-of-relay.js  # Cryptographic proof challenges
+│   │   ├── rate-limiter.js    # Token bucket rate limiter
 │   │   └── bandwidth-receipt.js # Signed bandwidth proofs
+│   ├── services/          # Pluggable service layer
+│   │   ├── registry.js    # ServiceRegistry — registration + dispatch
+│   │   ├── protocol.js    # ServiceProtocol — RPC over Protomux
+│   │   ├── provider.js    # ServiceProvider — base class
+│   │   └── builtin/       # Built-in services
+│   │       ├── storage-service.js     # Hyperdrive/Hypercore CRUD
+│   │       ├── identity-service.js    # Keypair + signing
+│   │       ├── compute-service.js     # Task queue
+│   │       ├── ai-service.js          # AI/ML inference
+│   │       ├── zk-service.js          # Zero-knowledge proofs
+│   │       ├── sla-service.js         # SLA contracts + enforcement
+│   │       ├── schema-service.js      # Schema registry + validation
+│   │       └── arbitration-service.js # Dispute resolution
 │   ├── registry/          # Distributed seeding registry (Hypercore-based)
 │   ├── network-discovery.js # DHT-based relay auto-discovery
 │   ├── bootstrap-cache.js # Persistent DHT routing table
@@ -740,7 +789,7 @@ p2p-hiverelay/
 ├── cli/                   # CLI tool
 ├── config/                # Default configuration
 ├── test/
-│   ├── unit/              # 58 unit tests + 21 privacy tier tests
+│   ├── unit/              # 201 unit tests across 14 test files
 │   └── integration/       # 15 integration tests
 ├── scripts/               # Benchmarks and test scenarios
 ├── Dockerfile             # Production container
@@ -754,7 +803,7 @@ p2p-hiverelay/
 ## Running Tests
 
 ```bash
-npm test                   # All tests (107 tests, 419+ assertions)
+npm test                   # All tests (201+ tests)
 npm run test:unit          # Unit tests only
 npm run test:integration   # Integration tests (requires network)
 npm run lint               # Linting (standardjs)
@@ -826,31 +875,44 @@ Environment variables:
 - WebSocket live dashboard feed with HTTP fallback
 - Persistent relay identity and bootstrap cache across restarts
 - Operator dashboard with registry management + network overview
-- Live network: 4 relays across Utah (NA) and Singapore (AS)
-- Blind mode: encrypted apps with optional blind replication (relay stores ciphertext it can't read)
-- Platform privacy APIs: crypto (XChaCha20-Poly1305), key management (HKDF), encrypted local storage, privacy tier enforcement with audit logging
+- Blind mode: encrypted apps with optional blind replication
+- Platform privacy APIs: XChaCha20-Poly1305 encryption, HKDF key management, encrypted local storage, privacy tier enforcement
 - Standalone P2P reference implementation for Tier 3 (P2P-Only) use cases
 - Hyper Gateway: serve Hyperdrive content over HTTP with LRU cache and path security
-- Security hardening: 23+ vulnerabilities patched across 3 independent audits
+- Security hardening: 30+ vulnerabilities patched across 4 audits
 - Atomic persistence, rate limiting, input validation, replay detection
-- Optional API auth, ownership signatures, and registration challenges for private operators
-- TLS via Caddy reverse proxy on production relays (auto-HTTPS via Let's Encrypt)
+
+**Phase 1.5: Application Router + Services Layer** (complete)
+- Application-layer router with O(1) dispatch, pub/sub, transaction orchestration
+- Named worker thread pools (cpu/io) for compute isolation
+- Trace IDs, per-route rate limiting, middleware chain
+- Services layer: Storage, Identity, Compute, AI, ZK
+- SLA Contracts with automated proof-of-relay enforcement and collateral slashing
+- Schema Registry for cross-app data interoperability with inline JSON Schema validation
+- Decentralized Arbitration with peer-adjudicated dispute resolution
+- P2P pub/sub via Protomux (MSG_SUBSCRIBE/UNSUBSCRIBE/EVENT)
+- HTTP pub/sub via Server-Sent Events (`/api/v1/subscribe`)
+- Universal service dispatch via HTTP (`/api/v1/dispatch`)
+- 201 unit tests passing
 
 **Phase 2: Incentive Layer** (in progress)
-- Lightning micropayments for relay operators
-- Payment settlement with held-amount schedule
+- Lightning micropayments for relay operators (LND gRPC integration built)
+- Payment settlement with held-amount schedule (accounting built, settlement ready)
 - Bandwidth marketplace
+- SLA contract premium pricing (3-5x base rates)
 
-**Phase 3: Compute Network**
-- HiveCompute: P2P AI inference and compute services
-- Mac Studio / GPU owners rent compute to the network
-- Shared reputation across relay and compute
-- See `specs/HIVECOMPUTE-SPEC.md` for full architecture
+**Phase 3: Enterprise + Governance**
+- OpenAPI specification for router dispatch interface
+- Anchor partner program with regional reputation multipliers
+- Public testnet for developer onboarding
+- Schema-based data mesh for cross-app interoperability
+- Arbitration governance refinement (staking, appeal mechanism)
 
 **Phase 4: Scale**
 - I2P transport
 - Cross-region relay routing
-- Token-based incentives (if demand proves it)
+- Predictive load balancing (historical data-driven routing)
+- Distributed tracing (OpenTelemetry integration)
 
 ---
 
