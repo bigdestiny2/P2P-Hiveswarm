@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveRelay Leaderboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2358a6ff'/%3E%3Cstop offset='100%25' stop-color='%233fb950'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5' fill='url(%23g)' opacity='.9'/%3E%3Cpolygon points='27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5' fill='url(%23g)' opacity='.7'/%3E%3Cpolygon points='73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5' fill='url(%23g)' opacity='.7'/%3E%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--card:#161b22;--card-border:#21262d;--card-hover:#1c2333;
+  --green:#3fb950;--orange:#d29922;--cyan:#58a6ff;--red:#f85149;--purple:#bc8cff;
+  --text:#c9d1d9;--text-dim:#8b949e;--text-bright:#f0f6fc;
+  --mono:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:0}
+
+/* Top Bar */
+.topbar{
+  background:var(--card);border-bottom:1px solid var(--card-border);
+  padding:1rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
+  position:sticky;top:0;z-index:100;
+}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
+.hive-logo{width:32px;height:32px;flex-shrink:0}
+.topbar h1{font-size:1.2rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-nav{display:flex;gap:.25rem;margin-left:1.5rem}
+.topbar-nav a{
+  font-size:.8rem;color:var(--text-dim);text-decoration:none;
+  padding:.35rem .75rem;border-radius:6px;transition:color .2s,background .2s;
+}
+.topbar-nav a:hover{color:var(--text-bright);background:rgba(255,255,255,.05)}
+.topbar-nav a.active{color:var(--cyan);background:rgba(88,166,255,.1)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:1rem}
+.conn-status{
+  display:flex;align-items:center;gap:.4rem;
+  font-family:var(--mono);font-size:.75rem;
+  padding:.3rem .7rem;border-radius:6px;
+}
+.conn-status .dot{width:8px;height:8px;border-radius:50%}
+.conn-status.live{color:var(--green)}
+.conn-status.live .dot{background:var(--green);box-shadow:0 0 6px rgba(63,185,80,.5)}
+.conn-status.polling{color:var(--orange)}
+.conn-status.polling .dot{background:var(--orange);box-shadow:0 0 6px rgba(210,153,34,.5)}
+.conn-status.disconnected{color:var(--red)}
+.conn-status.disconnected .dot{background:var(--red);box-shadow:0 0 6px rgba(248,81,73,.5)}
+
+.container{max-width:1400px;margin:0 auto;padding:1.5rem 2rem}
+
+/* Summary Row */
+.summary-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:2rem}
+.summary-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:8px;padding:1.2rem;
+}
+.summary-label{font-size:.7rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:.5rem}
+.summary-value{font-size:2rem;font-weight:700;font-family:var(--mono);color:var(--text-bright);line-height:1}
+.summary-value.cyan{color:var(--cyan)}
+.summary-value.green{color:var(--green)}
+.summary-value.orange{color:var(--orange)}
+.summary-value.purple{color:var(--purple)}
+.summary-sub{font-size:.7rem;color:var(--text-dim);margin-top:.4rem;font-family:var(--mono)}
+
+/* Table */
+.table-wrap{
+  background:var(--card);border:1px solid var(--card-border);border-radius:8px;overflow:hidden;
+}
+.table-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:1rem 1.2rem;border-bottom:1px solid var(--card-border);
+}
+.table-header h2{font-size:1rem;color:var(--text-bright);font-weight:600}
+.table-header .badge{
+  font-size:.7rem;font-family:var(--mono);padding:.2rem .6rem;
+  border-radius:10px;background:rgba(88,166,255,.1);color:var(--cyan);
+}
+table{width:100%;border-collapse:collapse}
+thead th{
+  text-align:left;padding:.75rem 1rem;font-size:.7rem;text-transform:uppercase;
+  letter-spacing:1px;color:var(--text-dim);border-bottom:1px solid var(--card-border);
+  cursor:pointer;user-select:none;white-space:nowrap;
+}
+thead th:hover{color:var(--text-bright)}
+thead th .sort-arrow{margin-left:.3rem;font-size:.65rem;opacity:.5}
+thead th.sorted .sort-arrow{opacity:1;color:var(--cyan)}
+tbody tr{border-bottom:1px solid var(--card-border);transition:background .15s}
+tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:var(--card-hover)}
+tbody td{padding:.7rem 1rem;font-size:.85rem;white-space:nowrap}
+td.mono{font-family:var(--mono)}
+
+/* Rank column */
+.rank{font-family:var(--mono);font-weight:700;color:var(--text-dim);font-size:.85rem}
+.rank-1{color:var(--orange);font-size:1rem}
+.rank-2{color:var(--text-bright)}
+.rank-3{color:var(--orange);opacity:.7}
+
+/* Pubkey */
+.pubkey-cell{display:flex;align-items:center;gap:.5rem}
+.pubkey{font-family:var(--mono);font-size:.8rem;color:var(--cyan)}
+.copy-btn{
+  background:none;border:1px solid var(--card-border);border-radius:4px;
+  color:var(--text-dim);cursor:pointer;font-size:.7rem;padding:.15rem .4rem;
+  transition:color .2s,border-color .2s;
+}
+.copy-btn:hover{color:var(--text-bright);border-color:var(--text-dim)}
+
+/* Score colors */
+.score-high{color:var(--green);font-weight:700}
+.score-mid{color:var(--orange);font-weight:700}
+.score-low{color:var(--red);font-weight:700}
+
+/* Reliability bar */
+.reliability-cell{display:flex;align-items:center;gap:.6rem}
+.reliability-bar{width:60px;height:6px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;flex-shrink:0}
+.reliability-fill{height:100%;border-radius:3px;transition:width .3s}
+.reliability-pct{font-family:var(--mono);font-size:.8rem}
+
+/* Latency colors */
+.latency-good{color:var(--green)}
+.latency-ok{color:var(--orange)}
+.latency-bad{color:var(--red)}
+
+/* Region */
+.region-cell{display:flex;align-items:center;gap:.4rem}
+.region-flag{font-size:1rem}
+.region-code{font-family:var(--mono);font-size:.75rem;color:var(--text-dim)}
+
+/* "YOU" highlight */
+tr.this-node{border-left:3px solid var(--cyan);background:rgba(88,166,255,.04)}
+tr.this-node:hover{background:rgba(88,166,255,.08)}
+.you-badge{
+  display:inline-block;font-size:.6rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:1px;padding:.1rem .45rem;border-radius:4px;
+  background:rgba(88,166,255,.15);color:var(--cyan);margin-left:.5rem;
+}
+
+/* Empty state */
+.empty-state{
+  padding:4rem 2rem;text-align:center;color:var(--text-dim);
+}
+.empty-state svg{width:64px;height:64px;margin-bottom:1.5rem;opacity:.4}
+.empty-state h3{color:var(--text-bright);font-size:1.1rem;margin-bottom:.5rem}
+.empty-state p{font-size:.9rem;max-width:480px;margin:0 auto;line-height:1.6}
+
+/* Toast */
+.toast{
+  position:fixed;bottom:2rem;left:50%;transform:translateX(-50%) translateY(100px);
+  background:var(--card);border:1px solid var(--card-border);border-radius:8px;
+  padding:.6rem 1.2rem;font-family:var(--mono);font-size:.8rem;color:var(--green);
+  opacity:0;transition:transform .3s,opacity .3s;z-index:999;
+}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+/* Responsive */
+@media(max-width:900px){
+  .summary-row{grid-template-columns:repeat(2,1fr)}
+  .topbar-nav{display:none}
+}
+@media(max-width:600px){
+  .summary-row{grid-template-columns:1fr}
+  .container{padding:1rem}
+  .topbar{padding:.75rem 1rem}
+  table{font-size:.75rem}
+  thead th,tbody td{padding:.5rem .6rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <a href="/dashboard" class="topbar-logo">
+    <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#58a6ff"/>
+          <stop offset="100%" stop-color="#3fb950"/>
+        </linearGradient>
+      </defs>
+      <polygon points="50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5" fill="url(#g)" opacity=".9"/>
+      <polygon points="27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5" fill="url(#g)" opacity=".7"/>
+      <polygon points="73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5" fill="url(#g)" opacity=".7"/>
+    </svg>
+    <h1>HiveRelay Leaderboard</h1>
+  </a>
+  <nav class="topbar-nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/network">Network</a>
+    <a href="/leaderboard" class="active">Leaderboard</a>
+    <a href="/docs">Docs</a>
+  </nav>
+  <div class="topbar-right">
+    <div id="connStatus" class="conn-status disconnected">
+      <span class="dot"></span>
+      <span id="connLabel">DISCONNECTED</span>
+    </div>
+  </div>
+</div>
+
+<!-- Main Content -->
+<div class="container">
+
+  <!-- Summary Row -->
+  <div class="summary-row">
+    <div class="summary-card">
+      <div class="summary-label">Total Relays Tracked</div>
+      <div id="totalRelays" class="summary-value cyan">--</div>
+      <div class="summary-sub">ranked relays</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Avg Reliability</div>
+      <div id="avgReliability" class="summary-value green">--%</div>
+      <div class="summary-sub">across all relays</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Total Bytes Served</div>
+      <div id="totalBytes" class="summary-value orange">--</div>
+      <div class="summary-sub">network-wide</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Total Challenges</div>
+      <div id="totalChallenges" class="summary-value purple">--</div>
+      <div class="summary-sub">proof-of-relay</div>
+    </div>
+  </div>
+
+  <!-- Leaderboard Table -->
+  <div class="table-wrap">
+    <div class="table-header">
+      <h2>Reputation Leaderboard</h2>
+      <span id="relayCount" class="badge">0 relays</span>
+    </div>
+    <div id="tableContainer">
+      <table>
+        <thead>
+          <tr>
+            <th data-col="rank" data-type="num"># <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="pubkey" data-type="str">Relay <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="score" data-type="num">Score <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="reliability" data-type="num">Reliability <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="latency" data-type="num">Avg Latency <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="uptime" data-type="num">Uptime <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="bytes" data-type="num">Bytes Served <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="region" data-type="str">Region <span class="sort-arrow">&#9650;</span></th>
+            <th data-col="lastActive" data-type="num">Last Active <span class="sort-arrow">&#9650;</span></th>
+          </tr>
+        </thead>
+        <tbody id="leaderboardBody"></tbody>
+      </table>
+    </div>
+    <div id="emptyState" class="empty-state" style="display:none">
+      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="ge" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#58a6ff"/>
+            <stop offset="100%" stop-color="#3fb950"/>
+          </linearGradient>
+        </defs>
+        <polygon points="50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5" fill="url(#ge)" opacity=".3"/>
+        <polygon points="27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5" fill="url(#ge)" opacity=".2"/>
+        <polygon points="73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5" fill="url(#ge)" opacity=".2"/>
+      </svg>
+      <h3>No relays ranked yet</h3>
+      <p>Relays need 10+ proof-of-relay challenges to appear on the leaderboard.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // --- State ---
+  var relays = [];
+  var myPubkey = null;
+  var sortCol = 'rank';
+  var sortAsc = true;
+  var ws = null;
+  var refreshTimer = null;
+
+  // --- Helpers ---
+  function formatBytes(b) {
+    if (b == null || isNaN(b)) return '--';
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+    if (b < 1099511627776) return (b / 1073741824).toFixed(2) + ' GB';
+    return (b / 1099511627776).toFixed(2) + ' TB';
+  }
+
+  function formatUptime(hours) {
+    if (hours == null || isNaN(hours)) return '--';
+    var h = Math.floor(hours);
+    if (h < 24) return h + 'h';
+    var d = Math.floor(h / 24);
+    var rem = h % 24;
+    return d + 'd ' + rem + 'h';
+  }
+
+  function formatRelativeTime(ts) {
+    if (!ts) return '--';
+    var now = Date.now();
+    var t = typeof ts === 'number' ? ts : new Date(ts).getTime();
+    var diff = Math.max(0, Math.floor((now - t) / 1000));
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+
+  function truncatePubkey(pk) {
+    if (!pk || pk.length < 16) return pk || '--';
+    return pk.slice(0, 8) + '...' + pk.slice(-8);
+  }
+
+  var regionFlags = {
+    'NA': '\u{1F1FA}\u{1F1F8}', 'EU': '\u{1F1EA}\u{1F1FA}',
+    'AS': '\u{1F30F}', 'SA': '\u{1F30E}', 'AF': '\u{1F30D}', 'OC': '\u{1F30F}'
+  };
+
+  function regionFlag(r) {
+    return regionFlags[r] || '\u{1F310}';
+  }
+
+  function scoreClass(s) {
+    if (s >= 70) return 'score-high';
+    if (s >= 40) return 'score-mid';
+    return 'score-low';
+  }
+
+  function latencyClass(ms) {
+    if (ms < 500) return 'latency-good';
+    if (ms < 2000) return 'latency-ok';
+    return 'latency-bad';
+  }
+
+  function reliabilityColor(pct) {
+    if (pct >= 90) return 'var(--green)';
+    if (pct >= 60) return 'var(--orange)';
+    return 'var(--red)';
+  }
+
+  function showToast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(function() { t.classList.remove('show'); }, 2000);
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function() { showToast('Copied!'); });
+    }
+  }
+
+  // --- Connection Status ---
+  function setConnStatus(state, label) {
+    var el = document.getElementById('connStatus');
+    el.className = 'conn-status ' + state;
+    document.getElementById('connLabel').textContent = label;
+  }
+
+  // --- Sorting ---
+  function getValue(relay, col) {
+    switch (col) {
+      case 'rank': return relay._rank;
+      case 'pubkey': return relay.pubkey || '';
+      case 'score': return relay.score || 0;
+      case 'reliability': return relay.reliability || 0;
+      case 'latency': return relay.avgLatency || 0;
+      case 'uptime': return relay.uptimeHours || 0;
+      case 'bytes': return relay.bytesServed || 0;
+      case 'region': return relay.region || '';
+      case 'lastActive': return relay.lastActive ? new Date(relay.lastActive).getTime() : 0;
+      default: return 0;
+    }
+  }
+
+  function sortRelays() {
+    relays.sort(function(a, b) {
+      var va = getValue(a, sortCol);
+      var vb = getValue(b, sortCol);
+      if (typeof va === 'string') {
+        var cmp = va.localeCompare(vb);
+        return sortAsc ? cmp : -cmp;
+      }
+      return sortAsc ? va - vb : vb - va;
+    });
+  }
+
+  // --- Render ---
+  function render() {
+    var tbody = document.getElementById('leaderboardBody');
+    var empty = document.getElementById('emptyState');
+    var table = document.querySelector('#tableContainer table');
+
+    if (relays.length === 0) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      document.getElementById('relayCount').textContent = '0 relays';
+      return;
+    }
+    table.style.display = '';
+    empty.style.display = 'none';
+    document.getElementById('relayCount').textContent = relays.length + ' relay' + (relays.length !== 1 ? 's' : '');
+
+    // Assign ranks based on score before sorting for display
+    var ranked = relays.slice().sort(function(a, b) { return (b.score || 0) - (a.score || 0); });
+    for (var i = 0; i < ranked.length; i++) ranked[i]._rank = i + 1;
+
+    sortRelays();
+
+    var html = '';
+    for (var j = 0; j < relays.length; j++) {
+      var r = relays[j];
+      var isMe = myPubkey && r.pubkey === myPubkey;
+      var score = r.score || 0;
+      var rel = r.reliability || 0;
+      var lat = r.avgLatency || 0;
+      var up = r.uptimeHours || 0;
+      var bytes = r.bytesServed || 0;
+      var region = r.region || '--';
+      var lastActive = r.lastActive || null;
+      var rankCls = r._rank === 1 ? 'rank rank-1' : (r._rank === 2 ? 'rank rank-2' : (r._rank === 3 ? 'rank rank-3' : 'rank'));
+
+      html += '<tr class="' + (isMe ? 'this-node' : '') + '">';
+      html += '<td class="mono ' + rankCls + '">' + r._rank + '</td>';
+      html += '<td><div class="pubkey-cell"><span class="pubkey">' + truncatePubkey(r.pubkey) + '</span>';
+      html += '<button class="copy-btn" onclick="event.stopPropagation();(function(){if(navigator.clipboard)navigator.clipboard.writeText(\'' + (r.pubkey || '') + '\').then(function(){var t=document.getElementById(\'toast\');t.textContent=\'Copied!\';t.classList.add(\'show\');setTimeout(function(){t.classList.remove(\'show\')},2000)})})()">&#x2398;</button>';
+      if (isMe) html += '<span class="you-badge">YOU</span>';
+      html += '</div></td>';
+      html += '<td class="mono ' + scoreClass(score) + '">' + score.toFixed(1) + '</td>';
+      html += '<td><div class="reliability-cell"><div class="reliability-bar"><div class="reliability-fill" style="width:' + rel + '%;background:' + reliabilityColor(rel) + '"></div></div><span class="reliability-pct mono" style="color:' + reliabilityColor(rel) + '">' + rel.toFixed(1) + '%</span></div></td>';
+      html += '<td class="mono ' + latencyClass(lat) + '">' + Math.round(lat) + ' ms</td>';
+      html += '<td class="mono">' + formatUptime(up) + '</td>';
+      html += '<td class="mono">' + formatBytes(bytes) + '</td>';
+      html += '<td><div class="region-cell"><span class="region-flag">' + regionFlag(region) + '</span><span class="region-code">' + region + '</span></div></td>';
+      html += '<td class="mono" style="color:var(--text-dim)">' + formatRelativeTime(lastActive) + '</td>';
+      html += '</tr>';
+    }
+    tbody.innerHTML = html;
+
+    // Update sort indicators
+    var ths = document.querySelectorAll('thead th');
+    for (var k = 0; k < ths.length; k++) {
+      var th = ths[k];
+      if (th.dataset.col === sortCol) {
+        th.classList.add('sorted');
+        th.querySelector('.sort-arrow').innerHTML = sortAsc ? '&#9650;' : '&#9660;';
+      } else {
+        th.classList.remove('sorted');
+        th.querySelector('.sort-arrow').innerHTML = '&#9650;';
+      }
+    }
+  }
+
+  function updateSummary() {
+    var totalRelays = relays.length;
+    var totalBytes = 0;
+    var totalChallenges = 0;
+    var sumRel = 0;
+
+    for (var i = 0; i < relays.length; i++) {
+      totalBytes += relays[i].bytesServed || 0;
+      totalChallenges += relays[i].challenges || 0;
+      sumRel += relays[i].reliability || 0;
+    }
+
+    document.getElementById('totalRelays').textContent = totalRelays.toLocaleString();
+    document.getElementById('avgReliability').textContent = totalRelays > 0 ? (sumRel / totalRelays).toFixed(1) + '%' : '--%';
+    document.getElementById('totalBytes').textContent = formatBytes(totalBytes);
+    document.getElementById('totalChallenges').textContent = totalChallenges.toLocaleString();
+  }
+
+  // --- Data Fetching ---
+  function fetchLeaderboard() {
+    fetch('/api/reputation')
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        var list = Array.isArray(data) ? data : (data.relays || data.leaderboard || []);
+        // Normalize API response shape to internal format
+        relays = list.map(function(r) {
+          var relPct = typeof r.reliability === 'string' ? parseFloat(r.reliability) : (r.reliability || 0);
+          return {
+            pubkey: r.relay || r.pubkey || '',
+            score: r.score || 0,
+            reliability: relPct,
+            avgLatency: r.avgLatencyMs || r.avg_latency || r.avgLatency || 0,
+            uptimeHours: r.uptimeHours || r.uptime_hours || 0,
+            bytesServed: r.bytesServed || r.bytes_served || 0,
+            region: r.region || 'unknown',
+            lastActive: r.lastActivity || r.last_active || r.lastActive || null,
+            challenges: r.totalChallenges || r.challenges || r.challenge_count || 0
+          };
+        });
+        updateSummary();
+        render();
+        setConnStatus('polling', 'POLLING');
+      })
+      .catch(function(err) {
+        console.error('Failed to fetch leaderboard:', err);
+        setConnStatus('disconnected', 'DISCONNECTED');
+      });
+  }
+
+  function fetchMyPubkey() {
+    fetch('/api/overview')
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        myPubkey = data.pubkey || data.public_key || data.publicKey || null;
+      })
+      .catch(function() {});
+  }
+
+  // --- WebSocket ---
+  function connectWS() {
+    try {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/ws');
+      ws.onopen = function() {
+        setConnStatus('live', 'WS LIVE');
+      };
+      ws.onmessage = function(evt) {
+        try {
+          var msg = JSON.parse(evt.data);
+          if (msg.type === 'reputation' || msg.type === 'leaderboard') {
+            var list = Array.isArray(msg.data) ? msg.data : (msg.data.relays || msg.data.leaderboard || []);
+            relays = list.map(function(r) {
+              var relPct = typeof r.reliability === 'string' ? parseFloat(r.reliability) : (r.reliability || 0);
+              return {
+                pubkey: r.relay || r.pubkey || '',
+                score: r.score || 0,
+                reliability: relPct,
+                avgLatency: r.avgLatencyMs || r.avgLatency || 0,
+                uptimeHours: r.uptimeHours || 0,
+                bytesServed: r.bytesServed || 0,
+                region: r.region || 'unknown',
+                lastActive: r.lastActivity || r.lastActive || null,
+                challenges: r.totalChallenges || r.challenges || 0
+              };
+            });
+            updateSummary();
+            render();
+          }
+        } catch (e) {}
+      };
+      ws.onclose = function() {
+        setConnStatus('polling', 'POLLING');
+        setTimeout(connectWS, 5000);
+      };
+      ws.onerror = function() {
+        ws.close();
+      };
+    } catch (e) {
+      setConnStatus('polling', 'POLLING');
+    }
+  }
+
+  // --- Sort Click Handlers ---
+  document.querySelectorAll('thead th').forEach(function(th) {
+    th.addEventListener('click', function() {
+      var col = th.dataset.col;
+      if (!col) return;
+      if (sortCol === col) {
+        sortAsc = !sortAsc;
+      } else {
+        sortCol = col;
+        sortAsc = col === 'rank' || col === 'region' || col === 'pubkey';
+      }
+      render();
+    });
+  });
+
+  // --- Init ---
+  fetchMyPubkey();
+  fetchLeaderboard();
+  connectWS();
+  refreshTimer = setInterval(function() {
+    fetchLeaderboard();
+    fetchMyPubkey();
+  }, 10000);
+
+})();
+</script>
+</body>
+</html>

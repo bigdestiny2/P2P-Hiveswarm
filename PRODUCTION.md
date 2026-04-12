@@ -177,35 +177,82 @@ curl http://127.0.0.1:9100/peers
 
 ## API Security
 
-The HTTP API binds to `127.0.0.1` only. It is not accessible from the network by default.
+The HTTP API binds to `0.0.0.0` by default for remote access compatibility (relays are public infrastructure). To restrict to localhost, set `apiHost: '127.0.0.1'` in config.
 
-If you need remote access (e.g., for Prometheus scraping from another host), use a reverse proxy with authentication:
+### TLS with Caddy (Recommended)
+
+Caddy provides automatic HTTPS with Let's Encrypt certificates:
+
+```bash
+# Install Caddy
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install caddy
+
+# Configure
+sudo tee /etc/caddy/Caddyfile <<'EOF'
+relay-us.p2phiverelay.xyz {
+    reverse_proxy 127.0.0.1:9100
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}
+EOF
+
+sudo systemctl enable caddy
+sudo systemctl restart caddy
+```
+
+Caddy auto-obtains and renews TLS certificates. No manual cert management needed.
+
+### TLS with NGINX (Alternative)
 
 ```nginx
-# /etc/nginx/sites-available/hiverelay
 server {
-    listen 9100 ssl;
-    server_name your-server.example.com;
+    listen 443 ssl http2;
+    server_name relay.yourdomain.com;
 
-    ssl_certificate /etc/letsencrypt/live/your-server.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-server.example.com/privkey.pem;
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    ssl_protocols TLSv1.3;
 
-    # Only allow metrics and health (read-only)
-    location /metrics {
+    location / {
         proxy_pass http://127.0.0.1:9100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-
-    location /health {
-        proxy_pass http://127.0.0.1:9100;
-    }
-
-    # Block write endpoints from remote access
-    location /seed { return 403; }
-    location /unseed { return 403; }
 }
 ```
 
-The API has built-in rate limiting (60 requests/minute per IP).
+### API Authentication (Optional — Private Relays)
+
+For private relay operators who want to restrict who can seed:
+
+```bash
+# Generate and set API key
+export HIVERELAY_API_KEY=$(openssl rand -hex 32)
+# Add to systemd: Environment=HIVERELAY_API_KEY=<key>
+```
+
+When `HIVERELAY_API_KEY` is set:
+- All write endpoints (`POST /seed`, `/unseed`, `/registry/*`) require `Authorization: Bearer <key>` header
+- Read endpoints remain open (health, metrics, catalog, gateway)
+- Ownership signatures and registration challenges become available (opt-in, verified when provided)
+
+**Note:** Public relays (like the official HiveRelay network) do NOT use API keys. Relays are open infrastructure — anyone can seed. Rate limiting and storage limits prevent abuse.
+
+### Rate Limiting
+
+Built-in rate limiting protects against abuse:
+- **HTTP API**: 60 requests/minute per IP, 64KB max request body
+- **P2P Protocol**: Token bucket rate limiter per peer key
+- **Directory listings**: Max 1000 entries with timeout protection
 
 ## Firewall
 
@@ -308,3 +355,61 @@ hiverelay start --max-connections 128
 
 # systemd will enforce MemoryMax=2G and restart if exceeded
 ```
+
+### Apps not appearing in catalog
+
+If you seed apps but they don't show in `/catalog.json`:
+
+1. **Check manifest.json exists** — Apps MUST have a `/manifest.json` file in their root:
+   ```json
+   {
+     "id": "my-app",
+     "name": "My App",
+     "description": "App description",
+     "version": "1.0.0",
+     "categories": ["utility"]
+   }
+   ```
+
+2. **Convert Pear keys correctly** — Pear uses z-base-32 encoding, but the API expects hex:
+   ```javascript
+   // Convert pear://KEY to hex
+   const z32 = require('z32')
+   const hexKey = z32.decode('om5cpdjjp4g4wa15r9wjhjiex9jjmcsacwsw44hzsrtsz171ykfy').toString('hex')
+   // Result: 82f6c68d296e8daa625b27e89e26a87fd295b2d8652d4d6b97b1236bcbb2028a
+   ```
+
+3. **Check gateway can access drive** — The relay must be able to replicate the drive:
+   ```bash
+   # Test gateway access
+   curl http://localhost:9100/v1/hyper/HEX_KEY/manifest.json
+   ```
+
+### TLS/HTTPS issues
+
+**Problem:** Caddy fails to obtain certificates or shows certificate errors.
+
+**Check domain configuration:**
+```bash
+# Verify DNS resolves to this server
+dig +short relay-us.p2phiverelay.xyz
+
+# Check Caddy is using correct domain (NOT p2p-hiverelay.xyz with hyphen)
+cat /etc/caddy/Caddyfile | grep -E "^\w+\.p2p"
+```
+
+**Common fixes:**
+- Ensure domain in Caddyfile matches DNS (use `p2phiverelay.xyz` not `p2p-hiverelay.xyz`)
+- Clear Caddy's certificate cache if switching from staging: `rm -rf ~/.local/share/caddy/certificates`
+- Check rate limits: Let's Encrypt allows 50 certificates per domain per week
+
+## App Deployment Checklist
+
+When deploying Pear apps to HiveRelay:
+
+- [ ] App has `manifest.json` with id, name, description, version
+- [ ] App is staged with `pear stage dev .`
+- [ ] Pear key is converted from z-base-32 to hex format
+- [ ] App is seeded via `POST /seed {"appKey": "hex", "appId": "..."}`
+- [ ] Verify with `GET /catalog.json` — app should appear within 5 seconds
+- [ ] Test app loads via `GET /v1/hyper/HEX_KEY/index.html`

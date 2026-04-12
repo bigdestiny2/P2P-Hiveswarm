@@ -274,31 +274,65 @@ pre code{background:none;padding:0;color:var(--text)}
 
 <p>Get a HiveRelay node running in under a minute.</p>
 
+<div class="callout warning">
+  <div class="callout-label">Requirements</div>
+  <strong>Node.js 20+ required</strong> (not 18). Ubuntu 24.04 ships with Node 18 — <a href="#upgrade-node">upgrade instructions</a> below.
+</div>
+
 <h3 id="install">Installation</h3>
 
 <div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
-<pre><code>npm install p2p-hiverelay</code></pre></div>
+<pre><code><span class="kw"># Install globally (recommended)</span>
+npm install -g p2p-hiverelay
+
+<span class="kw"># Or install locally in your project</span>
+npm install p2p-hiverelay</code></pre></div>
 
 <h3>Run a Relay Node</h3>
 
-<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
-<pre><code><span class="kw">import</span> <span class="punct">{</span> <span class="fn">RelayNode</span> <span class="punct">}</span> <span class="kw">from</span> <span class="str">'p2p-hiverelay'</span>
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw"># Quick start (global install)</span>
+p2p-hiverelay start --region NA --port 9100
 
-<span class="kw">const</span> node <span class="punct">=</span> <span class="kw">new</span> <span class="fn">RelayNode</span><span class="punct">({</span>
-  <span class="prop">storage</span><span class="punct">:</span> <span class="str">'./relay-data'</span><span class="punct">,</span>
-  <span class="prop">apiPort</span><span class="punct">:</span> <span class="num">9100</span><span class="punct">,</span>
-  <span class="prop">regions</span><span class="punct">:</span> <span class="punct">[</span><span class="str">'NA'</span><span class="punct">],</span>
-  <span class="prop">enableSeeding</span><span class="punct">:</span> <span class="bool">true</span><span class="punct">,</span>
-  <span class="prop">enableRelay</span><span class="punct">:</span> <span class="bool">true</span>
-<span class="punct">})</span>
+<span class="kw"># With npx (local install)</span>
+npx p2p-hiverelay start --region NA --port 9100
 
-<span class="kw">await</span> node<span class="punct">.</span><span class="fn">start</span><span class="punct">()</span>
-console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Relay running! Public key:'</span><span class="punct">,</span> node<span class="punct">.</span>swarm<span class="punct">.</span>keyPair<span class="punct">.</span>publicKey<span class="punct">.</span><span class="fn">toString</span><span class="punct">(</span><span class="str">'hex'</span><span class="punct">))</span></code></pre></div>
+<span class="kw"># Production setup with all features</span>
+p2p-hiverelay start \
+  --region NA \
+  --max-storage 50GB \
+  --storage /var/lib/hiverelay \
+  --port 9100 \
+  --enableRelay \
+  --enableSeeding \
+  --enableMetrics</code></pre></div>
 
-<h3 id="cli">Or via CLI</h3>
+<h3 id="cli">Production HTTPS Setup (Caddy)</h3>
 
 <div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
-<pre><code>npx p2p-hiverelay start --region NA --port 9100</code></pre></div>
+<pre><code><span class="kw"># Install Caddy</span>
+sudo apt install -y caddy
+
+<span class="kw"># Configure Caddyfile</span>
+sudo tee /etc/caddy/Caddyfile &lt;&lt; 'EOF'
+relay.example.com {
+    reverse_proxy localhost:9100
+}
+EOF
+
+sudo systemctl enable caddy
+sudo systemctl restart caddy
+<span class="kw"># HTTPS auto-configured via Let's Encrypt</span></code></pre></div>
+
+<h3 id="upgrade-node">Upgrading Node.js (Ubuntu)</h3>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw"># Ubuntu 24.04 ships with Node 18 — upgrade to 20+</span>
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+<span class="kw"># Verify</span>
+node --version  <span class="kw"># Should show v20.x.x</span></code></pre></div>
 
 <div class="callout tip">
   <div class="callout-label">Tip</div>
@@ -419,13 +453,13 @@ sudo systemctl enable --now hiverelay</code></pre></div>
 
 <div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
 <pre><code><span class="cm"># Instance 1 - North America</span>
-npx p2p-hiverelay start --region NA --port <span class="num">9100</span> --storage ./relay-na
+p2p-hiverelay start --region NA --port <span class="num">9100</span> --storage ./relay-na
 
 <span class="cm"># Instance 2 - Europe</span>
-npx p2p-hiverelay start --region EU --port <span class="num">9101</span> --storage ./relay-eu
+p2p-hiverelay start --region EU --port <span class="num">9101</span> --storage ./relay-eu
 
 <span class="cm"># Instance 3 - Asia Pacific</span>
-npx p2p-hiverelay start --region AP --port <span class="num">9102</span> --storage ./relay-ap</code></pre></div>
+p2p-hiverelay start --region AP --port <span class="num">9102</span> --storage ./relay-ap</code></pre></div>
 
 <h3 id="auto-accept">Auto-Accept vs Approval Mode</h3>
 
@@ -634,13 +668,13 @@ console<span class="punct">.</span><span class="fn">log</span><span class="punct
 
 <div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
 <pre><code><span class="kw"># Fetch a file from a seeded Hyperdrive</span>
-curl https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html
+curl https://relay-us.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html
 
 <span class="kw"># Directory listing (JSON)</span>
-curl https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/
+curl https://relay-us.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/
 
 <span class="kw"># Gateway stats</span>
-curl https://relay.p2phiverelay.xyz/api/gateway</code></pre></div>
+curl https://relay-us.p2phiverelay.xyz/api/gateway</code></pre></div>
 
 <p>The gateway automatically:</p>
 <ul>
@@ -657,7 +691,7 @@ curl https://relay.p2phiverelay.xyz/api/gateway</code></pre></div>
 <p>Each relay exposes a <code>/catalog.json</code> endpoint that lists all seeded apps with metadata. PearBrowser and other app stores can use this as a catalog source.</p>
 
 <div class="code-wrap"><div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
-<pre><code>curl https://relay.p2phiverelay.xyz/catalog.json</code></pre></div>
+<pre><code>curl https://relay-us.p2phiverelay.xyz/catalog.json</code></pre></div>
 
 <p>Response:</p>
 
@@ -705,7 +739,7 @@ curl https://relay.p2phiverelay.xyz/api/gateway</code></pre></div>
 <span class="kw">await</span> client.seed(drive.key.toString(<span class="str">'hex'</span>), { replicas: <span class="num">3</span> })
 
 <span class="kw">// Now accessible via HTTP:</span>
-<span class="kw">// https://relay.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html</span>
+<span class="kw">// https://relay-us.p2phiverelay.xyz/v1/hyper/DRIVE_KEY/index.html</span>
 <span class="kw">// And listed in /catalog.json</span></code></pre></div>
 
 

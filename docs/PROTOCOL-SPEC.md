@@ -65,13 +65,13 @@ HiveRelay operates over Hyperswarm, which uses HyperDHT (a Kademlia-based DHT) f
 - **DHT bootstrap nodes:** By default, the standard HyperDHT bootstrap nodes (`node1-3.hyperdht.org:49737`). Custom bootstrap nodes may be configured.
 - **Maximum connections:** 256 per relay node (configurable).
 
-### 2.2 Optional Transports (Phase 2+)
+### 2.2 Additional Transports
 
-| Transport | Description |
-|---|---|
-| Tor | Hidden service transport for censorship resistance |
-| I2P | Garlic routing for P2P-native anonymity |
-| WebSocket | Browser peer support |
+| Transport | Status | Description |
+|---|---|---|
+| Tor | Implemented | Hidden service + SOCKS5 proxy for censorship resistance |
+| WebSocket | Implemented | Browser peer support via Duplex stream adapter |
+| I2P | Planned | Garlic routing for P2P-native anonymity |
 
 Optional transports are negotiated at the Hyperswarm layer and are transparent to the HiveRelay protocol.
 
@@ -623,6 +623,8 @@ Relays cannot fake proof-of-relay challenges because:
 
 A signed bandwidth receipt is a non-repudiable attestation from a peer that it received data from a relay. The peer cannot deny having received the data (assuming their key was not compromised), and the relay cannot forge a receipt (it lacks the peer's secret key).
 
+**Replay detection:** Receipts include nonce-based replay detection. Each relay maintains a circular buffer of 50,000 seen nonces. Duplicate nonces are rejected. The `bytesTransferred` field is validated (must be a finite number between 0 and 100 TB).
+
 ### 13.7 Sybil Resistance
 
 The proof-of-relay system provides natural Sybil resistance:
@@ -631,6 +633,61 @@ The proof-of-relay system provides natural Sybil resistance:
 - A relay must actually serve data to collect bandwidth receipts.
 - The minimum challenge threshold (10 challenges) prevents newly created identities from immediately appearing in the leaderboard.
 - Score decay (0.5%/day) means fake identities that stop operating quickly lose their ranking.
+
+### 13.8 Rate Limiting
+
+Two layers of rate limiting protect against abuse:
+
+- **P2P protocol:** Token bucket rate limiter per peer key. Peers exceeding the rate are temporarily blocked from sending protocol messages.
+- **HTTP API:** 60 requests/minute per IP address. Request bodies capped at 64KB.
+
+### 13.9 Input Validation and Persistence
+
+All inputs are validated before processing:
+
+- Hex keys: exactly 64 characters, `/^[0-9a-f]+$/i`, normalized to lowercase
+- AppId: max 128 characters, `/^[a-zA-Z0-9._-]+$/`
+- Version: max 32 characters
+
+All persistent state (app registry, seeded apps, encryption keys) is written atomically using tmp-file + rename to prevent corruption on crash or power loss.
+
+### 13.10 Blind Mode Security
+
+Blind (encrypted) apps support two sub-modes:
+
+**Blind Replication** (default): The relay replicates encrypted Hypercore blocks it cannot decrypt. It joins the swarm, downloads opaque ciphertext, and re-serves it to peers. The relay gains availability (always-online seeding) while the publisher retains privacy (relay never sees plaintext). The relay can see: block count, block sizes, Merkle tree structure, timing, and access patterns — but not file names, file contents, or directory structure.
+
+**Discovery-Only** (`discoveryOnly: true`): The relay registers the app for discovery (appId/driveKey mapping) but does NOT replicate content. No Hypercores are opened, no DHT topics are joined, no blocks are downloaded.
+
+Both modes share these properties:
+- The Hyper Gateway returns `403` for blind apps, preventing unencrypted HTTP access
+- Max 500 blind registrations per relay (configurable) to prevent registry spam
+- Encryption keys are never transmitted to the relay — only the publisher and authorized peers hold them
+- User data uses platform local storage (encrypted on device) — it never flows through the relay regardless of blind mode
+
+### 13.11 Privacy Tier Enforcement
+
+The platform privacy APIs (`platform/privacy.js`) enforce data flow rules per tier:
+
+| Operation | Public | Local-First | P2P-Only |
+|-----------|--------|-------------|----------|
+| Store data on relay | Allowed | **Blocked** | **Blocked** |
+| Read from relay gateway | Allowed | App code only | **Blocked** |
+| Send plaintext to relay | Allowed | **Blocked** | **Blocked** |
+| Store locally (encrypted) | Allowed | Allowed | Allowed |
+| Sync via P2P | Allowed | Allowed | Allowed |
+| Sync via relay | Allowed | **Blocked** | **Blocked** |
+
+The `PrivacyManager` generates an audit log tracking every data operation. The `getPrivacyReport()` method produces a summary showing encrypted vs plaintext stores, warnings, and relay exposure level.
+
+### 13.12 Encryption at Rest (Local Storage)
+
+Data stored via `platform/storage.js` is encrypted with XChaCha20-Poly1305 (AEAD):
+- 24-byte random nonce prepended to each ciphertext
+- 16-byte Poly1305 authentication tag (tamper detection)
+- Keys derived via BLAKE2b HKDF from device root key → app key → data key
+- Device root key persisted to disk with 0o600 permissions
+- Key material zeroed on destroy via `sodium.sodium_memzero()`
 
 ---
 
@@ -681,6 +738,7 @@ The proof-of-relay system provides natural Sybil resistance:
 | Signing | `crypto_sign_detached` (Ed25519) | sodium-universal |
 | Verification | `crypto_sign_verify_detached` | sodium-universal |
 | Random nonces | `randombytes_buf` (32 bytes) | sodium-universal |
+| Discovery key hashing | BLAKE2b (`crypto_generichash`) | sodium-universal |
 | Transport encryption | Noise_XX | HyperDHT (built-in) |
 | Block integrity | Merkle tree (BLAKE2b) | Hypercore (built-in) |
 

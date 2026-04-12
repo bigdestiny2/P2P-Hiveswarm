@@ -23,9 +23,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   padding:1rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
   position:sticky;top:0;z-index:100;
 }
-.topbar-logo{display:flex;align-items:center;gap:.75rem}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
 .hive-logo{width:32px;height:32px;flex-shrink:0}
 .topbar h1{font-size:1.2rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-nav{display:flex;gap:.25rem;margin-left:1.5rem}
+.topbar-nav a{
+  font-size:.8rem;color:var(--text-dim);text-decoration:none;
+  padding:.35rem .75rem;border-radius:6px;transition:color .2s,background .2s;
+}
+.topbar-nav a:hover{color:var(--text-bright);background:rgba(255,255,255,.05)}
+.topbar-nav a.active{color:var(--cyan);background:rgba(88,166,255,.1)}
 .topbar-stats{margin-left:auto;display:flex;gap:1.5rem;font-family:var(--mono);font-size:.8rem}
 .topbar-stat{display:flex;align-items:center;gap:.4rem}
 .topbar-stat .dot{width:8px;height:8px;border-radius:50%}
@@ -183,6 +190,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   .summary-row{grid-template-columns:repeat(2,1fr)}
   .relay-grid{grid-template-columns:1fr}
   .topbar{padding:1rem}
+  .topbar-nav{display:none}
   .container{padding:1rem}
 }
 @media(max-width:500px){
@@ -195,7 +203,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 <!-- Top Bar -->
 <div class="topbar">
-  <div class="topbar-logo">
+  <a href="/dashboard" class="topbar-logo">
     <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
       <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#58a6ff"/><stop offset="100%" stop-color="#3fb950"/></linearGradient></defs>
       <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
@@ -203,7 +211,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
     </svg>
     <h1>HiveRelay Network</h1>
-  </div>
+  </a>
+  <nav class="topbar-nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/network" class="active">Network</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/docs">Docs</a>
+  </nav>
   <div class="topbar-stats">
     <div class="topbar-stat"><div class="dot green"></div><span id="topOnline">0 online</span></div>
     <div class="topbar-stat"><div class="dot orange"></div><span id="topTotal">0 relays</span></div>

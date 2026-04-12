@@ -22,12 +22,17 @@ import { NetworkDiscovery } from '../network-discovery.js'
 import { HealthMonitor } from './health-monitor.js'
 import { SelfHeal } from './self-heal.js'
 import { SeedingRegistry } from '../registry/index.js'
+import { AccessControl } from './access-control.js'
+import { MDNSDiscovery } from './mdns-discovery.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
 sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
 
+const VALID_MODES = ['public', 'private', 'hybrid']
+
 const DEFAULT_CONFIG = {
+  mode: 'public', // 'public' | 'private' | 'hybrid'
   storage: './storage',
   maxStorageBytes: 50 * 1024 * 1024 * 1024, // 50 GB
   maxConnections: 256,
@@ -42,6 +47,21 @@ const DEFAULT_CONFIG = {
   bootstrapNodes: null, // null = use HyperDHT defaults
   shutdownTimeoutMs: 10_000,
   enableEviction: true,
+  // Private/hybrid mode settings
+  discovery: {
+    dht: true, // Join public DHT (public/hybrid: true, private: false)
+    announce: true, // Announce on DHT topics (public: true, private/hybrid: false)
+    mdns: false, // Broadcast on LAN (private/hybrid: true, public: false)
+    explicit: false // Connect to explicit peers only (private: true)
+  },
+  access: {
+    open: true, // Accept connections from anyone (public: true, private/hybrid: false)
+    allowlist: [] // Pubkey hex strings of allowed devices (private/hybrid mode)
+  },
+  pairing: {
+    enabled: false, // Enable pairing protocol (private/hybrid mode)
+    timeoutMs: 5 * 60 * 1000 // Pairing window duration
+  },
   timeouts: {
     driveReady: 15_000,
     driveUpdate: 30_000,
@@ -50,6 +70,58 @@ const DEFAULT_CONFIG = {
     eagerReplicationRetry: 5_000, // Initial retry delay
     eagerReplicationMaxRetry: 120_000 // Max retry delay
   }
+}
+
+/**
+ * Resolve mode-aware defaults. Mode sets sensible defaults
+ * that can still be overridden by explicit config.
+ */
+function resolveModeConfig (opts) {
+  const mode = opts.mode || 'public'
+  if (!VALID_MODES.includes(mode)) {
+    throw new Error(`Invalid mode "${mode}" — must be one of: ${VALID_MODES.join(', ')}`)
+  }
+
+  const modeDefaults = {
+    public: {
+      discovery: { dht: true, announce: true, mdns: false, explicit: false },
+      access: { open: true },
+      pairing: { enabled: false },
+      enableRelay: true,
+      enableSeeding: true,
+      enableAPI: true
+    },
+    private: {
+      discovery: { dht: false, announce: false, mdns: true, explicit: true },
+      access: { open: false },
+      pairing: { enabled: true },
+      enableRelay: false,
+      enableSeeding: true,
+      enableAPI: false,
+      enableMetrics: false
+    },
+    hybrid: {
+      discovery: { dht: true, announce: false, mdns: true, explicit: true },
+      access: { open: false },
+      pairing: { enabled: true },
+      enableRelay: false,
+      enableSeeding: true,
+      enableAPI: true
+    }
+  }
+
+  const defaults = modeDefaults[mode]
+
+  // Merge: DEFAULT_CONFIG < mode defaults < explicit opts
+  const config = { ...DEFAULT_CONFIG, ...defaults, ...opts }
+
+  // Deep merge nested objects
+  config.discovery = { ...DEFAULT_CONFIG.discovery, ...defaults.discovery, ...(opts.discovery || {}) }
+  config.access = { ...DEFAULT_CONFIG.access, ...defaults.access, ...(opts.access || {}) }
+  config.pairing = { ...DEFAULT_CONFIG.pairing, ...defaults.pairing, ...(opts.pairing || {}) }
+  config.timeouts = { ...DEFAULT_CONFIG.timeouts, ...(opts.timeouts || {}) }
+
+  return config
 }
 
 function isValidHexKey (hex) {
@@ -76,7 +148,8 @@ function exponentialBackoffDelay (attempt, baseDelay, maxDelay) {
 export class RelayNode extends EventEmitter {
   constructor (opts = {}) {
     super()
-    this.config = { ...DEFAULT_CONFIG, ...opts }
+    this.config = resolveModeConfig(opts)
+    this.mode = this.config.mode
     this.store = new Corestore(this.config.storage)
     this.swarm = null
     this.seeder = null
@@ -108,6 +181,12 @@ export class RelayNode extends EventEmitter {
     this._registryScanInterval = null
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this._seedLocks = new Map() // appKey hex -> Promise (per-key locking for seedApp)
+
+    // Private/hybrid mode: access control + local discovery
+    this.accessControl = null
+    this.mdnsDiscovery = null
+    this._rejectedConnections = 0
+
     this.running = false
   }
 
@@ -144,8 +223,35 @@ export class RelayNode extends EventEmitter {
       }
       await this.store.ready()
 
+      // ─── Access Control (private/hybrid mode) ───
+      if (!this.config.access.open) {
+        this.accessControl = new AccessControl(this.config.storage, {
+          maxDevices: this.config.access.maxDevices || 50
+        })
+        await this.accessControl.load()
+
+        // Pre-load allowlist from config
+        if (Array.isArray(this.config.access.allowlist)) {
+          for (const pubkey of this.config.access.allowlist) {
+            if (!this.accessControl.isAllowed(pubkey)) {
+              await this.accessControl.addDevice(pubkey, 'config-preset')
+            }
+          }
+        }
+
+        this.accessControl.on('device-added', (info) => this.emit('device-paired', info))
+        this.accessControl.on('device-removed', (info) => this.emit('device-removed', info))
+        this.accessControl.on('pairing-success', (info) => this.emit('pairing-success', info))
+        this.accessControl.on('pairing-rejected', (info) => this.emit('pairing-rejected', info))
+      }
+
       await this.bootstrapCache.load()
-      const bootstrap = this.bootstrapCache.merge(this.config.bootstrapNodes)
+
+      // In private mode, use empty bootstrap to avoid contacting public DHT
+      const useDHT = this.config.discovery.dht
+      const bootstrap = useDHT
+        ? this.bootstrapCache.merge(this.config.bootstrapNodes)
+        : []
 
       const keyPair = await this._loadOrCreateKeyPair()
 
@@ -155,11 +261,41 @@ export class RelayNode extends EventEmitter {
         maxConnections: this.config.maxConnections
       })
 
-      this.bootstrapCache.start(this.swarm)
+      if (useDHT) {
+        this.bootstrapCache.start(this.swarm)
+      }
       this.swarm.on('connection', (conn, info) => this._onConnection(conn, info))
 
-      // Announce on well-known discovery topic so clients can find us
-      this.swarm.join(RELAY_DISCOVERY_TOPIC, { server: true, client: false })
+      // Only announce on discovery topic in public mode
+      if (this.config.discovery.announce) {
+        this.swarm.join(RELAY_DISCOVERY_TOPIC, { server: true, client: false })
+      }
+
+      // ─── mDNS LAN Discovery (private/hybrid mode) ───
+      if (this.config.discovery.mdns) {
+        this.mdnsDiscovery = new MDNSDiscovery({
+          publicKey: keyPair.publicKey,
+          port: this.swarm.dht ? this.swarm.dht.address().port : 0,
+          mode: this.mode,
+          name: this.config.name || 'hiverelay'
+        })
+        this.mdnsDiscovery.on('peer-discovered', (peer) => {
+          this.emit('lan-peer-discovered', peer)
+        })
+        this.mdnsDiscovery.on('error', (err) => {
+          this.emit('mdns-error', { error: err.message })
+        })
+        // Start mDNS after swarm is listening so we have the correct port
+        this.swarm.listen().then(() => {
+          if (this.mdnsDiscovery && this.swarm) {
+            const addr = this.swarm.dht ? this.swarm.dht.address() : null
+            if (addr) this.mdnsDiscovery.port = addr.port
+            this.mdnsDiscovery.start().catch(err => {
+              this.emit('mdns-error', { error: err.message })
+            })
+          }
+        }).catch(() => {})
+      }
 
       // Initialize subsystems in parallel where possible
       const startups = []
@@ -221,8 +357,8 @@ export class RelayNode extends EventEmitter {
       // Periodic reputation save every 5 minutes
       this._reputationSaveInterval = setInterval(() => {
         this.reputation.save(reputationPath).catch(err => {
-        this.emit('reputation-save-error', { error: err.message })
-      })
+          this.emit('reputation-save-error', { error: err.message })
+        })
       }, 5 * 60 * 1000)
       if (this._reputationSaveInterval.unref) this._reputationSaveInterval.unref()
 
@@ -482,7 +618,7 @@ export class RelayNode extends EventEmitter {
 
     // Acquire per-key lock to prevent race conditions
     const releaseLock = await this._acquireSeedLock(appKeyHex)
-    
+
     try {
       return await this._seedAppInternal(appKeyHex, opts)
     } finally {
@@ -492,7 +628,6 @@ export class RelayNode extends EventEmitter {
   }
 
   async _seedAppInternal (appKeyHex, opts = {}) {
-
     // If publisher provides an appId, check if we already have a canonical key for it.
     // This handles the case where publisher lost storage and created a new drive key —
     // the relay knows the real key and tells the publisher to use it instead.
@@ -564,23 +699,97 @@ export class RelayNode extends EventEmitter {
     const isBlind = opts.blind === true
     const appKey = b4a.from(appKeyHex, 'hex')
 
-    // ─── Blind mode: discovery-only registration ───
-    // The relay does NOT replicate blind app content — it can't decrypt it,
-    // can't serve it over HTTP, and multi-core replication without Hyperdrive
-    // is unreliable. Instead the relay acts as a discovery registry:
-    //   - Registers the app (appId → driveKey) so PearBrowser can resolve it
-    //   - Lists it in the catalog as "p2p-only"
-    //   - Peers with the encryption key connect directly via Hyperswarm
+    // ─── Blind mode: encrypted replication ───
+    // The relay replicates encrypted Hypercore blocks it CANNOT decrypt.
+    // It joins the swarm, downloads opaque ciphertext, and re-serves it to
+    // peers who request it. The relay gains availability (always-online seeding)
+    // while the publisher retains privacy (relay never sees plaintext).
+    //
+    // Two sub-modes:
+    //   blind + replicate (default): relay stores + serves encrypted blocks
+    //   blind + discovery-only: relay only registers in catalog, no storage
     if (isBlind) {
+      const discoveryOnly = opts.discoveryOnly === true
+
+      let core = null
+      let discoveryKey = null
+
+      if (!discoveryOnly) {
+        // Replicate the Hypercore as opaque encrypted blocks
+        core = this.store.get({ key: appKey })
+        await withTimeout(core.ready(), getTimeout(this.config, 'driveReady'), 'blind core.ready()')
+        discoveryKey = core.discoveryKey
+
+        // Join swarm to find the publisher and download encrypted blocks
+        const done = core.findingPeers ? core.findingPeers() : null
+        this.swarm.join(discoveryKey, { server: true, client: true })
+        this.swarm.flush().then(() => { if (done) done() }).catch((err) => {
+          if (done) done()
+          this.emit('swarm-flush-error', { appKey: appKeyHex, error: err.message })
+        })
+
+        // Eager download — get all encrypted blocks
+        const eagerBlindReplicate = async () => {
+          const MAX_RETRIES = 6
+          const baseRetryDelay = getTimeout(this.config, 'eagerReplicationRetry')
+          const maxRetryDelay = getTimeout(this.config, 'eagerReplicationMaxRetry')
+
+          for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            if (core.closed) return
+            try {
+              await Promise.race([
+                core.update({ wait: true }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('blind update timeout')), getTimeout(this.config, 'driveUpdate')))
+              ])
+
+              if (core.closed) return
+
+              if (core.length > 0) {
+                // Download all blocks (they're encrypted — relay sees ciphertext only)
+                const dl = core.download({ start: 0, end: core.length })
+                await Promise.race([
+                  dl.done(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('blind download timeout')), getTimeout(this.config, 'driveDownload')))
+                ])
+                this.emit('blind-replication-complete', {
+                  appKey: appKeyHex,
+                  blocks: core.length,
+                  byteLength: core.byteLength
+                })
+                return
+              }
+            } catch (err) {
+              this.emit('blind-replicate-attempt-failed', {
+                appKey: appKeyHex,
+                attempt: attempt + 1,
+                error: err.message
+              })
+            }
+
+            if (attempt < MAX_RETRIES - 1) {
+              const delay = exponentialBackoffDelay(attempt, baseRetryDelay, maxRetryDelay)
+              await new Promise(resolve => setTimeout(resolve, delay))
+            }
+          }
+          this.emit('blind-reseed-error', { appKey: appKeyHex, error: 'max retries exceeded' })
+        }
+        eagerBlindReplicate().catch(err => {
+          this.emit('blind-replicate-error', { appKey: appKeyHex, error: err.message })
+        })
+      }
+
       this.seededApps.set(appKeyHex, {
         drive: null,
-        core: null,
-        discoveryKey: null,
+        core,
+        discoveryKey,
         startedAt: Date.now(),
         bytesServed: 0,
         appId: opts.appId || null,
         version: opts.version || null,
-        blind: true
+        blind: true,
+        discoveryOnly,
+        blindBlocks: core ? core.length : 0,
+        blindBytes: core ? core.byteLength : 0
       })
 
       if (opts.appId) {
@@ -589,6 +798,7 @@ export class RelayNode extends EventEmitter {
           version: opts.version || null,
           name: opts.appId,
           blind: true,
+          discoveryOnly,
           updatedAt: Date.now()
         })
         this.appIndex.set(opts.appId, appKeyHex)
@@ -597,11 +807,21 @@ export class RelayNode extends EventEmitter {
         })
       }
 
-      this.emit('seeding', { appKey: appKeyHex, blind: true, discoveryOnly: true })
+      this.emit('seeding', {
+        appKey: appKeyHex,
+        blind: true,
+        discoveryOnly,
+        discoveryKey: discoveryKey ? b4a.toString(discoveryKey, 'hex') : null
+      })
       this._saveSeededAppsLog().catch(err => {
         this.emit('save-seeded-log-error', { error: err.message })
       })
-      return { blind: true, discoveryOnly: true }
+      return {
+        blind: true,
+        discoveryOnly,
+        discoveryKey: discoveryKey ? b4a.toString(discoveryKey, 'hex') : null,
+        blocks: core ? core.length : 0
+      }
     }
 
     // ─── Public mode: full Hyperdrive replication + HTTP gateway serving ───
@@ -832,6 +1052,7 @@ export class RelayNode extends EventEmitter {
   getStats () {
     return {
       running: this.running,
+      mode: this.mode,
       publicKey: this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null,
       seededApps: this.seededApps.size,
       connections: this.swarm ? this.swarm.connections.size : 0,
@@ -846,7 +1067,17 @@ export class RelayNode extends EventEmitter {
         key: this.seedingRegistry && this.seedingRegistry.key
           ? b4a.toString(this.seedingRegistry.key, 'hex')
           : null
-      }
+      },
+      accessControl: this.accessControl
+        ? {
+            pairedDevices: this.accessControl.allowedDevices.size,
+            pairingActive: this.accessControl.isPairing,
+            rejectedConnections: this._rejectedConnections
+          }
+        : null,
+      mdns: this.mdnsDiscovery
+        ? { running: this.mdnsDiscovery._running, discoveredPeers: this.mdnsDiscovery.getDiscoveredPeers().length }
+        : null
     }
   }
 
@@ -856,6 +1087,88 @@ export class RelayNode extends EventEmitter {
 
   getHealthStatus () {
     return this.healthMonitor ? this.healthMonitor.getStatus() : null
+  }
+
+  // ─── Private/Hybrid Mode: Device Management ───────────────────
+
+  /**
+   * Enable pairing mode (private/hybrid only).
+   * Returns pairing payload for QR code display.
+   */
+  enablePairing (opts = {}) {
+    if (!this.accessControl) {
+      throw new Error('Pairing only available in private/hybrid mode')
+    }
+    const result = this.accessControl.enablePairing(opts)
+    const pubkey = this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null
+    const addr = (this.swarm && this.swarm.dht) ? this.swarm.dht.address() : null
+    return {
+      ...result,
+      relayPubkey: pubkey,
+      host: addr ? addr.host : null,
+      port: addr ? addr.port : null
+    }
+  }
+
+  /**
+   * Disable pairing mode.
+   */
+  disablePairing () {
+    if (this.accessControl) {
+      this.accessControl.disablePairing()
+    }
+  }
+
+  /**
+   * Attempt to pair a device (called when device presents token).
+   */
+  async pairDevice (token, devicePubkeyHex, deviceName) {
+    if (!this.accessControl) {
+      throw new Error('Pairing only available in private/hybrid mode')
+    }
+    return this.accessControl.attemptPair(token, devicePubkeyHex, deviceName)
+  }
+
+  /**
+   * Manually add a device to the allowlist.
+   */
+  async addDevice (pubkeyHex, name) {
+    if (!this.accessControl) {
+      throw new Error('Device management only available in private/hybrid mode')
+    }
+    return this.accessControl.addDevice(pubkeyHex, name)
+  }
+
+  /**
+   * Remove a device from the allowlist.
+   */
+  async removeDevice (pubkeyHex) {
+    if (!this.accessControl) {
+      throw new Error('Device management only available in private/hybrid mode')
+    }
+    return this.accessControl.removeDevice(pubkeyHex)
+  }
+
+  /**
+   * List all paired devices.
+   */
+  listDevices () {
+    if (!this.accessControl) return []
+    return this.accessControl.listDevices()
+  }
+
+  /**
+   * Get pairing payload for QR code generation.
+   */
+  getPairingQR () {
+    if (!this.accessControl || !this.accessControl.isPairing) return null
+    const pubkey = this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null
+    const addr = (this.swarm && this.swarm.dht) ? this.swarm.dht.address() : null
+    return this.accessControl.getPairingPayload(
+      pubkey,
+      addr ? addr.host : null,
+      addr ? addr.port : null
+    )
   }
 
   async _loadOrCreateKeyPair () {
@@ -899,6 +1212,31 @@ export class RelayNode extends EventEmitter {
   }
 
   _onConnection (conn, info) {
+    const remotePubKeyHex = info.publicKey ? b4a.toString(info.publicKey, 'hex') : null
+
+    // ─── Access Control Gate (private/hybrid mode) ───
+    // In non-public modes, silently drop connections from unknown devices.
+    // This is the first check — no protocol, no RPC, no replication happens
+    // for unauthorized peers. Minimal attack surface.
+    if (this.accessControl && remotePubKeyHex) {
+      if (!this.accessControl.isAllowed(remotePubKeyHex)) {
+        // Check if this is a pairing attempt (connection during active pairing window)
+        // Pairing is handled via the RPC layer below — but the device must
+        // first be let through during the pairing window
+        if (!this.accessControl.isPairing) {
+          this._rejectedConnections++
+          conn.destroy()
+          this.emit('connection-rejected', { remotePubKey: remotePubKeyHex, reason: 'not in allowlist' })
+          return
+        }
+        // During pairing window: allow connection temporarily for pairing handshake
+        this.emit('pairing-connection', { remotePubKey: remotePubKeyHex })
+      } else {
+        // Known device — record activity
+        this.accessControl.recordActivity(remotePubKeyHex)
+      }
+    }
+
     // Replicate all cores in our store over this connection
     this.store.replicate(conn)
 
@@ -936,7 +1274,7 @@ export class RelayNode extends EventEmitter {
       this.emit('connection-closed', { info })
     })
 
-    this.emit('connection', { info, remotePubKey: b4a.toString(info.publicKey, 'hex') })
+    this.emit('connection', { info, remotePubKey: remotePubKeyHex })
   }
 
   async _scanRegistry () {
@@ -1141,6 +1479,8 @@ export class RelayNode extends EventEmitter {
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
     if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'networkDiscovery', error: err.message }) } this.networkDiscovery = null }
+    if (this.mdnsDiscovery) { try { await this.mdnsDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'mdnsDiscovery', error: err.message }) } this.mdnsDiscovery = null }
+    if (this.accessControl) { try { await this.accessControl.save() } catch (err) { this.emit('stop-error', { component: 'accessControl', error: err.message }) } this.accessControl.destroy(); this.accessControl = null }
     if (this._proofOfRelay) { this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
     if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }

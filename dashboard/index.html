@@ -17,13 +17,26 @@
 html{font-size:14px}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:1rem}
 
-/* Header */
-.header{display:flex;align-items:center;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--card-border);margin-bottom:1.5rem;flex-wrap:wrap}
-.hive-logo{width:36px;height:36px;flex-shrink:0}
-.header-text h1{font-size:1.4rem;color:var(--text-bright);font-weight:600;letter-spacing:.5px}
-.header-meta{font-size:.8rem;color:var(--text-dim);font-family:var(--mono);margin-top:2px}
+/* Top Bar */
+.topbar{
+  background:var(--card);border-bottom:1px solid var(--card-border);
+  padding:1rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
+  position:sticky;top:0;z-index:100;margin:-1rem -1rem 1.5rem -1rem;
+}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
+.hive-logo{width:32px;height:32px;flex-shrink:0}
+.topbar h1{font-size:1.2rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-nav{display:flex;gap:.25rem;margin-left:1.5rem}
+.topbar-nav a{
+  font-size:.8rem;color:var(--text-dim);text-decoration:none;
+  padding:.35rem .75rem;border-radius:6px;transition:color .2s,background .2s;
+}
+.topbar-nav a:hover{color:var(--text-bright);background:rgba(255,255,255,.05)}
+.topbar-nav a.active{color:var(--cyan);background:rgba(0,170,255,.1)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:1rem}
+.header-meta{font-size:.75rem;color:var(--text-dim);font-family:var(--mono)}
 .uptime-badge{
-  margin-left:auto;background:rgba(0,255,0,.1);color:var(--green);
+  background:rgba(0,255,0,.1);color:var(--green);
   padding:.3rem .8rem;border-radius:20px;font-size:.75rem;font-family:var(--mono);
   border:1px solid rgba(0,255,0,.25);white-space:nowrap;
 }
@@ -129,26 +142,36 @@ tr:hover td{background:rgba(0,170,255,.03)}
 @media(max-width:500px){
   .stats-row{grid-template-columns:1fr}
   .stat-value{font-size:1.6rem}
-  .header{flex-direction:column;align-items:flex-start}
+  .topbar{flex-direction:column;align-items:flex-start;padding:1rem}
+  .topbar-nav{display:none}
+  .topbar-right{margin-left:0}
   .uptime-badge{margin-left:0}
 }
 </style>
 </head>
 <body>
 
-<!-- Header -->
-<div class="header">
-  <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-    <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0af"/><stop offset="100%" stop-color="#0f0"/></linearGradient></defs>
-    <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
-    <polygon points="26,50 50,64 50,92 26,106 2,92 2,64" fill="url(#hg)" opacity=".7"/>
-    <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
-  </svg>
-  <div class="header-text">
-    <h1>HiveSwarm Relay</h1>
-    <div class="header-meta" id="headerMeta">Loading...</div>
+<!-- Top Bar -->
+<div class="topbar">
+  <a href="/dashboard" class="topbar-logo">
+    <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0af"/><stop offset="100%" stop-color="#0f0"/></linearGradient></defs>
+      <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
+      <polygon points="26,50 50,64 50,92 26,106 2,92 2,64" fill="url(#hg)" opacity=".7"/>
+      <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
+    </svg>
+    <h1>HiveRelay Dashboard</h1>
+  </a>
+  <nav class="topbar-nav">
+    <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/network">Network</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/docs">Docs</a>
+  </nav>
+  <div class="topbar-right">
+    <span class="header-meta" id="headerMeta">Loading...</span>
+    <div class="uptime-badge" id="uptimeBadge">--</div>
   </div>
-  <div class="uptime-badge" id="uptimeBadge">--</div>
 </div>
 
 <!-- Stats Row -->

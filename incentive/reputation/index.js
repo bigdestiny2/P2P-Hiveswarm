@@ -148,7 +148,12 @@ export class ReputationSystem extends EventEmitter {
         avgLatencyMs: Math.round(record.avgLatencyMs),
         uptimeHours: Math.round(record.totalUptimeHours),
         bytesServed: record.totalBytesServed,
-        region: record.region || 'unknown'
+        totalChallenges: record.totalChallenges,
+        passedChallenges: record.passedChallenges,
+        failedChallenges: record.failedChallenges,
+        region: record.region || 'unknown',
+        lastActivity: record.lastActivity,
+        firstSeen: record.firstSeen
       }))
   }
 

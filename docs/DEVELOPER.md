@@ -116,7 +116,7 @@ npm start
 │  Kademlia DHT + Noise_XX encryption                         │
 ├─────────────────────────────────────────────────────────────┤
 │  TRANSPORTS                                                 │
-│  UDP (default) │ WebSocket │ Tor (stub) │ I2P (stub)        │
+│  UDP (default) │ WebSocket │ Tor        │ I2P (stub)        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,7 +172,8 @@ hiverelay/
 │   │   ├── seed-request.js       # Seed request/accept protocol over Protomux
 │   │   ├── relay-circuit.js      # Circuit relay protocol for NAT traversal
 │   │   ├── proof-of-relay.js     # Cryptographic challenge-response verification
-│   │   └── bandwidth-receipt.js  # Ed25519-signed bandwidth proofs
+│   │   ├── bandwidth-receipt.js  # Ed25519-signed bandwidth proofs + replay detection
+│   │   └── rate-limiter.js       # Token bucket rate limiter for P2P messages
 │   ├── relay-node/
 │   │   ├── index.js              # RelayNode class — lifecycle, start/stop/rollback
 │   │   ├── api.js                # RelayAPI — localhost HTTP API (:9100)
@@ -200,9 +201,24 @@ hiverelay/
 │   │   ├── index.js              # WebSocketTransport — ws server for browser peers
 │   │   └── stream.js             # WebSocketStream — Duplex adapter for Protomux
 │   ├── tor/
-│   │   └── index.js              # TorTransport stub (SOCKS5, Phase 2+)
+│   │   └── index.js              # TorTransport (hidden service + SOCKS5 proxy)
 │   └── i2p/
 │       └── index.js              # I2PTransport stub (SAM bridge, Phase 2+)
+├── platform/                         # Privacy platform APIs
+│   ├── index.js                      # Exports all platform primitives
+│   ├── crypto.js                     # XChaCha20-Poly1305 encrypt/decrypt, BLAKE2b hash
+│   ├── keys.js                       # KeyManager — device key gen, HKDF derivation hierarchy
+│   ├── storage.js                    # LocalStorage — encrypted key-value store on device
+│   └── privacy.js                    # PrivacyManager — tier enforcement, audit, sync control
+├── standalone/                       # Standalone P2P block storage (Tier 3 reference impl)
+│   ├── server.js                     # Hyperswarm + Hypercore + protomux-rpc server
+│   ├── client.js                     # Interactive client with REPL
+│   ├── demo.js                       # Self-contained demo (local testnet)
+│   ├── test.js                       # 10 tests (all passing)
+│   └── ARCHITECTURE.md               # Full technical + non-technical explainer
+├── compute/
+│   └── gateway/
+│       └── hyper-gateway.js      # HTTP gateway for Hyperdrive content (LRU cache, path security)
 ├── plugins/
 │   └── openclaw/
 │       ├── index.ts              # OpenClaw TypeScript plugin (162 lines)
@@ -212,10 +228,11 @@ hiverelay/
 ├── scripts/
 │   ├── setup-dev.sh              # Dev environment setup
 │   ├── transfer.sh               # Deployment archive script
+│   ├── publish-app.js            # Publish apps to relay (blind mode, encryption keys)
 │   ├── local-network.js          # Local 3-node bootstrap for testing
 │   └── mvn-test.js               # Minimum Viable Network integration test
 ├── test/
-│   ├── unit/                     # 9 unit test files
+│   ├── unit/                     # 10 unit test files + privacy-tiers.test.js
 │   └── integration/              # 2 integration test files
 └── docs/
     ├── PROTOCOL-SPEC.md          # Wire protocol specification (721 lines)
@@ -592,15 +609,38 @@ await node.stop()
 Seed a Pear app by key. Creates a Hyperdrive, joins its discovery key on the swarm, and begins replicating.
 
 ```js
+// Standard seeding — full replication
 const result = await node.seedApp('a1b2c3d4e5f6...')
 console.log('Discovery key:', result.discoveryKey)
+
+// With metadata
+const result = await node.seedApp('a1b2c3d4e5f6...', {
+  appId: 'my-cool-app',
+  version: '1.0.0'
+})
+
+// Blind mode — discovery only, no content replication
+const result = await node.seedApp('a1b2c3d4e5f6...', {
+  blind: true,
+  appId: 'my-private-app',
+  version: '2.0.0'
+})
+// result.discoveryKey is null for blind apps
 ```
 
-**Validation:** The key must be exactly 64 hex characters. Invalid keys throw immediately.
+**Validation:** The key must be exactly 64 hex characters, normalized to lowercase. Invalid keys throw immediately.
+
+**Blind mode behavior:**
+- Registers the app in the relay's catalog and registry (appId → driveKey mapping)
+- Does NOT open any Hypercore, join DHT, or download blocks
+- App appears in `/catalog.json` with `blind: true`
+- Hyper Gateway returns `403 Private app` for blind apps
+- Useful for encrypted apps where the relay cannot read the content
+- Max 500 blind registrations per relay (configurable via `maxBlindRegistrations`)
 
 #### `node.unseedApp(appKeyHex)` → `Promise<void>`
 
-Stop seeding an app. Leaves the swarm topic and closes the drive.
+Stop seeding an app. For standard apps: leaves the swarm topic and closes the drive. For blind apps: removes the registry entry.
 
 ```js
 await node.unseedApp('a1b2c3d4e5f6...')
@@ -1182,16 +1222,41 @@ const stream = new WebSocketStream(ws)
 
 Handles backpressure: when the WebSocket buffer is full, the Duplex's write returns false, causing upstream to pause.
 
-### 9.3 Tor Transport (Stub)
+### 9.3 Tor Transport
 
-**File:** `transports/tor/index.js` (57 lines)
+**File:** `transports/tor/index.js` (366 lines)
 
-SOCKS5 proxy integration for censorship resistance. Phase 2+ — currently a stub.
+Full Tor hidden service + SOCKS5 proxy transport for censorship resistance.
 
 ```js
-import { TorTransport } from 'p2p-hiverelay'
-const tor = new TorTransport({ socksPort: 9050, hiddenService: true })
+import { TorTransport } from './transports/tor/index.js'
+
+const tor = new TorTransport({
+  socksHost: '127.0.0.1',
+  socksPort: 9050,
+  controlHost: '127.0.0.1',
+  controlPort: 9051,
+  controlPassword: null,        // or set password
+  cookieAuthFile: '/var/lib/tor/control_auth_cookie',
+  localPort: 9100               // port to forward hidden service to
+})
+
+await tor.start()
+// tor.onionAddress → 'abc123...xyz.onion'
+
+// Connect to a .onion address
+const stream = await tor.connect('target.onion', 80)
+// stream is a TorStream (Duplex), compatible with Hyperswarm
+
+await tor.stop()
 ```
+
+**Features:**
+- Ephemeral hidden service via Tor control port (`ADD_ONION`)
+- SOCKS5 outbound connections through Tor
+- Cookie auth and password auth (with proper escaping to prevent control protocol injection)
+- `TorStream` Duplex adapter wraps SOCKS5 sockets for Protomux compatibility
+- Automatic connection tracking and cleanup
 
 ### 9.4 I2P Transport (Stub)
 
@@ -1722,6 +1787,7 @@ Each node gets isolated storage and a unique API port (9100, 9101, 9102, ...). S
 | Identity | Ed25519 keypairs | `sodium-universal` |
 | Transport encryption | Noise_XX | HyperDHT (built-in) |
 | Message signing | `crypto_sign_detached` | `sodium-universal` |
+| Signature verification | `crypto_sign_verify_detached` | `sodium-universal` |
 | Hashing | BLAKE2b (`crypto_generichash`) | `sodium-universal` |
 | Random nonces | `randombytes_buf` (32 bytes) | `sodium-universal` |
 | Merkle proofs | BLAKE2b tree | Hypercore (built-in) |
@@ -1732,21 +1798,168 @@ Each node gets isolated storage and a unique API port (9100, 9101, 9102, ...). S
 
 **Transport encryption:** All connections use Noise_XX via HyperDHT. Data is encrypted end-to-end between peers. The relay node sees only opaque ciphertext when forwarding circuit relay traffic.
 
-**Replay prevention:** Every proof-of-relay challenge includes a 32-byte random nonce. The relay must echo the nonce in its response. Stale challenges are auto-cleaned every 30 seconds.
+**Replay prevention:** Every proof-of-relay challenge includes a 32-byte random nonce generated via `sodium.randombytes_buf()` (not timestamps). The relay must echo the nonce in its response. Stale challenges are auto-cleaned every 30 seconds. Bandwidth receipts include replay detection with a circular buffer of 50,000 seen nonces.
 
 **Circuit privacy:** The relay forwards opaque bytes. It cannot decrypt, inspect, or modify circuit traffic. E2E encryption is maintained between the source and destination peers.
 
 **Sybil resistance:** The leaderboard requires a minimum of 10 proof-of-relay challenges before a node is ranked. Daily score decay (0.995) means idle or abandoned nodes lose reputation over time. The asymmetric penalty (-20 for failure vs +10 for success) makes attacks costly.
 
-**Input validation:** All public APIs validate hex keys must be exactly 64 characters matching `/^[0-9a-f]+$/i`. Invalid inputs are rejected immediately.
+**Input validation:**
+- Hex keys: exactly 64 characters matching `/^[0-9a-f]+$/i`, normalized to lowercase
+- AppId: max 128 chars, `/^[a-zA-Z0-9._-]+$/`
+- Version: max 32 chars
+- Request body: max 64KB
+- All keys normalized to lowercase to prevent duplicate entries
+
+**Atomic persistence:** All JSON state files use tmp-file + rename pattern:
+- `app-registry.json` — persistent app registry
+- `seeded-apps.json` — seeded app state
+- `encryption-keys.json` — blind mode encryption keys (0o600 permissions)
+
+This prevents data corruption on power loss or crash.
+
+**Rate limiting:**
+- HTTP API: 60 req/min per IP (token bucket)
+- P2P protocol: token bucket rate limiter per peer key (`core/protocol/rate-limiter.js`)
+- Directory listings: max 1000 entries with timeout
+
+**Path traversal protection (Hyper Gateway):**
+- Blocks `..` in decoded and double-decoded paths
+- Blocks null bytes (`\x00`)
+- Blocks Windows absolute paths (`C:`)
+- Drive keys validated as exactly 64 hex characters
+
+### API Authentication (Optional)
+
+For private relay operators, API authentication can be enabled:
+
+```bash
+export HIVERELAY_API_KEY=$(openssl rand -hex 32)
+```
+
+When set, write endpoints require `Authorization: Bearer <key>`. Auth behavior:
+
+| `HIVERELAY_API_KEY` | Behavior |
+|---------------------|----------|
+| Not set (default) | Auth disabled — open relay |
+| Set to value | All write endpoints require Bearer token |
+
+**Note:** Public relays do NOT use API keys. Rate limiting and storage caps prevent abuse.
+
+---
+
+## 17. Platform Privacy APIs
+
+The `platform/` directory provides privacy primitives for Pear app developers. These APIs implement the tiered privacy model described in the HiveRelay Privacy Architecture Specification.
+
+### 17.1 Privacy Tiers
+
+Apps declare a privacy tier in their manifest. The `PrivacyManager` enforces the tier's rules:
+
+| Tier | Relay Sees | Data Location | Sync | Encryption |
+|------|-----------|---------------|------|------------|
+| `public` | All data | Relay (cached) | Via relay | None |
+| `local-first` | App code only | Device | P2P only | XChaCha20-Poly1305 |
+| `p2p-only` | Nothing | Device | P2P only | XChaCha20-Poly1305 |
+
+### 17.2 Crypto API (`platform/crypto.js`)
+
+All encryption uses `sodium-universal` (libsodium):
+
+| Function | Algorithm | Purpose |
+|----------|-----------|---------|
+| `encrypt(plaintext, key)` | XChaCha20-Poly1305 (AEAD) | Symmetric encryption with 24-byte nonce |
+| `decrypt(sealed, key)` | XChaCha20-Poly1305 | Decryption with authentication |
+| `hash(data)` | BLAKE2b (32-byte output) | Hashing |
+| `hashKeyed(data, key)` | BLAKE2b with key (MAC) | Keyed hash / MAC |
+| `generateKey()` | CSPRNG | Generate 32-byte encryption key |
+| `randomBytes(n)` | CSPRNG | Generate n random bytes |
+| `equal(a, b)` | Constant-time compare | Timing-safe equality check |
+
+### 17.3 Key Management (`platform/keys.js`)
+
+Hierarchical key derivation using BLAKE2b keyed hashing:
+
+```
+deviceKey (root — persisted to disk, 0o600 permissions)
+  └── appKey("sanduq") = BLAKE2b(deviceKey, "app:sanduq")
+        ├── dataKey("transactions") = BLAKE2b(appKey, "data:transactions")
+        ├── dataKey("profile") = BLAKE2b(appKey, "data:profile")
+        └── syncKey("peer-abc") = BLAKE2b(appKey, "sync:peer-abc")
+```
+
+Key material is zeroed on `destroy()` via `sodium.sodium_memzero()`.
+
+### 17.4 Local Storage (`platform/storage.js`)
+
+Encrypted key-value storage on the local device:
+
+- Data encrypted at rest with XChaCha20-Poly1305
+- Atomic writes (tmp + rename) prevent corruption
+- Per-app namespace isolation
+- Configurable quota (default 100MB)
+- `exportEncrypted()` / `importEncrypted()` for P2P backup sync
+
+### 17.5 Privacy Manager (`platform/privacy.js`)
+
+Wraps all platform APIs with tier enforcement:
+
+- `store(key, value)` — encrypts and stores locally (local-first/p2p-only) or returns plaintext for relay (public)
+- `retrieve(key)` — decrypts and returns local data
+- `prepareSyncExport()` — exports encrypted blobs for P2P backup
+- `validateOperation(op)` — checks if an operation is allowed for the current tier
+- `getPrivacyReport()` — audit summary showing encrypted vs plaintext stores, warnings, relay exposure
+- `encryptForTransit(data)` / `decryptFromTransit(sealed)` — encrypt data for blind mode relay storage
+- `driveEncryptionKey()` — returns the Hyperdrive encryption key (null for public tier)
+
+### 17.6 Standalone Reference Implementation (`standalone/`)
+
+A complete P2P block storage server/client using pure Hyperswarm — no relay involved. Demonstrates the Tier 3 (P2P-Only) pattern:
+
+```bash
+cd standalone && npm install
+npm run demo    # Self-contained demo (1500+ blocks/sec)
+npm test        # 10 tests
+npm run server  # Start server (prints public key)
+npm run client <key>  # Connect with interactive REPL
+```
+
+See `standalone/ARCHITECTURE.md` for the full technical explainer with diagrams.
+
+### Ownership Signatures (Opt-in)
+
+When provided in seed/unseed requests, Ed25519 ownership signatures are verified:
+
+```json
+{
+  "appKey": "64-hex-chars",
+  "ownershipSignature": "signature-of-appKey-using-private-key",
+  "ownerPublicKey": "ed25519-public-key-hex"
+}
+```
+
+Verified via `sodium.crypto_sign_verify_detached`. If the signature is provided and invalid, the request is rejected with 403. If not provided, the request proceeds normally (backward compatible).
+
+### Registration Challenges (Opt-in)
+
+To prevent appId squatting, a SHA256 proof-of-work challenge system is available:
+
+1. `POST /challenge` with `{ "appId": "my-app" }` — returns a random challenge (expires in 5 min)
+2. Client solves: `SHA256(challenge + appId)`
+3. Include `registrationChallenge` in the seed request
+
+Challenges are verified only when provided. If not provided, the request proceeds normally.
 
 **Bounded resources:**
-- Receipts: capped at 10,000 per instance
+- Receipts: circular buffer, 50,000 nonce replay detection
 - Circuits: capped at 256 total, 5 per peer
 - Circuit bytes: 64 MB max
 - Circuit duration: 10 minutes max
 - Metrics buffer: 1,440 snapshots (24 hours, circular)
 - Stale challenge cleanup: every 30 seconds
+- Blind app registrations: max 500 (configurable)
+- Drive cache (gateway): max 50, LRU eviction
+- Drive operation timeout: 30 seconds (configurable)
 
 ---
 
@@ -1814,14 +2027,36 @@ WantedBy=multi-user.target
    - `hiverelay_process_rss_bytes` exceeding threshold
    - `hiverelay_connections` dropping to zero
 
+### TLS with Caddy (Recommended)
+
+```bash
+# Install Caddy and configure
+sudo tee /etc/caddy/Caddyfile <<'EOF'
+relay.yourdomain.com {
+    reverse_proxy 127.0.0.1:9100
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}
+EOF
+sudo systemctl restart caddy
+```
+
+Caddy auto-obtains TLS certificates via Let's Encrypt. See `PRODUCTION.md` for full details.
+
 ### Firewall Rules
 
 ```bash
 # HyperDHT (required)
 # UDP is handled by HyperDHT hole-punching — no inbound rules needed for most setups
 
-# HTTP API (localhost only by default — do NOT expose to public)
-# If you must proxy it, use nginx with auth
+# HTTP API — bind is 0.0.0.0 by default for remote access
+# Use Caddy/NGINX as TLS-terminating reverse proxy in production
+
+# HTTPS (if using Caddy/NGINX)
+ufw allow 443/tcp
 
 # WebSocket (optional, if enabled)
 ufw allow 8765/tcp  # Only if transports.websocket = true

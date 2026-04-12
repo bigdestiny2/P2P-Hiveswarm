@@ -426,7 +426,7 @@ async function run () {
     console.log('      Drive key = which app to open')
     console.log('      Encryption key = how to decrypt it')
     console.log()
-    console.log('    Catalog: https://relay.p2phiverelay.xyz/catalog.json')
+    console.log('    Catalog: https://relay-us.p2phiverelay.xyz/catalog.json')
     console.log()
   } else {
     console.log('  === Access URLs ===')
@@ -435,9 +435,9 @@ async function run () {
       console.log('    ' + url + '/v1/hyper/' + driveKey + '/index.html')
     }
     console.log()
-    console.log('    Gateway: https://relay.p2phiverelay.xyz/v1/hyper/' + driveKey + '/index.html')
+    console.log('    Gateway: https://relay-us.p2phiverelay.xyz/v1/hyper/' + driveKey + '/index.html')
     console.log()
-    console.log('    Catalog: https://relay.p2phiverelay.xyz/catalog.json')
+    console.log('    Catalog: https://relay-us.p2phiverelay.xyz/catalog.json')
     console.log()
   }
 

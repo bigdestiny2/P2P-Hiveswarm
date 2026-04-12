@@ -259,7 +259,9 @@ export class RelayAPI extends EventEmitter {
   }
 
   async _handle (req, res) {
-    const ip = req.socket.remoteAddress || '127.0.0.1'
+    // Use X-Forwarded-For from reverse proxy (Caddy/NGINX), fall back to socket address
+    const forwarded = req.headers['x-forwarded-for']
+    const ip = (forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress) || '127.0.0.1'
 
     // CORS headers on all responses
     const allowedOrigin = this._getAllowedOrigin(req.headers.origin)
@@ -538,6 +540,17 @@ export class RelayAPI extends EventEmitter {
           res.setHeader('Content-Type', 'text/html')
           res.writeHead(200)
           res.end(this._docsHtml)
+          return
+        }
+
+        if (path === '/leaderboard') {
+          if (!this._leaderboardHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'leaderboard.html')
+            this._leaderboardHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._leaderboardHtml)
           return
         }
 

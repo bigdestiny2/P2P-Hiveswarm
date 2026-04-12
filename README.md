@@ -86,12 +86,170 @@ Relay operators can run in **auto-accept mode** (default — accept all matching
 - **End-to-end encrypted**: Relay nodes forward opaque bytes. They cannot read, modify, or inject content.
 - **Signed seeding requests**: Only the key owner can request seeding. Relays verify signatures.
 - **Proof-of-relay challenges**: Nodes prove they're actually serving data through cryptographic hash challenges. No proof = no reputation.
-- **Bandwidth receipts**: Signed records of data transferred, used for accounting and reputation.
+- **Bandwidth receipts**: Signed records of data transferred, used for accounting and reputation. Includes replay detection (50K nonce buffer).
 - **No trust required**: Verification is cryptographic, not social. A relay either passes challenges or it doesn't.
+- **Atomic persistence**: All JSON state files (registry, seeded apps, encryption keys) use tmp-file + rename pattern to prevent corruption on crash.
+- **Input validation**: AppId (max 128 chars, alphanumeric + `._-`), version (max 32 chars), drive keys (exactly 64 hex chars) are all validated server-side.
+- **Rate limiting**: Token bucket rate limiter on P2P protocol messages; 60 req/min per IP on HTTP API; 64KB max request body.
+- **Path traversal protection**: Hyper Gateway blocks `..`, null bytes, double-encoded traversal, and Windows absolute paths.
+- **Random nonces**: All proof-of-relay challenges use `sodium.randombytes_buf()` (not timestamps) to prevent prediction.
+
+### Privacy Tiers
+
+HiveRelay implements a **tiered privacy model** where apps choose their own privacy/convenience tradeoff:
+
+| Tier | Relay Sees | Data Location | Use Case |
+|------|-----------|---------------|----------|
+| **Public** | Everything | Relay (cached, searchable) | Marketplaces, docs, blogs |
+| **Local-First** | App code only | Device (encrypted at rest) | POS, wallets, personal apps |
+| **P2P-Only** | Nothing | Device (encrypted, P2P sync) | Medical, financial, messaging |
+
+**Platform APIs** (`platform/`) provide the primitives:
+
+```javascript
+import { PrivacyManager } from './platform/index.js'
+
+// Declare tier in app manifest
+const pm = new PrivacyManager({
+  appName: 'sanduq-wallet',
+  privacyTier: 'local-first'  // "public" | "local-first" | "p2p-only"
+}, './data')
+await pm.init()
+
+// Store sensitive data — encrypted on device, relay never sees it
+await pm.store('tx-001', { from: 'alice', to: 'bob', amount: 50000 })
+
+// Retrieve — decrypted locally
+const tx = await pm.retrieveJSON('tx-001')
+
+// Export encrypted blobs for P2P backup sync
+const blobs = await pm.prepareSyncExport()
+```
+
+### Blind Mode (Encrypted Apps)
+
+Apps can be published in **blind mode** for privacy. In blind mode:
+
+- The relay can optionally replicate **encrypted Hypercore blocks** it cannot decrypt (blind replication)
+- Or operate as **discovery-only** — registering the app for catalog lookup without storing content
+- Peers discover the app via the relay's catalog, then connect directly via Hyperswarm with the encryption key
+- Blind apps return `403 Private app` from the Hyper Gateway — P2P access only
+- User data never touches the relay — the platform's local storage API keeps it encrypted on device
+
+```bash
+# Publish a blind/encrypted app
+node scripts/publish-app.js ./my-app --blind --app-id my-private-app
+# Encryption key is auto-generated and saved to .hiverelay-encryption-key
+```
 
 ---
 
 ## Quick Start
+
+> ⚠️ **Requirements**: Node.js 20+ (not 18). Ubuntu 24.04 ships with Node 18 by default — see [installation notes](#requirements) below.
+
+### For Relay Operators (Production)
+
+```bash
+# Install globally
+npm install -g p2p-hiverelay
+
+# Start a relay node
+p2p-hiverelay start --region NA --max-storage 50GB --port 9100
+
+# Or with all features enabled
+p2p-hiverelay start \
+  --region NA \
+  --max-storage 50GB \
+  --storage /var/lib/hiverelay \
+  --port 9100 \
+  --enableRelay \
+  --enableSeeding \
+  --enableMetrics
+```
+
+Or install locally in your project:
+
+```bash
+npm install p2p-hiverelay
+npx p2p-hiverelay start --region NA --port 9100
+```
+
+**That's it!** The relay is now running on `http://localhost:9100`.
+
+### Production Setup with HTTPS (Caddy)
+
+```bash
+# Install Caddy for automatic HTTPS
+sudo apt install -y caddy
+
+# Configure Caddyfile
+sudo tee /etc/caddy/Caddyfile << 'EOF'
+relay.example.com {
+    reverse_proxy localhost:9100
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}
+EOF
+
+sudo systemctl enable caddy
+sudo systemctl restart caddy
+# HTTPS will be auto-configured via Let's Encrypt
+```
+
+### Seeding Apps on Your Relay
+
+There are two ways to seed apps:
+
+**Option A: Seed from local Pear (same machine)**
+```bash
+# Stage your Pear app
+cd /path/to/your/pear-app
+pear stage dev .
+
+# Get the key
+pear info dev .  # pear://abc123...
+
+# Convert to hex and seed to your relay
+node -e "
+  const z32 = require('z32');
+  const hex = z32.decode('YOUR_KEY_HERE').toString('hex');
+  console.log(hex);
+"
+
+# Seed to relay
+curl -X POST http://localhost:9100/seed \
+  -H 'Content-Type: application/json' \
+  -d '{"appKey": "HEX_KEY_HERE", "appId": "my-app", "version": "1.0.0"}'
+```
+
+**Option B: Seed apps already on other relays**
+```bash
+# Get app key from another relay
+curl https://other-relay.example.com/catalog.json | jq '.apps[0].driveKey'
+
+# Seed to your relay
+curl -X POST http://localhost:9100/seed \
+  -H 'Content-Type: application/json' \
+  -d '{"appKey": "APP_HEX_KEY", "appId": "app-name", "version": "1.0.0"}'
+```
+
+### View Dashboards
+
+```bash
+# Single relay dashboard
+open http://localhost:9100/dashboard
+
+# Network overview (all relays)
+open http://localhost:9100/network
+
+# API documentation
+open http://localhost:9100/docs
+```
 
 ### For App Developers (SDK)
 
@@ -128,29 +286,52 @@ const files = await app.list(drive.key, '/')
 
 **That's it.** The SDK handles relay discovery, seeding negotiation, NAT traversal, and replication automatically. Your end user never sees relay infrastructure.
 
-### For Relay Operators
+### Requirements
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Node.js | 20+ | Ubuntu 24.04 ships with 18 — [upgrade instructions](#upgrading-nodejs) |
+| RAM | 1GB+ | 2GB recommended for production |
+| Disk | 10GB+ | Depends on apps being seeded |
+| Network | UDP out | For Hyperswarm DHT (no inbound ports needed) |
+
+#### Upgrading Node.js on Ubuntu
 
 ```bash
-git clone https://github.com/bigdestiny2/p2p-hiverelay
-cd p2p-hiverelay
-npm install
+# Remove old Node
+sudo apt-get remove nodejs npm
 
-# Start a relay node
-npx p2p-hiverelay start --region NA --max-storage 50GB
+# Install Node 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
 
-# Start with Tor hidden service (requires Tor daemon)
-npx p2p-hiverelay start --tor --region NA
-
-# Check status
-npx p2p-hiverelay status
-
-# Seed a specific app
-npx p2p-hiverelay seed <app-key> --replicas 3
-
-# View dashboards
-open http://localhost:9100/dashboard   # Single relay
-open http://localhost:9100/network     # All relays on the network
+# Verify
+node --version  # Should show v20.x.x
 ```
+
+### Troubleshooting
+
+**Issue: `MODULE_NOT_FOUND` or `Cannot find module`**
+- Run `npm ci` instead of `npm install`
+- Ensure you're in the `/opt/hiverelay` directory
+
+**Issue: `Unsupported engine` warning**
+- You need Node.js 20+, not 18
+- Follow [upgrade instructions](#upgrading-nodejs) above
+
+**Issue: Apps not appearing in catalog**
+- Ensure apps have a `/manifest.json` file
+- Check that the app is properly staged with `pear stage dev .`
+- For P2P seeding, both machines need UDP connectivity
+
+**Issue: Relay crashes with memory errors**
+- Reduce `--max-storage` (e.g., `5GB` instead of `50GB`)
+- Add swap space: `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+
+**Issue: `ELOCKED: File is locked`**
+- Kill all node processes: `pkill -9 -f node`
+- Clear lock files: `rm -rf ~/.hiverelay/storage/*.lock`
+- Restart relay
 
 ### Local Testnet (For Development)
 
@@ -340,6 +521,8 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Configurable replicas** — Choose how many relay nodes seed your data (default: 3)
 - **Eager download** — Relay nodes proactively download all drive content for fast serving
 - **Hot updates** — Update your drive and relays pick up changes in <10ms
+- **Blind mode** — Encrypted apps registered for discovery only; relay never touches content
+- **Atomic persistence** — Seeded app state survives crashes via tmp+rename writes
 
 ### Circuit Relay (NAT Traversal)
 - **Bidirectional forwarding** — Encrypted bytes flow both directions with backpressure
@@ -367,12 +550,25 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **Duplex stream adapter** — SOCKS5 sockets wrapped into Node.js streams, compatible with Hyperswarm connections
 - **CLI flags** — `--tor`, `--tor-socks-port`, `--tor-control-port` for easy operator setup
 - **Dashboard integration** — Tor-enabled relays show green TOR badge and `.onion` address in network overview
+- **Secure control port auth** — Password escaping prevents command injection in Tor control protocol
 
 ### Incentive Layer (Phase 2)
 - **Lightning micropayments** — LND integration for paying relay operators
-- **Bandwidth receipts** — Signed proof of data transfer for accounting
+- **Bandwidth receipts** — Signed proof of data transfer for accounting, with replay detection (circular buffer, 50K nonces)
 - **Daily settlement** — Automatic settlement when balance exceeds threshold
 - **Mock provider** — Development/testing without real Lightning node
+
+### Security Hardening
+- **Optional API authentication** — Bearer token auth via `HIVERELAY_API_KEY` env var (for private relay operators)
+- **Optional ownership signatures** — Ed25519 `crypto_sign_verify_detached` verification on seed/unseed requests (opt-in, verified when provided)
+- **Registration challenges** — SHA256 proof-of-work to prevent appId squatting (opt-in, verified when provided)
+- **Pagination** — Catalog and registry endpoints paginated (default 50, max 100 per page)
+- **CORS configuration** — Default `*` for public relays, configurable per deployment
+- **Token bucket rate limiter** — Per-peer rate limiting on P2P protocol messages
+- **LRU drive cache** — Hyper Gateway limits cached drives (default 50) with LRU eviction
+- **Operation timeouts** — All Hyperdrive operations wrapped with configurable timeouts (default 30s)
+- **Hex key normalization** — All keys normalized to lowercase to prevent duplicate entries
+- **Connection error cleanup** — Failed connections automatically removed from tracking
 
 ### Seeding Registry (Persistence & Catch-Up)
 - **Not the primary path** — DHT + Protomux handles instant seeding when client and relays are both online
@@ -430,17 +626,20 @@ Held amounts are returned after 15 months of good standing. Provably bad behavio
 - **`POST /registry/auto-accept`** — Toggle auto-accept / approval mode
 
 #### Hyper Gateway (HTTP access to Hyperdrive content)
-- **`GET /v1/hyper/DRIVE_KEY/path`** — Serve files from a seeded Hyperdrive over HTTP. Auto-detects content type, resolves `index.html` for directories, returns JSON directory listings. Vite-built apps have asset paths auto-rewritten.
-- **`GET /catalog.json`** — App catalog listing all seeded drives with metadata from `manifest.json` (name, description, author, version, categories). Used by PearBrowser as a catalog source.
+- **`GET /v1/hyper/DRIVE_KEY/path`** — Serve files from a seeded Hyperdrive over HTTP. Auto-detects content type, resolves `index.html` for directories, returns JSON directory listings. Vite-built apps have asset paths auto-rewritten. Path traversal protection blocks `..`, null bytes, and double-encoded attacks.
+- **`GET /catalog.json`** — App catalog listing all seeded drives with metadata from `manifest.json` (name, description, author, version, categories). Used by PearBrowser as a catalog source. Paginated: `?page=1&pageSize=50`.
 - **`GET /api/gateway`** — Gateway stats: cached drives, total requests, bytes served.
+- **Blind apps** return `403` with `{ blind: true }` — P2P access only.
+- **LRU cache** — Max 50 cached drives (configurable), least recently used evicted automatically.
+- **Drive timeouts** — All operations (entry lookup, file read, directory listing) have configurable timeout (default 30s).
 
 Example:
 ```
 # Fetch a file from a seeded Hyperdrive:
-curl https://relay.p2phiverelay.xyz/v1/hyper/abc123.../index.html
+curl https://relay-us.p2p-hiverelay.xyz/v1/hyper/abc123.../index.html
 
-# Get the app catalog:
-curl https://relay.p2phiverelay.xyz/catalog.json
+# Get the app catalog (paginated):
+curl https://relay-us.p2p-hiverelay.xyz/catalog.json?page=1&pageSize=50
 ```
 
 - Rate limited: 60 req/min per IP, 64KB max body
@@ -511,6 +710,18 @@ p2p-hiverelay/
 │   ├── network-discovery.js # DHT-based relay auto-discovery
 │   ├── bootstrap-cache.js # Persistent DHT routing table
 │   └── logger.js          # Structured logging (pino)
+├── platform/              # Privacy platform APIs
+│   ├── index.js           # Exports all platform primitives
+│   ├── crypto.js          # XChaCha20-Poly1305 encrypt/decrypt, BLAKE2b hash
+│   ├── keys.js            # KeyManager — device keys, HKDF derivation
+│   ├── storage.js         # LocalStorage — encrypted key-value on device
+│   └── privacy.js         # PrivacyManager — tier enforcement + audit
+├── standalone/            # Standalone P2P block storage (Tier 3 reference)
+│   ├── server.js          # Hyperswarm server with protomux-rpc
+│   ├── client.js          # Interactive client with REPL
+│   ├── demo.js            # Self-contained demo (local testnet)
+│   ├── test.js            # 10 tests
+│   └── ARCHITECTURE.md    # Full technical explainer with diagrams
 ├── incentive/
 │   ├── payment/           # Lightning micropayments
 │   │   ├── index.js       # PaymentManager (ledger + settlement)
@@ -529,7 +740,7 @@ p2p-hiverelay/
 ├── cli/                   # CLI tool
 ├── config/                # Default configuration
 ├── test/
-│   ├── unit/              # 71 unit tests
+│   ├── unit/              # 58 unit tests + 21 privacy tier tests
 │   └── integration/       # 15 integration tests
 ├── scripts/               # Benchmarks and test scenarios
 ├── Dockerfile             # Production container
@@ -543,7 +754,7 @@ p2p-hiverelay/
 ## Running Tests
 
 ```bash
-npm test                   # All tests (86 tests, 253 assertions)
+npm test                   # All tests (107 tests, 419+ assertions)
 npm run test:unit          # Unit tests only
 npm run test:integration   # Integration tests (requires network)
 npm run lint               # Linting (standardjs)
@@ -597,6 +808,7 @@ All options in `config/default.js`:
 
 Environment variables:
 - `HIVERELAY_LOG_LEVEL` — `trace`, `debug`, `info` (default), `warn`, `error`, `fatal`
+- `HIVERELAY_API_KEY` — Bearer token for API authentication (optional, for private relay operators)
 
 ---
 
@@ -615,6 +827,14 @@ Environment variables:
 - Persistent relay identity and bootstrap cache across restarts
 - Operator dashboard with registry management + network overview
 - Live network: 4 relays across Utah (NA) and Singapore (AS)
+- Blind mode: encrypted apps with optional blind replication (relay stores ciphertext it can't read)
+- Platform privacy APIs: crypto (XChaCha20-Poly1305), key management (HKDF), encrypted local storage, privacy tier enforcement with audit logging
+- Standalone P2P reference implementation for Tier 3 (P2P-Only) use cases
+- Hyper Gateway: serve Hyperdrive content over HTTP with LRU cache and path security
+- Security hardening: 23+ vulnerabilities patched across 3 independent audits
+- Atomic persistence, rate limiting, input validation, replay detection
+- Optional API auth, ownership signatures, and registration challenges for private operators
+- TLS via Caddy reverse proxy on production relays (auto-HTTPS via Let's Encrypt)
 
 **Phase 2: Incentive Layer** (in progress)
 - Lightning micropayments for relay operators
