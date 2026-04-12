@@ -318,49 +318,59 @@ This can be implemented for Cashu ecash, on-chain Bitcoin, stablecoins, or tradi
 
 The following additions represent the evolution from a relay network to a self-governing, premium infrastructure platform. Each builds on components already implemented in the codebase.
 
-### Phase 3: Service Level Agreement (SLA) Contracts
+### What's Built: The Services + Router Layer (Complete)
 
-**Problem:** The current model rewards uptime and bandwidth but does not distinguish between "best effort" and "guaranteed." App developers building production systems need reliability commitments, not just reputation scores.
+The following are fully implemented and tested (201 unit tests passing):
 
-**Design:** A relay stakes collateral (held sats or locked reputation points) against a specific guarantee: "This app will have 99.9% availability with proof-of-relay challenge latency under 2 seconds." If the relay fails the SLA -- measured by the existing proof-of-relay system and health monitor -- the collateral is seized and distributed to the app developer as compensation.
+**Application-Layer Router** -- the central dispatch layer for all services across all transports.
+- O(1) Map-based route dispatch with automatic registration from service manifests
+- Transaction orchestration: multi-step service chains (e.g., `storage.read -> compute.run -> zk.prove`) with atomic rollback on failure
+- Trace IDs propagated through every dispatch for observability
+- Per-route rate limiting (token bucket per peer per route)
+- Named worker thread pools (`cpu` and `io`) preventing heavy compute from starving I/O
+- Pub/Sub engine: exact O(1) topic matching + glob patterns, delivered over P2P (Protomux) and HTTP (Server-Sent Events)
+- Middleware chain for auth, metering, and policy enforcement
 
-**How it builds on what exists:**
+**SLA Contracts** (`sla` service) -- staked performance guarantees with automated enforcement.
+- Operators create contracts staking collateral against reliability and latency guarantees
+- Enforcement is fully automated: 60-second check interval reads proof-of-relay scores and reputation data
+- Violations trigger immediate collateral slashing via PaymentManager
+- Auto-termination after 3 violations with remaining collateral seized
+- All lifecycle events published to pub/sub (`sla/created`, `sla/violation`, `sla/terminated`, `sla/expired`)
 
-- The **PaymentManager** already tracks held amounts and supports slashing (`slash()` method)
-- **Proof-of-Relay** already measures challenge pass rate and latency per relay
-- The **ReputationSystem** already computes reliability scores from challenge history
-- The **Router** provides the dispatch point for SLA contract management as a service
+**Schema Registry** (`schema` service) -- cross-app data interoperability.
+- Register versioned JSON Schema definitions with publisher attribution
+- Multi-version support per schema ID
+- Inline JSON Schema validator (type checking, required fields, min/max, enum, array items, nested properties)
+- Optional persistence to seeding registry Hypercore log as `schema-register` entries
+- No external dependencies -- matches codebase pattern of inline implementations
 
-**Revenue impact:** SLA contracts command premium pricing (3-5x base rates). A relay earning $12/month on commodity bandwidth could earn $40-60/month for guaranteed availability on critical apps.
+**Decentralized Arbitration** (`arbitration` service) -- peer-adjudicated dispute resolution.
+- Submit disputes with evidence: bandwidth receipts, proof-of-relay results, SLA contract data
+- Arbitrator eligibility gated by reputation (score > 100, reliability > 95%, 50+ challenges, no conflict of interest)
+- Majority-vote resolution when minimum vote threshold reached
+- Winners gain reputation (+10), losers penalized (-20), respondent slashed if claimant wins
+- Evidence verification via `BandwidthReceipt.verify()` for cryptographic proof validation
 
-### Phase 4: Schema Registry (Cross-App Data Interoperability)
+### Next Phases
 
-**Problem:** Data portability is mentioned as a future capability, but without a shared understanding of data structure, apps cannot meaningfully exchange information. App A's "transaction record" is opaque bytes to App B.
+**Phase 3: Enterprise Readiness**
+- OpenAPI specification for router dispatch interface
+- Anchor partner program with time-limited regional reputation multipliers
+- Public testnet for developer onboarding before production deployment
+- Distributed tracing integration (OpenTelemetry) for enterprise observability
 
-**Design:** Before data is published to the relay network, the developer registers a schema definition (JSON Schema or compact-encoding struct). The schema is stored alongside the seed request in the seeding registry (Hypercore append-only log). When another app wants to read that data, it fetches the schema key first, then deserializes accordingly.
+**Phase 4: Economic Layer**
+- Lightning micropayment settlement (LND gRPC integration built, settlement logic ready)
+- Fee splitting (operator/burn/pool) with deflationary mechanics
+- Staking tiers gating service access and reward share
+- Proof-of-Contribution reward halving schedule
 
-**How it builds on what exists:**
-
-- The **SeedingRegistry** is already a distributed Hypercore append-only log with entry types (seed-request, seed-accept, seed-cancel). A new entry type `schema-register` fits naturally
-- The **Router** can expose schema operations as a service (`schema.register`, `schema.resolve`, `schema.list`)
-- The **ServiceProtocol** already handles RPC between peers -- schema queries are just another request type
-
-**Ecosystem impact:** This is the foundation of a "Data Mesh" -- apps from different developers can interoperate without sharing code. A POS system, an accounting app, and a tax reporting tool can all consume the same transaction schema. The relay network becomes the universal translator.
-
-### Phase 5: Decentralized Arbitration (Self-Governance)
-
-**Problem:** Currently, the protocol is the sole source of truth. If a relay claims it passed a proof-of-relay challenge but the challenger disagrees, there is no dispute resolution mechanism. At scale, edge cases and ambiguous failures create trust erosion.
-
-**Design:** An arbitration service where disputes are submitted with evidence (challenge logs, bandwidth receipts, proof-of-relay results). A panel of high-reputation relay nodes reviews the evidence and votes. The losing party has reputation slashed and collateral seized.
-
-**How it builds on what exists:**
-
-- **BandwidthReceipt** and **ProofOfRelay** already produce signed, timestamped evidence trails
-- The **ReputationSystem** already tracks per-relay scores -- minimum reputation threshold qualifies a node as an arbitrator
-- The **Pub/Sub** system can broadcast disputes and verdicts to interested parties
-- The **Router** provides service dispatch for `arbitration.submit`, `arbitration.vote`, `arbitration.verdict`
-
-**Governance impact:** The network moves from "trust the code" to "trust the community." This is the critical transition for institutional adoption -- enterprises need a recourse mechanism before committing infrastructure spend.
+**Phase 5: Scale**
+- I2P transport for garlic-routed anonymity
+- Cross-region relay routing with geographic optimization
+- Predictive load balancing from historical performance data
+- Governance mechanism for protocol parameter changes
 
 ### Growth Strategy: Solving the Cold Start Problem
 
@@ -384,15 +394,22 @@ A decentralized network with no nodes has no value. The following strategies boo
 - No servers, no accounts, no cloud vendor lock-in
 - Privacy tiers let developers choose the right tradeoff per app
 - Blind mode for applications that must never expose user data
-- Service layer (storage, identity, compute, AI, ZK) accessible via simple RPC
+- 8 services accessible via single dispatch: storage, identity, compute, AI, ZK, SLA, schema, arbitration
+- Multi-step transaction orchestration with atomic rollback
+- Real-time event streams via pub/sub (P2P or SSE)
+- Schema registry for cross-app data interoperability without shared code
+- SLA contracts for guaranteed availability on production apps
 
 ### For Relay Operators
 
 - Earn Bitcoin for running infrastructure
 - Reputation system rewards reliability over time
 - Low barrier to entry ($5/month VPS or a Raspberry Pi)
+- Premium revenue tiers: commodity bandwidth -> compute/AI/ZK services -> SLA guarantees
 - Geographic diversity bonuses incentivize global coverage
+- Named worker pools let high-end hardware (Mac Studio, GPU rigs) serve AI inference and ZK proofs
 - Agent-friendly API enables automated fleet management
+- Arbitration participation for high-reputation operators
 
 ### For the Holepunch/Pear Ecosystem
 
@@ -421,27 +438,26 @@ A decentralized network with no nodes has no value. The following strategies boo
 | Proof-of-Relay | BLAKE2b hash challenges + Merkle proof verification | Production |
 | Bandwidth Receipts | Ed25519 signed receipts with 50K nonce replay buffer | Production |
 | Reputation System | Score/decay/leaderboard with composite relay selection | Production |
-| Application Router | O(1) Map dispatch, middleware, registry fallback | Production |
-| Pub/Sub | Two-tier (exact O(1) + glob), SSE + P2P delivery | Production |
-| Worker Pool | Node.js worker_threads with auto-respawn + task queue | Production |
+| Application Router | O(1) Map dispatch, transaction orchestration, trace IDs, per-route rate limits | Production |
+| Pub/Sub | Two-tier (exact O(1) + glob), SSE + P2P delivery via Protomux | Production |
+| Worker Pool | Named pools (cpu/io), auto-respawn, task queue with backpressure | Production |
 | Services Layer | Storage, Identity, Compute, ZK, AI (pluggable) | Production |
+| SLA Contracts | Automated proof-of-relay enforcement, collateral staking + slashing | Production |
+| Schema Registry | JSON Schema registration, inline validation, multi-version, Hypercore persistence | Production |
+| Decentralized Arbitration | Peer-adjudicated disputes, reputation-gated voting, evidence verification | Production |
 | Privacy Tiers | Public / Local-First / P2P-Only + blind mode | Production |
 | Tor Transport | Hidden service inbound + SOCKS5 outbound | Production |
 | WebSocket Transport | Browser peer connectivity | Production |
 | Lightning Payments | LND gRPC integration | Phase 2 |
-| SLA Contracts | Staked guarantees with auto-slashing | Phase 3 |
-| Schema Registry | Distributed schema store on seeding registry | Phase 4 |
-| Decentralized Arbitration | Peer-adjudicated dispute resolution | Phase 5 |
 | I2P Transport | SAM bridge connectivity | Phase 2 |
 | OpenAPI Specification | Formal router dispatch contract | Phase 3 |
-| Token/Staking | Not planned -- Bitcoin-native by design | -- |
 
 ### Codebase
 
-- ~8,500 lines of application code across 50+ files
+- ~12,000 lines of application code across 60+ files
 - ESM modules, Node.js 20+, Apache 2.0 license
 - Dependencies: Hyperswarm, Hypercore, Hyperdrive, Protomux, sodium-universal, pino
-- Test suite: 151 unit tests (brittle framework)
+- Test suite: 201 unit tests (brittle framework)
 - Deployment: npm package, Docker, systemd service, Raspberry Pi
 
 ---
