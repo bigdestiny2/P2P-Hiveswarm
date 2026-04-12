@@ -172,6 +172,41 @@ async function start () {
     cliOverrides.tor.controlPort = parseInt(args['tor-control-port'])
   }
 
+  // ─── Mode ───
+  if (args.mode) {
+    if (!['public', 'private', 'hybrid'].includes(args.mode)) {
+      console.error('Error: --mode must be public, private, or hybrid')
+      process.exit(1)
+    }
+    cliOverrides.mode = args.mode
+  }
+
+  // ─── WebSocket transport ───
+  if (args.websocket) {
+    if (!cliOverrides.transports) cliOverrides.transports = {}
+    cliOverrides.transports.websocket = true
+  }
+  if (args['ws-port']) cliOverrides.wsPort = parseInt(args['ws-port'])
+
+  // ─── Private mode allowlist ───
+  if (args.allowlist) {
+    const keys = [].concat(args.allowlist).flatMap(a => a.split(','))
+    if (!cliOverrides.access) cliOverrides.access = {}
+    cliOverrides.access.allowlist = keys
+    if (!args.mode) cliOverrides.mode = 'private'
+  }
+
+  // ─── Payment / Lightning ───
+  if (args.payment) {
+    cliOverrides.payment = { enabled: true }
+    cliOverrides.lightning = {
+      enabled: true,
+      rpcUrl: args['lightning-rpc'] || 'localhost:10009',
+      macaroonPath: args['lightning-macaroon'] || null,
+      certPath: args['lightning-cert'] || null
+    }
+  }
+
   const config = loadConfig(cliOverrides)
 
   console.log('HiveRelay v0.1.0')
@@ -189,9 +224,19 @@ async function start () {
     console.log(`  Relay:      ${config.enableRelay ? 'enabled' : 'disabled'}`)
     console.log(`  Seeding:    ${config.enableSeeding ? 'enabled' : 'disabled'}`)
     console.log(`  API:        ${config.enableAPI ? 'http://127.0.0.1:' + config.apiPort : 'disabled'}`)
+    console.log(`  Mode:       ${config.mode || 'public'}`)
     console.log(`  Regions:    ${config.regions && config.regions.length ? config.regions.join(', ') : 'all'}`)
+    if (config.transports && config.transports.websocket) {
+      console.log(`  WebSocket:  enabled (port ${config.wsPort || 8765})`)
+    }
     if (config.transports && config.transports.tor) {
       console.log(`  Tor:        enabled (SOCKS ${config.tor ? config.tor.socksPort || 9050 : 9050})`)
+    }
+    if (config.payment && config.payment.enabled) {
+      console.log(`  Payment:    Lightning (${config.lightning ? config.lightning.rpcUrl || 'localhost:10009' : 'localhost:10009'})`)
+    }
+    if (config.access && config.access.allowlist && config.access.allowlist.length) {
+      console.log(`  Allowlist:  ${config.access.allowlist.length} device(s)`)
     }
     console.log()
     console.log('  Node is running. Press Ctrl+C to stop.')
@@ -587,6 +632,14 @@ Start Options:
   --no-relay                    Disable circuit relay
   --no-seeding                  Disable app seeding
   --no-api                      Disable HTTP API
+  --mode <mode>                  Node mode: public, private, hybrid (default: public)
+  --websocket                    Enable WebSocket transport for browser peers
+  --ws-port <n>                  WebSocket port (default: 8765)
+  --allowlist <key,...>          Device pubkeys for private mode (implies --mode private)
+  --payment                      Enable Lightning payment settlement
+  --lightning-rpc <url>          LND gRPC endpoint (default: localhost:10009)
+  --lightning-macaroon <path>    Path to admin.macaroon
+  --lightning-cert <path>        Path to tls.cert
   --tor [password]               Enable Tor hidden service transport
   --tor-socks-port <n>           Tor SOCKS5 port (default: 9050)
   --tor-control-port <n>         Tor control port (default: 9051)
