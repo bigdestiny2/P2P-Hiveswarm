@@ -246,5 +246,6 @@ export class CircuitRelay extends EventEmitter {
     clearInterval(this._cleanupInterval)
     this.reservations.clear()
     this.pendingConnects.clear()
+    this._reserveAttempts.clear()
   }
 }

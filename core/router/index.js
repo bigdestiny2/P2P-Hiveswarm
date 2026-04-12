@@ -249,6 +249,15 @@ export class Router extends EventEmitter {
       }
     }
 
+    // Periodic cleanup of stale rate limit buckets (every 5 min)
+    this._rateLimitCleanup = setInterval(() => {
+      const cutoff = Date.now() - 5 * 60_000
+      for (const [key, bucket] of this._rateLimiters) {
+        if (bucket.lastRefill < cutoff) this._rateLimiters.delete(key)
+      }
+    }, 5 * 60_000)
+    if (this._rateLimitCleanup.unref) this._rateLimitCleanup.unref()
+
     this._started = true
     this.emit('started', { routes: this._routes.size, pools: [...this._workerPools.keys()] })
   }
@@ -261,6 +270,7 @@ export class Router extends EventEmitter {
       await pool.stop()
     }
     this._workerPools.clear()
+    if (this._rateLimitCleanup) { clearInterval(this._rateLimitCleanup); this._rateLimitCleanup = null }
     this._rateLimiters.clear()
 
     this.pubsub.destroy()
