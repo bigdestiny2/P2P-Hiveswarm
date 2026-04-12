@@ -1,170 +1,171 @@
 # P2P Hiveswarm
 
-**Always-on relay infrastructure for the Holepunch/Pear ecosystem.**
-
-Pear apps are peer-to-peer — when the developer closes their laptop, the app goes offline. Hiveswarm fixes this. It provides a network of relay nodes that keep your app seeded, relay connections for NAT-blocked peers, and ensure your data stays available 24/7 — without servers, without accounts, without changing your code.
+**Your app stays online. You get paid for keeping it that way.**
 
 ---
 
-## Who Is This For?
+## For Developers: Your App Never Goes Offline Again
 
-### Pear App Developers
-You've built a P2P app with Hyperdrive and Hyperswarm. It works great when you're online, but disappears when you're not. Hiveswarm gives your app always-on availability with **5 lines of code**.
+You build P2P apps. They work perfectly — until you close your laptop. Then your users see "offline" and your app is dead.
 
-### Relay Operators
-You want to support the P2P ecosystem by running infrastructure. Hiveswarm nodes are lightweight (runs on a $5 VPS or Raspberry Pi), earn reputation through cryptographic proofs, and will support Lightning micropayments in Phase 2.
+Five lines of code fix that forever:
 
-### Holepunch Ecosystem Projects
-Keet, POS, and other Pear apps benefit from shared relay infrastructure. One relay node serves the entire ecosystem — not just one app.
+```js
+import { HiveRelayClient } from 'p2p-hiverelay/client'
+const app = new HiveRelayClient('./my-app-storage')
+await app.start()
+const drive = await app.publish([
+  { path: '/index.html', content: '<h1>My App</h1>' }
+])
+// Close your laptop. Your app is still live.
+```
+
+**What happens behind those 5 lines:**
+- Your data is replicated to relay nodes across the network in 2-5 seconds
+- NAT-blocked users connect through encrypted circuit relays automatically
+- If a relay goes down, others pick up your data without you doing anything
+- You never touch a server, create an account, or configure infrastructure
+
+**What you can build with the services layer:**
+
+| Service | What It Does | Example |
+|---------|-------------|---------|
+| Storage | Read/write files on Hyperdrives across the network | Distributed file storage |
+| Compute | Submit jobs to relay nodes with available CPU | Data processing pipelines |
+| AI Inference | Run models (Ollama, OpenAI-compatible) on relay hardware | AI-powered P2P apps |
+| ZK Proofs | Generate zero-knowledge proofs without local compute | Privacy-preserving verification |
+| Schema Registry | Register data formats so other apps can read your data | Cross-app interoperability |
+| SLA Contracts | Get guaranteed 99.9% availability backed by staked collateral | Production-critical apps |
+
+All services are accessible through a single dispatch endpoint — P2P or HTTP:
+
+```bash
+# Call any service via HTTP
+curl -X POST http://relay:9100/api/v1/dispatch \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -d '{"route": "ai.infer", "params": {"modelId": "llama3", "prompt": "hello"}}'
+
+# Subscribe to real-time events via SSE
+curl http://relay:9100/api/v1/subscribe?topic=events/seeding
+```
 
 ---
 
-## How It Works
+## For Operators: Install It, Earn From It
 
-```
-Your Pear App
-    │
-    ├── publish()   → Creates a Hyperdrive, writes files, announces on DHT
-    ├── seed()      → Asks relay nodes to replicate and serve your data
-    └── open()      → Fetches data from any available peer (you, relays, other users)
+You have hardware — a Raspberry Pi, a VPS, a Mac Studio. Hiveswarm turns it into income.
 
-Hiveswarm Relay Nodes
-    │
-    ├── Seed Protocol     → Accept seeding requests, replicate Hyperdrives
-    ├── Circuit Relay     → Forward encrypted bytes between NAT-blocked peers
-    ├── Proof-of-Relay    → Cryptographic challenges verify nodes are actually serving
-    └── Discovery         → All nodes join a well-known DHT topic for automatic discovery
+### Install (60 seconds)
+
+```bash
+npm install -g p2p-hiverelay
+p2p-hiverelay start --region NA --max-storage 50GB
 ```
 
-**The key insight**: relay nodes are just Hyperswarm peers. They join the same DHT, speak the same protocols, and replicate the same Hypercores. There's no separate network, no gateway, no proxy — just more peers that happen to be always online.
+Or with Docker:
+
+```bash
+docker run -d --name hiverelay -v data:/data -p 9100:9100 \
+  hiverelay/hiverelay:latest start --storage /data --region NA
+```
+
+**That's it.** The node discovers the network automatically, starts accepting work, and begins earning.
+
+### What Your Node Does (Without You Touching It)
+
+- **Seeds apps** — stores and serves data for developers who need always-on availability
+- **Relays connections** — bridges NAT-blocked peers through encrypted circuits
+- **Runs services** — compute jobs, AI inference, ZK proofs (if your hardware supports it)
+- **Proves its work** — cryptographic challenges every few minutes verify you're actually serving data
+- **Heals itself** — 5 health checks run every 30 seconds. Memory pressure, stale connections, disk usage — the node handles it. If something goes critical, it restarts itself (max 3/hour)
+- **Earns reputation** — the more reliably you serve, the more work the network sends you
+
+### What You Earn
+
+| Service | Rate | Hardware Needed |
+|---------|------|----------------|
+| Storage | 100 sats/GB/month | Any ($5 VPS) |
+| Bandwidth | 50 sats/GB served | Any |
+| Circuit relay | 75 sats/GB relayed | Any |
+| Compute tasks | 500+ sats/job | 2+ CPU cores |
+| AI inference | 1,000+ sats/request | 16GB+ RAM, GPU/Apple Silicon |
+| ZK proofs | 2,000+ sats/proof | 4+ CPU cores |
+| SLA guarantees | 3-5x base rates | High uptime, staked collateral |
+
+Higher-capability hardware earns more. A Raspberry Pi earns from storage and bandwidth. A Mac Studio with 192GB unified memory earns premium rates for AI inference that commodity VPS operators cannot match.
+
+### The Dashboard
+
+```bash
+open http://localhost:9100/dashboard   # Your node's stats
+open http://localhost:9100/network     # All relays in the network
+```
+
+Real-time view of connections, storage, bandwidth, reputation score, seeded apps, and earnings.
+
+---
+
+## For the Ecosystem: The Flywheel
+
+The system creates a self-reinforcing cycle:
+
+```
+More apps need availability
+        |
+More developers publish to the network
+        |
+More fee revenue for relay operators
+        |
+More operators join (better hardware, more regions)
+        |
+Better availability, lower latency, more services
+        |
+More developers build on the platform (cycle repeats)
+```
+
+**Three guarantees that make this work:**
+
+1. **Your data is never corrupted.** Even if a relay crashes mid-write, atomic persistence ensures zero data loss.
+2. **Your privacy is enforced, not advisory.** Apps declare a privacy tier (public, local-first, or P2P-only). The relay enforces it — a local-first app's user data never touches the relay.
+3. **Bad actors are punished economically.** Failed proof-of-relay challenges slash reputation. SLA violations slash staked collateral. Arbitration disputes are resolved by high-reputation peers, not a central authority.
+
+---
+
+## How It Works (Technical)
+
+Relay nodes are Hyperswarm peers that happen to be always on. They join the same DHT, speak the same protocols, and replicate the same Hypercores. No separate network, no gateway, no proxy.
 
 ### Data Flow
 
-1. **Developer publishes** — `app.publish()` creates a Hyperdrive, writes files, joins the DHT topic
-2. **Relay discovery** — The client SDK joins a well-known DHT topic and finds relay nodes automatically (2-5 seconds)
-3. **Relay nodes seed** — `app.seed()` broadcasts a signed request over Protomux to all connected relays. Relays with capacity accept instantly and begin replicating. The request is also published to a persistent Hypercore-based registry as a backup path.
-4. **Developer goes offline** — The app is still available because relay nodes have a full copy
-5. **End user opens the app** — `app.open(key)` finds peers on the DHT (relays + any other online peers) and replicates the data
-6. **NAT-blocked users** — Circuit relay forwards encrypted bytes through a relay node when direct connections fail
+1. **Developer publishes** — creates a Hyperdrive, writes files, announces on DHT
+2. **Relay discovery** — SDK joins a well-known DHT topic, finds relay nodes in 2-5 seconds
+3. **Relay nodes seed** — signed request over Protomux, relays with capacity accept and replicate
+4. **Developer goes offline** — data stays available from relay nodes
+5. **End user opens the app** — DHT finds peers (relays + other users), replicates data
+6. **NAT-blocked users** — circuit relay forwards encrypted bytes through a relay when direct connections fail
 
-### How Relay Discovery Works
+### Security (What You Don't Have to Worry About)
 
-All relay nodes announce on a **well-known DHT topic** (`hiverelay-discovery-v1`). Client SDKs join this topic as a client. The DHT connects them to relay nodes within seconds — no central registry, no hardcoded URLs, no configuration.
+- **Your data can't be read by relays** — end-to-end encrypted, relays forward opaque bytes
+- **Nobody can fake a seed request** — Ed25519 signed, relays verify ownership
+- **Relays can't lie about serving data** — cryptographic proof-of-relay challenges catch them
+- **Crash won't corrupt state** — atomic writes (tmp-file + rename) on all persistence
+- **Spam is rate-limited** — per-peer token buckets on P2P, per-IP limits on HTTP
+- **Path traversal is blocked** — Hyper Gateway rejects `..`, null bytes, double-encoding
 
-```
-Client SDK                         Relay Nodes
-    │                                   │
-    ├── join(discovery-topic, client) ──→│── join(discovery-topic, server)
-    │                                   │
-    │←── DHT connects peers ───────────→│
-    │                                   │
-    ├── Protomux seed-request ─────────→│── Accept + replicate
-    │←── seed-accept ──────────────────←│
-    │                                   │
-    └── Done. App is seeded.            └── Serving data 24/7
-```
+### Privacy (You Choose What the Relay Sees)
 
-### Why the Seeding Registry Exists
+Every app declares how much the relay network is allowed to know:
 
-The **primary path** is DHT + Protomux — the client finds relays and sends a seed request directly. This is instant (2-5 seconds) and works for the common case where the client is online and relays are connected.
+| Your App Type | What Relays See | What's Protected |
+|--------------|----------------|------------------|
+| **Public** (marketplace, blog) | Everything | Nothing — data is indexable and searchable |
+| **Local-First** (POS, wallet) | App code only | All user data stays encrypted on device |
+| **P2P-Only** (medical, financial) | Nothing at all | Everything — relay is never involved with data |
 
-The **seeding registry** (Hypercore-based, distributed) handles the cases DHT alone can't:
+This isn't advisory. **PolicyGuard enforces it automatically.** If a local-first app's user data attempts to reach a relay, the app is immediately suspended. No warnings, no grace period.
 
-| Scenario | DHT/Protomux | Registry |
-|----------|-------------|----------|
-| Client online, relays connected | Instant (2-5s) | Not needed |
-| **Client publishes and goes offline** | Lost — no relays received it | Relays find it on next 60s scan |
-| **New relay joins the network later** | Missed it — wasn't online at broadcast | Discovers it in registry, auto-seeds |
-| **Replication factor not met** (1 of 3 relays accepted) | No retry mechanism | Other relays see it needs more replicas |
-
-The registry is not the critical path — it's a persistence and catch-up layer. Seed requests survive the client disconnecting, and new relays joining the network days later can still discover what needs seeding.
-
-Relay operators can run in **auto-accept mode** (default — accept all matching requests automatically) or **approval mode** (review and approve/reject via dashboard).
-
-### Security Model
-
-- **End-to-end encrypted**: Relay nodes forward opaque bytes. They cannot read, modify, or inject content.
-- **Signed seeding requests**: Only the key owner can request seeding. Relays verify signatures.
-- **Proof-of-relay challenges**: Nodes prove they're actually serving data through cryptographic hash challenges. No proof = no reputation.
-- **Bandwidth receipts**: Signed records of data transferred, used for accounting and reputation. Includes replay detection (50K nonce buffer).
-- **No trust required**: Verification is cryptographic, not social. A relay either passes challenges or it doesn't.
-- **Atomic persistence**: All JSON state files (registry, seeded apps, encryption keys) use tmp-file + rename pattern to prevent corruption on crash.
-- **Input validation**: AppId (max 128 chars, alphanumeric + `._-`), version (max 32 chars), drive keys (exactly 64 hex chars) are all validated server-side.
-- **Rate limiting**: Token bucket rate limiter on P2P protocol messages; 60 req/min per IP on HTTP API; 64KB max request body.
-- **Path traversal protection**: Hyper Gateway blocks `..`, null bytes, double-encoded traversal, and Windows absolute paths.
-- **Random nonces**: All proof-of-relay challenges use `sodium.randombytes_buf()` (not timestamps) to prevent prediction.
-
-### Privacy Tiers
-
-HiveRelay implements a **tiered privacy model** where apps choose their own privacy/convenience tradeoff:
-
-| Tier | Relay Sees | Data Location | Use Case |
-|------|-----------|---------------|----------|
-| **Public** | Everything | Relay (cached, searchable) | Marketplaces, docs, blogs |
-| **Local-First** | App code only | Device (encrypted at rest) | POS, wallets, personal apps |
-| **P2P-Only** | Nothing | Device (encrypted, P2P sync) | Medical, financial, messaging |
-
-**Platform APIs** (`platform/`) provide the primitives:
-
-```javascript
-import { PrivacyManager } from './platform/index.js'
-
-// Declare tier in app manifest
-const pm = new PrivacyManager({
-  appName: 'sanduq-wallet',
-  privacyTier: 'local-first'  // "public" | "local-first" | "p2p-only"
-}, './data')
-await pm.init()
-
-// Store sensitive data — encrypted on device, relay never sees it
-await pm.store('tx-001', { from: 'alice', to: 'bob', amount: 50000 })
-
-// Retrieve — decrypted locally
-const tx = await pm.retrieveJSON('tx-001')
-
-// Export encrypted blobs for P2P backup sync
-const blobs = await pm.prepareSyncExport()
-```
-
-### PolicyGuard (Fail-Safe Enforcement)
-
-Privacy tiers are enforced by **PolicyGuard** — a single-constraint guardrail that checks whether an operation violates the relay exposure rules for an app's declared tier:
-
-| Tier | Relay Allowed To |
-|------|-----------------|
-| **Public** | Store and serve code + user data |
-| **Local-First** | Store and serve code only (user data never reaches relay) |
-| **P2P-Only** | Nothing (relay must not be involved at all) |
-
-**Enforcement is fail-safe**: violations trigger immediate service suspension (not warnings). The app is unseeded and all future operations are blocked until an operator manually reinstates it via the API. PolicyGuard checks are enforced at:
-- App seeding (before any data is stored)
-- Storage service write operations (drive-write, core-append)
-- Manifest indexing (serve-code permission)
-
-```bash
-# Query suspended apps
-curl http://localhost:9100/api/policy/violations
-
-# Reinstate after review
-curl -X POST http://localhost:9100/api/policy/reinstate \
-  -H "X-API-Key: $KEY" -d '{"appKey": "..."}'
-```
-
-### Blind Mode (Encrypted Apps)
-
-Apps can be published in **blind mode** for privacy. In blind mode:
-
-- The relay can optionally replicate **encrypted Hypercore blocks** it cannot decrypt (blind replication)
-- Or operate as **discovery-only** — registering the app for catalog lookup without storing content
-- Peers discover the app via the relay's catalog, then connect directly via Hyperswarm with the encryption key
-- Blind apps return `403 Private app` from the Hyper Gateway — P2P access only
-- User data never touches the relay — the platform's local storage API keeps it encrypted on device
-
-```bash
-# Publish a blind/encrypted app
-node scripts/publish-app.js ./my-app --blind --app-id my-private-app
-# Encryption key is auto-generated and saved to .hiverelay-encryption-key
-```
+**Blind mode** goes further: the relay replicates encrypted blocks it cannot decrypt. Peers discover the app through the relay catalog, then connect directly with the encryption key. The relay stores ciphertext — useful for availability, useless for surveillance.
 
 ---
 
