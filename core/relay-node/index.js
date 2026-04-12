@@ -28,6 +28,10 @@ import { RelayTunnel } from './relay-tunnel.js'
 import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService, AIService, SLAService, SchemaService, ArbitrationService } from '../services/index.js'
 import { Router } from '../router/index.js'
 import { PolicyGuard } from '../policy-guard.js'
+import { PaymentManager } from '../../incentive/payment/index.js'
+import { MockProvider } from '../../incentive/payment/mock-provider.js'
+import { ServiceMeter } from '../../incentive/metering/index.js'
+import { FreeTierManager } from '../../incentive/free-tier/index.js'
 import vm from 'node:vm'
 
 // Well-known discovery topic — clients join this to find relay nodes
@@ -455,14 +459,52 @@ export class RelayNode extends EventEmitter {
         await this.torTransport.start()
       }
 
-      if (this.config.payment && this.config.payment.enabled && this.config.paymentManager) {
-        this.paymentManager = this.config.paymentManager
+      if (this.config.payment && this.config.payment.enabled) {
+        // Use injected manager, or create one with appropriate provider
+        if (this.config.paymentManager) {
+          this.paymentManager = this.config.paymentManager
+        } else {
+          let provider
+          if (this.config.lightning && this.config.lightning.enabled) {
+            try {
+              const { LightningProvider } = await import('../../incentive/payment/lightning-provider.js')
+              provider = new LightningProvider({
+                rpcUrl: this.config.lightning.rpcUrl,
+                macaroonPath: this.config.lightning.macaroonPath,
+                certPath: this.config.lightning.certPath,
+                network: this.config.lightning.network || 'mainnet'
+              })
+              await provider.connect()
+              this.emit('lightning-connected', await provider.getInfo())
+            } catch (err) {
+              this.emit('lightning-error', { error: err.message })
+              provider = new MockProvider()
+              await provider.connect()
+              this.emit('payment-fallback', { reason: 'Lightning unavailable, using mock provider' })
+            }
+          } else {
+            provider = new MockProvider()
+            await provider.connect()
+          }
+          this.paymentManager = new PaymentManager({ paymentProvider: provider })
+        }
+
+        // Register this relay as an account
+        const selfPubkey = this.keyPair ? b4a.toString(this.keyPair.publicKey, 'hex') : 'self'
+        this.paymentManager.registerRelay(selfPubkey, selfPubkey)
+
+        // Settlement interval
         const interval = this.config.payment.settlementInterval || 24 * 60 * 60 * 1000
         this.settlementInterval = setInterval(() => {
           this._runSettlements().catch((err) => {
             this.emit('settlement-error', { error: err })
           })
         }, interval)
+
+        this.emit('payment-ready', {
+          provider: this.paymentManager.paymentProvider?.constructor.name || 'injected',
+          selfAccount: selfPubkey
+        })
       }
 
       // ─── Services Layer ───
@@ -522,6 +564,13 @@ export class RelayNode extends EventEmitter {
         await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
         this.emit('services-started', { count: this.serviceRegistry.services.size })
 
+        // ─── Service Metering + Free Tier ───
+        this.serviceMeter = new ServiceMeter(this.config.metering || {})
+        this.freeTier = new FreeTierManager({
+          freeLimits: this.config.freeTier?.limits,
+          whitelist: this.config.freeTier?.whitelist
+        })
+
         // ─── Application-Layer Router ───
         if (this.config.enableRouter !== false) {
           this.router = new Router({
@@ -529,6 +578,24 @@ export class RelayNode extends EventEmitter {
             workers: this.config.routerWorkers ?? 0
           })
           this.router.registerFromRegistry(this.serviceRegistry)
+
+          // Metering + quota middleware — runs on every service dispatch
+          const meter = this.serviceMeter
+          const freeTier = this.freeTier
+          this.router.addMiddleware((route, params, context) => {
+            const appKey = context.remotePubkey || context.appKey || 'anonymous'
+
+            // Check free-tier quota
+            const quota = freeTier.check(appKey, route, meter)
+            if (!quota.allowed) {
+              throw new Error(quota.reason)
+            }
+
+            // Record usage
+            meter.record(appKey, route)
+            return true
+          })
+
           await this.router.start()
 
           // Wire router into service protocol for P2P dispatch
@@ -1592,6 +1659,11 @@ export class RelayNode extends EventEmitter {
   }
 
   async _runSettlements () {
+    // Flush metered usage into payment earnings
+    if (this.serviceMeter && this.paymentManager) {
+      this.serviceMeter.flush(this.paymentManager)
+    }
+
     if (!this.paymentManager) return
     const minSats = (this.config.payment && this.config.payment.minSettlementSats) || 1000
     for (const [pubkey] of this.paymentManager.accounts) {

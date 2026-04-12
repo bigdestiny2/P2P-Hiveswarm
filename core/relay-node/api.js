@@ -778,6 +778,85 @@ export class RelayAPI extends EventEmitter {
         return this._json(res, { error: 'Unknown AI endpoint' }, 404)
       }
 
+      // ─── Billing / Metering / Quotas ───
+      if (path.startsWith('/api/v1/billing/')) {
+        // GET /api/v1/billing/quota/:appKey — check quota for an app
+        if (req.method === 'GET' && path.startsWith('/api/v1/billing/quota/')) {
+          const appKey = path.split('/').pop()
+          if (!this.node.serviceMeter || !this.node.freeTier) {
+            return this._json(res, { error: 'Metering not enabled' }, 503)
+          }
+          return this._json(res, this.node.freeTier.getQuota(appKey, this.node.serviceMeter))
+        }
+
+        // GET /api/v1/billing/usage/:appKey — usage details for an app
+        if (req.method === 'GET' && path.startsWith('/api/v1/billing/usage/')) {
+          const appKey = path.split('/').pop()
+          if (!this.node.serviceMeter) {
+            return this._json(res, { error: 'Metering not enabled' }, 503)
+          }
+          return this._json(res, this.node.serviceMeter.getUsage(appKey))
+        }
+
+        // GET /api/v1/billing/stats — aggregate metering stats
+        if (req.method === 'GET' && path === '/api/v1/billing/stats') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!this.node.serviceMeter) {
+            return this._json(res, { error: 'Metering not enabled' }, 503)
+          }
+          return this._json(res, this.node.serviceMeter.stats())
+        }
+
+        // GET /api/v1/billing/account — payment account summary
+        if (req.method === 'GET' && path === '/api/v1/billing/account') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!this.node.paymentManager) {
+            return this._json(res, { error: 'Payments not enabled' }, 503)
+          }
+          const accounts = []
+          for (const [pubkey] of this.node.paymentManager.accounts) {
+            accounts.push(this.node.paymentManager.getAccountSummary(pubkey))
+          }
+          return this._json(res, { accounts })
+        }
+
+        // POST /api/v1/billing/tier — set app tier (auth required)
+        if (req.method === 'POST' && path === '/api/v1/billing/tier') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey || !body.tier) {
+            return this._json(res, { error: 'appKey and tier required' }, 400)
+          }
+          if (!this.node.freeTier) {
+            return this._json(res, { error: 'Free tier not enabled' }, 503)
+          }
+          this.node.freeTier.setTier(body.appKey, body.tier)
+          return this._json(res, { ok: true, appKey: body.appKey, tier: body.tier })
+        }
+
+        // POST /api/v1/billing/whitelist — add app to unlimited whitelist
+        if (req.method === 'POST' && path === '/api/v1/billing/whitelist') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!this.node.freeTier) {
+            return this._json(res, { error: 'Free tier not enabled' }, 503)
+          }
+          this.node.freeTier.addWhitelist(body.appKey)
+          return this._json(res, { ok: true, appKey: body.appKey, tier: 'unlimited' })
+        }
+
+        return this._json(res, { error: 'Unknown billing endpoint' }, 404)
+      }
+
       // POST routes
       if (req.method === 'POST') {
         const body = await this._readBody(req)
