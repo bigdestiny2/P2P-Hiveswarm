@@ -8,23 +8,21 @@
  * Service type: _hiverelay._udp.local
  *
  * Announces:
- *   - Public key (for Noise handshake)
- *   - Port (Hyperswarm listening port)
- *   - Mode (private/hybrid)
+ *   - Public key (in TXT record)
+ *   - Port (SRV record)
+ *   - Mode (in TXT record)
  *
- * Uses DNS-SD (RFC 6763) compatible format so standard mDNS tools
- * (avahi-browse, dns-sd) can discover the service too.
+ * Uses proper DNS-SD (RFC 6763) wire format via multicast-dns library.
+ * Compatible with avahi-browse, dns-sd, and other mDNS tools.
  */
 
-import dgram from 'dgram'
 import { EventEmitter } from 'events'
+import { hostname } from 'os'
 import b4a from 'b4a'
 
-const MDNS_ADDRESS = '224.0.0.251'
-const MDNS_PORT = 5353
 const SERVICE_TYPE = '_hiverelay._udp.local'
 const ANNOUNCE_INTERVAL = 30_000 // 30 seconds
-const TTL = 120 // DNS TTL in seconds
+const PEER_TTL_MS = 120_000 // 2 minutes
 
 export class MDNSDiscovery extends EventEmitter {
   constructor (opts = {}) {
@@ -33,7 +31,7 @@ export class MDNSDiscovery extends EventEmitter {
     this.port = opts.port || 0
     this.mode = opts.mode || 'private'
     this.instanceName = opts.name || 'hiverelay'
-    this._socket = null
+    this._mdns = null
     this._announceInterval = null
     this._running = false
     this._discoveredPeers = new Map() // pubkey hex → { host, port, lastSeen }
@@ -43,29 +41,24 @@ export class MDNSDiscovery extends EventEmitter {
     if (this._running) return
     this._running = true
 
-    this._socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
+    const mDNS = (await import('multicast-dns')).default
+    this._mdns = mDNS({
+      multicast: true,
+      reuseAddr: true,
+      loopback: true
+    })
 
-    this._socket.on('error', (err) => {
+    this._mdns.on('response', (response, rinfo) => {
+      this._handleResponse(response, rinfo)
+    })
+
+    this._mdns.on('query', (query, rinfo) => {
+      // Respond to queries for our service type
+      this._handleQuery(query, rinfo)
+    })
+
+    this._mdns.on('error', (err) => {
       this.emit('error', err)
-    })
-
-    this._socket.on('message', (msg, rinfo) => {
-      this._handleMessage(msg, rinfo)
-    })
-
-    await new Promise((resolve, reject) => {
-      this._socket.bind(MDNS_PORT, () => {
-        try {
-          this._socket.addMembership(MDNS_ADDRESS)
-          this._socket.setMulticastTTL(255)
-          this._socket.setMulticastLoopback(true)
-        } catch (err) {
-          // Some environments don't support multicast — degrade gracefully
-          this.emit('multicast-unavailable', { error: err.message })
-        }
-        resolve()
-      })
-      this._socket.on('error', reject)
     })
 
     // Start periodic announcements
@@ -85,72 +78,129 @@ export class MDNSDiscovery extends EventEmitter {
       this._announceInterval = null
     }
 
-    if (this._socket) {
-      try {
-        this._socket.dropMembership(MDNS_ADDRESS)
-      } catch {}
-      this._socket.close()
-      this._socket = null
+    if (this._mdns) {
+      this._mdns.destroy()
+      this._mdns = null
     }
 
     this.emit('stopped')
   }
 
   /**
-   * Send an mDNS announcement packet.
-   * Format: simple JSON-based service record (non-standard but functional).
-   * A production version would use proper DNS wire format.
+   * Send an mDNS announcement with proper DNS-SD records.
    */
   _announce () {
-    if (!this._socket || !this.publicKey) return
+    if (!this._mdns || !this.publicKey) return
 
-    const record = {
-      service: SERVICE_TYPE,
-      instance: this.instanceName,
-      pubkey: b4a.toString(this.publicKey, 'hex'),
-      port: this.port,
-      mode: this.mode,
-      ttl: TTL,
-      ts: Date.now()
-    }
+    const host = hostname() + '.local'
+    const instanceFull = `${this.instanceName}.${SERVICE_TYPE}`
+    const pubkeyHex = b4a.toString(this.publicKey, 'hex')
 
-    const buf = Buffer.from(JSON.stringify(record))
-    this._socket.send(buf, 0, buf.length, MDNS_PORT, MDNS_ADDRESS, (err) => {
+    this._mdns.respond({
+      answers: [
+        // PTR: _hiverelay._udp.local → instance._hiverelay._udp.local
+        {
+          name: SERVICE_TYPE,
+          type: 'PTR',
+          ttl: 120,
+          data: instanceFull
+        },
+        // SRV: instance → host:port
+        {
+          name: instanceFull,
+          type: 'SRV',
+          ttl: 120,
+          data: {
+            port: this.port,
+            weight: 0,
+            priority: 0,
+            target: host
+          }
+        },
+        // TXT: metadata (pubkey, mode)
+        {
+          name: instanceFull,
+          type: 'TXT',
+          ttl: 120,
+          data: [
+            `pk=${pubkeyHex}`,
+            `mode=${this.mode}`,
+            `v=1`
+          ]
+        }
+      ]
+    }, (err) => {
       if (err) this.emit('announce-error', { error: err.message })
     })
   }
 
   /**
-   * Handle incoming mDNS messages from other nodes on the LAN.
+   * Respond to DNS-SD queries for our service type.
    */
-  _handleMessage (msg, rinfo) {
-    try {
-      const record = JSON.parse(msg.toString())
-      if (record.service !== SERVICE_TYPE) return
-      if (!record.pubkey || !record.port) return
+  _handleQuery (query, rinfo) {
+    const isForUs = query.questions.some(q =>
+      q.name === SERVICE_TYPE && (q.type === 'PTR' || q.type === 'ANY')
+    )
+    if (isForUs) {
+      this._announce()
+    }
+  }
 
-      // Ignore our own announcements
-      if (this.publicKey && record.pubkey === b4a.toString(this.publicKey, 'hex')) return
+  /**
+   * Handle incoming mDNS responses — extract peer info.
+   */
+  _handleResponse (response, rinfo) {
+    // Look for our service type in answers + additionals
+    const allRecords = [...(response.answers || []), ...(response.additionals || [])]
 
-      const existing = this._discoveredPeers.get(record.pubkey)
-      const peer = {
-        pubkey: record.pubkey,
-        host: rinfo.address,
-        port: record.port,
-        mode: record.mode,
-        name: record.instance,
-        lastSeen: Date.now()
+    // Find SRV and TXT records for hiverelay instances
+    let srvRecord = null
+    let txtRecord = null
+
+    for (const record of allRecords) {
+      if (record.type === 'SRV' && record.name.endsWith(SERVICE_TYPE)) {
+        srvRecord = record
       }
-
-      this._discoveredPeers.set(record.pubkey, peer)
-
-      if (!existing) {
-        this.emit('peer-discovered', peer)
-      } else {
-        this.emit('peer-seen', peer)
+      if (record.type === 'TXT' && record.name.endsWith(SERVICE_TYPE)) {
+        txtRecord = record
       }
-    } catch {
-      // Not a valid service record — ignore
+    }
+
+    if (!srvRecord || !txtRecord) return
+
+    // Parse TXT data
+    const txtMap = {}
+    const txtEntries = Array.isArray(txtRecord.data) ? txtRecord.data : [txtRecord.data]
+    for (const entry of txtEntries) {
+      const str = Buffer.isBuffer(entry) ? entry.toString() : String(entry)
+      const eqIdx = str.indexOf('=')
+      if (eqIdx > 0) {
+        txtMap[str.substring(0, eqIdx)] = str.substring(eqIdx + 1)
+      }
+    }
+
+    const pubkey = txtMap.pk
+    if (!pubkey) return
+
+    // Ignore our own announcements
+    if (this.publicKey && pubkey === b4a.toString(this.publicKey, 'hex')) return
+
+    const peer = {
+      pubkey,
+      host: rinfo.address,
+      port: srvRecord.data.port,
+      mode: txtMap.mode || 'unknown',
+      name: srvRecord.name.replace('.' + SERVICE_TYPE, ''),
+      lastSeen: Date.now()
+    }
+
+    const existing = this._discoveredPeers.get(pubkey)
+    this._discoveredPeers.set(pubkey, peer)
+
+    if (!existing) {
+      this.emit('peer-discovered', peer)
+    } else {
+      this.emit('peer-seen', peer)
     }
   }
 
@@ -161,8 +211,7 @@ export class MDNSDiscovery extends EventEmitter {
     const peers = []
     const now = Date.now()
     for (const [pubkey, peer] of this._discoveredPeers) {
-      // Only return peers seen within 2x TTL
-      if (now - peer.lastSeen < TTL * 2 * 1000) {
+      if (now - peer.lastSeen < PEER_TTL_MS) {
         peers.push(peer)
       } else {
         this._discoveredPeers.delete(pubkey)

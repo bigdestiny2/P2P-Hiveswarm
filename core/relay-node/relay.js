@@ -12,8 +12,13 @@ function forward (from, to, circuit, circuitId, relay) {
       relay._closeCircuit(circuitId, 'BYTES_EXCEEDED')
       return
     }
+    if (relay._isOverBandwidthLimit()) {
+      relay._closeCircuit(circuitId, 'BANDWIDTH_EXCEEDED')
+      return
+    }
     circuit.bytesRelayed += chunk.byteLength
     relay.totalBytesRelayed += chunk.byteLength
+    relay._recordBandwidth(chunk.byteLength)
     if (!to.write(chunk) && canPause) from.pause()
   })
 
@@ -39,6 +44,10 @@ export class Relay extends EventEmitter {
     this.totalBytesRelayed = 0
     this.totalCircuitsServed = 0
     this.running = false
+
+    // Bandwidth tracking
+    this._bandwidthWindow = [] // [{ bytes, timestamp }]
+    this._bandwidthWindowMs = 1000 // 1-second sliding window
   }
 
   async start () {
@@ -139,6 +148,25 @@ export class Relay extends EventEmitter {
       bytesRelayed: circuit.bytesRelayed,
       durationMs: Date.now() - circuit.startedAt
     })
+  }
+
+  /**
+   * Check if current throughput exceeds the configured bandwidth cap.
+   */
+  _isOverBandwidthLimit () {
+    const now = Date.now()
+    const cutoff = now - this._bandwidthWindowMs
+    // Prune old entries
+    while (this._bandwidthWindow.length > 0 && this._bandwidthWindow[0].timestamp < cutoff) {
+      this._bandwidthWindow.shift()
+    }
+    const bytesInWindow = this._bandwidthWindow.reduce((sum, e) => sum + e.bytes, 0)
+    const mbps = (bytesInWindow * 8) / (this._bandwidthWindowMs / 1000) / 1_000_000
+    return mbps >= this.maxBandwidthMbps
+  }
+
+  _recordBandwidth (bytes) {
+    this._bandwidthWindow.push({ bytes, timestamp: Date.now() })
   }
 
   getStats () {

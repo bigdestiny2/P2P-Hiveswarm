@@ -194,7 +194,8 @@ export class RelayAPI extends EventEmitter {
    * Verify API key for protected endpoints
    */
   _verifyApiKey (req) {
-    if (!this._requireAuth || !this._apiKey) return true // Auth not configured
+    if (!this._requireAuth) return true
+    if (!this._apiKey) return false // No key configured — block state-modifying requests
     const authHeader = req.headers.authorization
     if (!authHeader) return false
     const parts = authHeader.split(' ')
@@ -878,7 +879,7 @@ export class RelayAPI extends EventEmitter {
       // 404
       this._json(res, { error: 'Not found' }, 404)
     } catch (err) {
-      this._json(res, { error: err.message }, 500)
+      this._json(res, { error: 'Internal server error' }, 500)
     }
   }
 

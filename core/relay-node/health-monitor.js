@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { statfs } from 'fs/promises'
 
 const DEFAULT_OPTS = {
   checkInterval: 30_000,
@@ -6,7 +7,13 @@ const DEFAULT_OPTS = {
   maxRssMB: 512,
   staleConnectionThreshold: 5 * 60 * 1000,
   zeroConnectionsThreshold: 10 * 60 * 1000,
-  maxConsecutiveFailures: 3
+  maxConsecutiveFailures: 3,
+  // Disk monitoring
+  maxDiskUsagePct: 90,
+  diskCheckPath: null, // Set to storage path
+  // Alerting
+  alertWebhookUrl: null, // HTTP POST alerts here
+  alertCooldownMs: 5 * 60 * 1000 // Don't re-alert within 5 min
 }
 
 export class HealthMonitor extends EventEmitter {
@@ -22,13 +29,18 @@ export class HealthMonitor extends EventEmitter {
     this._lastErrorCheckTime = Date.now()
     this._lastCheck = null
 
+    this._lastAlertTime = new Map() // alert type → timestamp
+    this._logBuffer = [] // Ring buffer for recent logs
+    this._maxLogBuffer = 500
+
     this._status = {
       healthy: true,
       checks: {
         memory: { ok: true },
         connections: { ok: true },
         swarm: { ok: true },
-        errors: { ok: true }
+        errors: { ok: true },
+        disk: { ok: true }
       },
       lastCheck: null,
       consecutiveFailures: 0
@@ -37,10 +49,10 @@ export class HealthMonitor extends EventEmitter {
 
   start () {
     if (this._interval) return
-    this._interval = setInterval(() => this._check(), this.opts.checkInterval)
+    this._interval = setInterval(() => this._check().catch(() => {}), this.opts.checkInterval)
     if (this._interval.unref) this._interval.unref()
     // Run an initial check immediately
-    this._check()
+    this._check().catch(() => {})
   }
 
   stop () {
@@ -50,7 +62,7 @@ export class HealthMonitor extends EventEmitter {
     }
   }
 
-  _check () {
+  async _check () {
     const now = Date.now()
     this._lastCheck = now
     let healthy = true
@@ -142,14 +154,141 @@ export class HealthMonitor extends EventEmitter {
     this._lastErrorCount = currentErrors
     this._lastErrorCheckTime = now
 
+    // --- Disk usage ---
+    if (this.opts.diskCheckPath) {
+      try {
+        const stats = await statfs(this.opts.diskCheckPath)
+        const totalBytes = stats.blocks * stats.bsize
+        const freeBytes = stats.bavail * stats.bsize
+        const usedPct = ((totalBytes - freeBytes) / totalBytes) * 100
+
+        if (usedPct > this.opts.maxDiskUsagePct) {
+          healthy = false
+          this._status.checks.disk = {
+            ok: false,
+            usedPct: Math.round(usedPct * 10) / 10,
+            freeGB: Math.round(freeBytes / (1024 ** 3) * 10) / 10,
+            totalGB: Math.round(totalBytes / (1024 ** 3) * 10) / 10
+          }
+          this._alert('disk', `Disk usage ${Math.round(usedPct)}% exceeds ${this.opts.maxDiskUsagePct}%`)
+        } else {
+          this._status.checks.disk = {
+            ok: true,
+            usedPct: Math.round(usedPct * 10) / 10,
+            freeGB: Math.round(freeBytes / (1024 ** 3) * 10) / 10
+          }
+        }
+      } catch (err) {
+        this._status.checks.disk = { ok: true, error: err.message }
+      }
+    }
+
     // Update overall status
     if (!healthy) {
       this._status.consecutiveFailures++
+
+      // Send alerts for critical issues
+      if (this._status.consecutiveFailures >= this.opts.maxConsecutiveFailures) {
+        this._alert('consecutive-failures', `${this._status.consecutiveFailures} consecutive health check failures`)
+      }
     } else {
       this._status.consecutiveFailures = 0
     }
     this._status.healthy = healthy
     this._status.lastCheck = now
+  }
+
+  /**
+   * Log an event to the ring buffer.
+   */
+  log (level, component, message, data = {}) {
+    const entry = {
+      ts: Date.now(),
+      level, // 'info', 'warn', 'error', 'critical'
+      component,
+      message,
+      ...data
+    }
+
+    this._logBuffer.push(entry)
+    if (this._logBuffer.length > this._maxLogBuffer) {
+      this._logBuffer.shift()
+    }
+
+    this.emit('log', entry)
+  }
+
+  /**
+   * Get recent logs, optionally filtered.
+   */
+  getLogs (opts = {}) {
+    let logs = this._logBuffer
+    if (opts.level) {
+      logs = logs.filter(l => l.level === opts.level)
+    }
+    if (opts.component) {
+      logs = logs.filter(l => l.component === opts.component)
+    }
+    if (opts.since) {
+      logs = logs.filter(l => l.ts >= opts.since)
+    }
+    if (opts.limit) {
+      logs = logs.slice(-opts.limit)
+    }
+    return logs
+  }
+
+  /**
+   * Send an alert (webhook POST or event).
+   * Respects cooldown to avoid alert fatigue.
+   */
+  _alert (type, message) {
+    const now = Date.now()
+    const lastAlert = this._lastAlertTime.get(type) || 0
+
+    if (now - lastAlert < this.opts.alertCooldownMs) return
+    this._lastAlertTime.set(type, now)
+
+    const alert = {
+      type,
+      message,
+      timestamp: now,
+      status: this._status
+    }
+
+    this.emit('alert', alert)
+    this.log('critical', 'health-monitor', message, { alertType: type })
+
+    // Fire webhook if configured
+    if (this.opts.alertWebhookUrl) {
+      this._sendWebhook(alert).catch(() => {})
+    }
+  }
+
+  async _sendWebhook (alert) {
+    try {
+      const url = new URL(this.opts.alertWebhookUrl)
+      const { request } = await import(url.protocol === 'https:' ? 'https' : 'http')
+
+      return new Promise((resolve, reject) => {
+        const req = request({
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 10_000
+        }, (res) => {
+          res.resume()
+          resolve()
+        })
+        req.on('error', reject)
+        req.write(JSON.stringify(alert))
+        req.end()
+      })
+    } catch {
+      // Webhook failure is non-critical
+    }
   }
 
   getStatus () {

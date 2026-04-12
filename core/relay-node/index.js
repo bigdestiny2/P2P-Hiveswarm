@@ -24,6 +24,8 @@ import { SelfHeal } from './self-heal.js'
 import { SeedingRegistry } from '../registry/index.js'
 import { AccessControl } from './access-control.js'
 import { MDNSDiscovery } from './mdns-discovery.js'
+import { RelayTunnel } from './relay-tunnel.js'
+import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService } from '../services/index.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -182,6 +184,13 @@ export class RelayNode extends EventEmitter {
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this._seedLocks = new Map() // appKey hex -> Promise (per-key locking for seedApp)
 
+    // Services layer
+    this.serviceRegistry = null
+    this.serviceProtocol = null
+
+    // Relay tunnel (private/hybrid remote access)
+    this.relayTunnel = null
+
     // Private/hybrid mode: access control + local discovery
     this.accessControl = null
     this.mdnsDiscovery = null
@@ -295,6 +304,22 @@ export class RelayNode extends EventEmitter {
             })
           }
         }).catch(() => {})
+      }
+
+      // ─── Relay Tunnel (private/hybrid remote access) ───
+      if (this.config.tunnel && this.config.tunnel.relayPubkey) {
+        this.relayTunnel = new RelayTunnel({
+          relayPubkey: this.config.tunnel.relayPubkey,
+          keyPair,
+          reconnectInterval: this.config.tunnel.reconnectInterval || 30_000
+        })
+        this.relayTunnel.on('connected', (info) => this.emit('tunnel-connected', info))
+        this.relayTunnel.on('disconnected', (info) => this.emit('tunnel-disconnected', info))
+        this.relayTunnel.on('error', (info) => this.emit('tunnel-error', info))
+        this.relayTunnel.on('reconnecting', (info) => this.emit('tunnel-reconnecting', info))
+        this.relayTunnel.start().catch(err => {
+          this.emit('tunnel-error', { error: err.message })
+        })
       }
 
       // Initialize subsystems in parallel where possible
@@ -432,6 +457,31 @@ export class RelayNode extends EventEmitter {
         }, interval)
       }
 
+      // ─── Services Layer ───
+      if (this.config.enableServices !== false) {
+        this.serviceRegistry = new ServiceRegistry()
+        this.serviceProtocol = new ServiceProtocol(this.serviceRegistry)
+
+        // Register built-in services (core only — zk, ai are opt-in via config.services)
+        const storageService = new StorageService()
+        const identityService = new IdentityService()
+        const computeService = new ComputeService()
+
+        this.serviceRegistry.register(storageService)
+        this.serviceRegistry.register(identityService)
+        this.serviceRegistry.register(computeService)
+
+        // Register any custom services from config
+        if (Array.isArray(this.config.services)) {
+          for (const svc of this.config.services) {
+            this.serviceRegistry.register(svc)
+          }
+        }
+
+        await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
+        this.emit('services-started', { count: this.serviceRegistry.services.size })
+      }
+
       this._startHealthChecks()
 
       // Start seeding registry — distributed Autobase registry for seed requests
@@ -482,11 +532,16 @@ export class RelayNode extends EventEmitter {
       this.running = true
 
       // Start health monitoring and self-healing
-      this.healthMonitor = new HealthMonitor(this, this.config.healthMonitor)
+      this.healthMonitor = new HealthMonitor(this, {
+        diskCheckPath: this.config.storage,
+        alertWebhookUrl: this.config.alertWebhookUrl || null,
+        ...this.config.healthMonitor
+      })
       this.selfHeal = new SelfHeal(this, this.config.selfHeal)
       this.selfHeal.start(this.healthMonitor)
       this.healthMonitor.on('health-warning', (details) => this.emit('health-warning', details))
       this.healthMonitor.on('health-critical', (details) => this.emit('health-critical', details))
+      this.healthMonitor.on('alert', (alert) => this.emit('alert', alert))
       this.selfHeal.on('self-heal-action', (action) => this.emit('self-heal-action', action))
       this.healthMonitor.start()
 
@@ -497,6 +552,8 @@ export class RelayNode extends EventEmitter {
       if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
       if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
       if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
+      if (this.serviceProtocol) { try { this.serviceProtocol.destroy() } catch (err) { this.emit('stop-error', { component: 'serviceProtocol', error: err.message }) } this.serviceProtocol = null }
+      if (this.serviceRegistry) { try { await this.serviceRegistry.stopAll() } catch (err) { this.emit('stop-error', { component: 'serviceRegistry', error: err.message }) } this.serviceRegistry = null }
       if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
       if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
       if (this.torTransport) { try { await this.torTransport.stop() } catch (err) { this.emit('stop-error', { component: 'torTransport', error: err.message }) } this.torTransport = null }
@@ -1077,8 +1134,34 @@ export class RelayNode extends EventEmitter {
         : null,
       mdns: this.mdnsDiscovery
         ? { running: this.mdnsDiscovery._running, discoveredPeers: this.mdnsDiscovery.getDiscoveredPeers().length }
+        : null,
+      services: this.serviceRegistry
+        ? { registered: this.serviceRegistry.services.size, catalog: this.serviceRegistry.catalog(), stats: this.serviceRegistry.stats() }
         : null
     }
+  }
+
+  /**
+   * Get the service registry for programmatic access.
+   */
+  getServiceRegistry () {
+    return this.serviceRegistry
+  }
+
+  /**
+   * Call a local service method.
+   */
+  async callService (serviceName, method, params = {}) {
+    if (!this.serviceRegistry) throw new Error('Services not enabled')
+    return this.serviceRegistry.handleRequest(serviceName, method, params, { caller: 'local' })
+  }
+
+  /**
+   * Call a remote service on a connected peer.
+   */
+  async callRemoteService (remotePubkey, serviceName, method, params = {}) {
+    if (!this.serviceProtocol) throw new Error('Services not enabled')
+    return this.serviceProtocol.request(remotePubkey, serviceName, method, params)
   }
 
   getLeaderboard (limit = 50) {
@@ -1254,6 +1337,11 @@ export class RelayNode extends EventEmitter {
     if (this._proofOfRelay) {
       try { this._proofOfRelay.attach(conn) } catch (err) {
         this.emit('protocol-error', { protocol: 'proof', error: err })
+      }
+    }
+    if (this.serviceProtocol && remotePubKeyHex) {
+      try { this.serviceProtocol.attach(conn, remotePubKeyHex) } catch (err) {
+        this.emit('protocol-error', { protocol: 'services', error: err })
       }
     }
 
@@ -1470,7 +1558,9 @@ export class RelayNode extends EventEmitter {
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
 
-    // Destroy protocol handlers
+    // Destroy services and protocol handlers
+    if (this.serviceProtocol) { this.serviceProtocol.destroy(); this.serviceProtocol = null }
+    if (this.serviceRegistry) { try { await this.serviceRegistry.stopAll() } catch (err) { this.emit('stop-error', { component: 'serviceRegistry', error: err.message }) } this.serviceRegistry = null }
     if (this._seedProtocol) { this._seedProtocol.destroy(); this._seedProtocol = null }
     if (this._circuitRelay) {
       if (this._circuitRelay.destroy) this._circuitRelay.destroy()
@@ -1479,6 +1569,7 @@ export class RelayNode extends EventEmitter {
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
     if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'networkDiscovery', error: err.message }) } this.networkDiscovery = null }
+    if (this.relayTunnel) { try { await this.relayTunnel.stop() } catch (err) { this.emit('stop-error', { component: 'relayTunnel', error: err.message }) } this.relayTunnel = null }
     if (this.mdnsDiscovery) { try { await this.mdnsDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'mdnsDiscovery', error: err.message }) } this.mdnsDiscovery = null }
     if (this.accessControl) { try { await this.accessControl.save() } catch (err) { this.emit('stop-error', { component: 'accessControl', error: err.message }) } this.accessControl.destroy(); this.accessControl = null }
     if (this._proofOfRelay) { this._proofOfRelay = null }

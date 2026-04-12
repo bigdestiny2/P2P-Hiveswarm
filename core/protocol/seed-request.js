@@ -32,6 +32,9 @@ export class SeedProtocol extends EventEmitter {
     this.pendingRequests = new Map() // appKey hex -> seed request
     this.acceptedSeeds = new Map() // appKey hex -> { relay pubkey, accepted at }
     this.channels = new Set()
+    this._maxPendingRequests = opts.maxPendingRequests || 1000
+    this._pendingTTL = opts.pendingTTL || 30 * 60 * 1000 // 30 min default
+    this._pendingCleanup = setInterval(() => this._evictStalePending(), 60_000)
     this.rateLimiter = new TokenBucketRateLimiter({
       tokensPerMinute: opts.rateLimitTokens || RATE_LIMIT_TOKENS_PER_MIN,
       burstSize: opts.rateLimitBurst || RATE_LIMIT_BURST

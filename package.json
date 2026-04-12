@@ -49,11 +49,12 @@
     "hyperdrive": "^11.8.0",
     "hyperswarm": "^4.7.0",
     "minimist": "^1.2.8",
+    "multicast-dns": "^7.2.5",
+    "pino": "^9.0.0",
     "protomux": "^3.6.0",
     "socks": "^2.8.7",
     "sodium-universal": "^4.0.0",
-    "ws": "^8.20.0",
-    "pino": "^9.0.0"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@hyperswarm/testnet": "^3.0.0",

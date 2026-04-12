@@ -11,7 +11,9 @@
  */
 
 import { EventEmitter } from 'events'
-import { readFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
 export class LightningProvider extends EventEmitter {
   constructor (opts = {}) {
@@ -175,10 +177,6 @@ export class LightningProvider extends EventEmitter {
    * Looks for a bundled proto or falls back to a well-known location.
    */
   _resolveProtoPath () {
-    const { join, dirname } = require('path')
-    const { existsSync } = require('fs')
-    const { fileURLToPath } = require('url')
-
     // Check bundled proto first
     const bundled = join(dirname(fileURLToPath(import.meta.url)), 'lnrpc', 'lightning.proto')
     if (existsSync(bundled)) return bundled

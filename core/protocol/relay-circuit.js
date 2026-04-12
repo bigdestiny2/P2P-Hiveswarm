@@ -34,8 +34,12 @@ export class CircuitRelay extends EventEmitter {
 
     // Reservations: peer pubkey hex -> { channel, expiresAt, circuitCount }
     this.reservations = new Map()
-    // Pending connect requests: target pubkey hex -> [{ source channel, source pubkey }]
+    // Pending connect requests: target pubkey hex -> [{ source channel, source pubkey, addedAt }]
     this.pendingConnects = new Map()
+    // Per-peer reservation rate limit: max 5 reserves per minute
+    this._reserveAttempts = new Map() // peer hex -> [timestamps]
+    this._maxReservesPerMin = opts.maxReservesPerMin || 5
+    this._maxPendingConnects = opts.maxPendingConnects || 100
 
     this._cleanupInterval = setInterval(() => this._cleanupExpired(), 60_000)
   }
@@ -106,6 +110,17 @@ export class CircuitRelay extends EventEmitter {
 
   _onReserve (channel, msg) {
     const peerHex = b4a.toString(msg.peerPubkey, 'hex')
+
+    // Per-peer reserve rate limiting
+    const now = Date.now()
+    const attempts = this._reserveAttempts.get(peerHex) || []
+    const recentAttempts = attempts.filter(t => now - t < 60_000)
+    if (recentAttempts.length >= this._maxReservesPerMin) {
+      this._sendStatus(channel, ERR.CAPACITY_FULL, 'Reserve rate limited')
+      return
+    }
+    recentAttempts.push(now)
+    this._reserveAttempts.set(peerHex, recentAttempts)
 
     // Check capacity
     if (this.relay && this.relay.circuits.size >= this.relay.maxConnections) {
@@ -205,6 +220,18 @@ export class CircuitRelay extends EventEmitter {
         this.reservations.delete(key)
         this.emit('reservation-expired', { peer: key })
       }
+    }
+    // Evict stale pending connects (older than reservation TTL)
+    for (const [key, reqs] of this.pendingConnects) {
+      const active = reqs.filter(r => !r.addedAt || now - r.addedAt < this.reservationTTL)
+      if (active.length === 0) this.pendingConnects.delete(key)
+      else this.pendingConnects.set(key, active)
+    }
+    // Prune stale rate limit entries
+    for (const [key, attempts] of this._reserveAttempts) {
+      const recent = attempts.filter(t => now - t < 60_000)
+      if (recent.length === 0) this._reserveAttempts.delete(key)
+      else this._reserveAttempts.set(key, recent)
     }
   }
 

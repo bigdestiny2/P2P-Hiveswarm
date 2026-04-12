@@ -216,6 +216,87 @@ export class AccessControl extends EventEmitter {
     }
   }
 
+  // ─── Backup & Restore ──────────────────────────────────────────
+
+  /**
+   * Create an encrypted backup of the device allowlist.
+   * Uses the relay's secret key to encrypt so only this node can restore.
+   * Returns: { encrypted: Buffer, nonce: Buffer, timestamp }
+   */
+  async createBackup (secretKey) {
+    if (!secretKey || secretKey.length < 32) {
+      throw new Error('BACKUP_NEEDS_KEY: provide relay secretKey (32+ bytes)')
+    }
+
+    const entries = []
+    for (const [pubkey, meta] of this.allowedDevices) {
+      entries.push({ pubkey, ...meta })
+    }
+
+    const plaintext = b4a.from(JSON.stringify(entries))
+    const nonce = randomBytes(24)
+    const key = b4a.isBuffer(secretKey) ? secretKey.subarray(0, 32) : b4a.from(secretKey, 'hex').subarray(0, 32)
+
+    // XSalsa20-Poly1305 symmetric encryption
+    const { sodium_malloc, crypto_secretbox_easy, crypto_secretbox_MACBYTES } = await this._getSodium()
+    const ciphertext = b4a.alloc(plaintext.length + crypto_secretbox_MACBYTES)
+    crypto_secretbox_easy(ciphertext, plaintext, b4a.from(nonce), key)
+
+    return {
+      encrypted: b4a.toString(ciphertext, 'hex'),
+      nonce: nonce.toString('hex'),
+      timestamp: Date.now(),
+      deviceCount: this.allowedDevices.size
+    }
+  }
+
+  /**
+   * Restore from an encrypted backup.
+   * Merges restored devices with any existing devices (union).
+   */
+  async restoreBackup (backup, secretKey) {
+    if (!backup || !backup.encrypted || !backup.nonce) {
+      throw new Error('BACKUP_INVALID: need encrypted and nonce fields')
+    }
+
+    const key = b4a.isBuffer(secretKey) ? secretKey.subarray(0, 32) : b4a.from(secretKey, 'hex').subarray(0, 32)
+    const ciphertext = b4a.from(backup.encrypted, 'hex')
+    const nonce = b4a.from(backup.nonce, 'hex')
+
+    const { crypto_secretbox_open_easy, crypto_secretbox_MACBYTES } = await this._getSodium()
+    const plaintext = b4a.alloc(ciphertext.length - crypto_secretbox_MACBYTES)
+
+    const success = crypto_secretbox_open_easy(plaintext, ciphertext, nonce, key)
+    if (!success) {
+      throw new Error('BACKUP_DECRYPT_FAILED: wrong key or corrupted backup')
+    }
+
+    const entries = JSON.parse(b4a.toString(plaintext))
+    let restored = 0
+
+    for (const entry of entries) {
+      if (entry.pubkey && !this.allowedDevices.has(entry.pubkey)) {
+        if (this.allowedDevices.size >= this.maxDevices) break
+        this.allowedDevices.set(entry.pubkey, {
+          name: entry.name || 'restored',
+          pairedAt: entry.pairedAt || Date.now(),
+          lastSeen: entry.lastSeen || null
+        })
+        restored++
+      }
+    }
+
+    await this.save()
+    this.emit('backup-restored', { restored, total: entries.length })
+    return { restored, total: entries.length }
+  }
+
+  async _getSodium () {
+    // Dynamic import to keep sodium optional at top level
+    const sodium = (await import('sodium-universal')).default
+    return sodium
+  }
+
   destroy () {
     this.disablePairing()
     this.allowedDevices.clear()

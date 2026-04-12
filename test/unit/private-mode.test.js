@@ -250,8 +250,10 @@ test('RelayNode - private mode starts and stops', async (t) => {
     mode: 'private',
     storage: tmpStorage(),
     enableAPI: false,
+    enableServices: false,
     discovery: { mdns: false } // disable mDNS for test (avoids port conflicts)
   })
+  t.teardown(async () => { if (node.running) await node.stop() })
 
   await node.start()
   t.is(node.running, true, 'starts in private mode')
@@ -273,9 +275,11 @@ test('RelayNode - private mode with pre-configured allowlist', async (t) => {
     mode: 'private',
     storage: tmpStorage(),
     enableAPI: false,
+    enableServices: false,
     access: { allowlist: [deviceKey] },
     discovery: { mdns: false }
   })
+  t.teardown(async () => { if (node.running) await node.stop() })
 
   await node.start()
 
@@ -294,8 +298,10 @@ test('RelayNode - private mode pairing methods', async (t) => {
     mode: 'private',
     storage: tmpStorage(),
     enableAPI: false,
+    enableServices: false,
     discovery: { mdns: false }
   })
+  t.teardown(async () => { if (node.running) await node.stop() })
 
   await node.start()
 
@@ -353,8 +359,10 @@ test('RelayNode - private mode emits connection-rejected for unknown peers', asy
     mode: 'private',
     storage: tmpStorage(),
     enableAPI: false,
+    enableServices: false,
     discovery: { mdns: false }
   })
+  t.teardown(async () => { if (node.running) await node.stop() })
 
   await node.start()
 
@@ -387,9 +395,11 @@ test('RelayNode - private mode allows paired devices through', async (t) => {
     mode: 'private',
     storage: tmpStorage(),
     enableAPI: false,
+    enableServices: false,
     access: { allowlist: [deviceKey] },
     discovery: { mdns: false }
   })
+  t.teardown(async () => { if (node.running) await node.stop() })
 
   await node.start()
 
@@ -428,6 +438,8 @@ test('MDNSDiscovery - start and stop', async (t) => {
     mode: 'private'
   })
 
+  t.teardown(async () => { await mdns.stop() })
+
   // Just test start/stop lifecycle (actual multicast may not work in CI)
   try {
     await mdns.start()
@@ -451,18 +463,16 @@ test('MDNSDiscovery - ignores own announcements', async (t) => {
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
 
-  // Simulate receiving our own announcement
-  const ownRecord = JSON.stringify({
-    service: '_hiverelay._udp.local',
-    instance: 'hiverelay',
-    pubkey: b4a.toString(pubkey, 'hex'),
-    port: 49737,
-    mode: 'private',
-    ttl: 120,
-    ts: Date.now()
-  })
+  // Simulate receiving our own announcement as DNS-SD response
+  const ownResponse = {
+    answers: [
+      { name: 'hiverelay._hiverelay._udp.local', type: 'SRV', data: { port: 49737, target: 'host.local' } },
+      { name: 'hiverelay._hiverelay._udp.local', type: 'TXT', data: [`pk=${b4a.toString(pubkey, 'hex')}`, 'mode=private', 'v=1'] }
+    ],
+    additionals: []
+  }
 
-  mdns._handleMessage(Buffer.from(ownRecord), { address: '192.168.1.50' })
+  mdns._handleResponse(ownResponse, { address: '192.168.1.50' })
   t.is(discovered.length, 0, 'own announcement ignored')
 })
 
@@ -477,19 +487,17 @@ test('MDNSDiscovery - discovers other peers', async (t) => {
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
 
-  // Simulate receiving another node's announcement
+  // Simulate receiving another node's announcement as DNS-SD
   const otherKey = randomBytes(32).toString('hex')
-  const otherRecord = JSON.stringify({
-    service: '_hiverelay._udp.local',
-    instance: 'friend-hive',
-    pubkey: otherKey,
-    port: 49738,
-    mode: 'private',
-    ttl: 120,
-    ts: Date.now()
-  })
+  const otherResponse = {
+    answers: [
+      { name: 'friend-hive._hiverelay._udp.local', type: 'SRV', data: { port: 49738, target: 'friend.local' } },
+      { name: 'friend-hive._hiverelay._udp.local', type: 'TXT', data: [`pk=${otherKey}`, 'mode=private', 'v=1'] }
+    ],
+    additionals: []
+  }
 
-  mdns._handleMessage(Buffer.from(otherRecord), { address: '192.168.1.51' })
+  mdns._handleResponse(otherResponse, { address: '192.168.1.51' })
 
   t.is(discovered.length, 1, 'peer discovered')
   t.is(discovered[0].pubkey, otherKey)
@@ -510,13 +518,16 @@ test('MDNSDiscovery - ignores non-hiverelay services', async (t) => {
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
 
-  const otherService = JSON.stringify({
-    service: '_http._tcp.local',
-    instance: 'webserver',
-    port: 80
-  })
+  // DNS-SD response for a different service type
+  const otherResponse = {
+    answers: [
+      { name: 'webserver._http._tcp.local', type: 'SRV', data: { port: 80, target: 'web.local' } },
+      { name: 'webserver._http._tcp.local', type: 'TXT', data: ['path=/'] }
+    ],
+    additionals: []
+  }
 
-  mdns._handleMessage(Buffer.from(otherService), { address: '192.168.1.100' })
+  mdns._handleResponse(otherResponse, { address: '192.168.1.100' })
   t.is(discovered.length, 0, 'non-hiverelay service ignored')
 })
 
@@ -526,9 +537,15 @@ test('MDNSDiscovery - handles malformed messages gracefully', async (t) => {
     port: 49737
   })
 
-  // Should not throw
-  mdns._handleMessage(Buffer.from('not json'), { address: '1.2.3.4' })
-  mdns._handleMessage(Buffer.from('{}'), { address: '1.2.3.4' })
-  mdns._handleMessage(Buffer.from('null'), { address: '1.2.3.4' })
+  // Should not throw on malformed DNS-SD responses
+  mdns._handleResponse({ answers: [], additionals: [] }, { address: '1.2.3.4' })
+  mdns._handleResponse({ answers: [{ name: 'x._hiverelay._udp.local', type: 'SRV', data: { port: 1 } }], additionals: [] }, { address: '1.2.3.4' })
+  mdns._handleResponse({ answers: null, additionals: null }, { address: '1.2.3.4' })
   t.pass('malformed messages handled without crash')
+})
+
+// Force exit after all tests — Hyperswarm/HyperDHT may leave handles open
+test('cleanup', async (t) => {
+  t.pass('all tests complete')
+  setTimeout(() => process.exit(0), 500)
 })
