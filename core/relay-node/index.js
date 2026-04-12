@@ -25,9 +25,10 @@ import { SeedingRegistry } from '../registry/index.js'
 import { AccessControl } from './access-control.js'
 import { MDNSDiscovery } from './mdns-discovery.js'
 import { RelayTunnel } from './relay-tunnel.js'
-import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService, SLAService, SchemaService, ArbitrationService } from '../services/index.js'
+import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService, AIService, SLAService, SchemaService, ArbitrationService } from '../services/index.js'
 import { Router } from '../router/index.js'
 import { PolicyGuard } from '../policy-guard.js'
+import vm from 'node:vm'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -476,6 +477,10 @@ export class RelayNode extends EventEmitter {
         })
         const identityService = new IdentityService()
         const computeService = new ComputeService()
+        computeService.registerHandler('js', (input) => {
+          const ctx = vm.createContext({ input: input.data })
+          return vm.runInContext(input.code, ctx, { timeout: input.timeout || 5000 })
+        })
 
         this.serviceRegistry.register(storageService)
         this.serviceRegistry.register(identityService)
@@ -483,6 +488,29 @@ export class RelayNode extends EventEmitter {
         this.serviceRegistry.register(new SLAService())
         this.serviceRegistry.register(new SchemaService())
         this.serviceRegistry.register(new ArbitrationService())
+
+        // ─── AI Service (opt-in via config or CLI) ───
+        if (this.config.ai?.enabled) {
+          const aiService = new AIService({
+            maxConcurrent: this.config.ai.maxConcurrent || 2,
+            maxQueue: this.config.ai.maxQueue || 100
+          })
+          this.serviceRegistry.register(aiService)
+
+          // Auto-register Ollama models if endpoint configured
+          const ollamaUrl = this.config.ai.ollamaUrl || 'http://localhost:11434'
+          if (this.config.ai.models?.length) {
+            for (const modelId of this.config.ai.models) {
+              await aiService['register-model']({
+                modelId,
+                type: 'llm',
+                endpoint: ollamaUrl,
+                config: { format: 'ollama', timeout: this.config.ai.timeout || 120_000 }
+              })
+            }
+            this.emit('ai-ready', { models: this.config.ai.models, endpoint: ollamaUrl })
+          }
+        }
 
         // Register any custom services from config
         if (Array.isArray(this.config.services)) {

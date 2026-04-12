@@ -107,6 +107,10 @@ export class HiveRelayClient extends EventEmitter {
     this._relayHealthInterval = null
     this._relayScores = new Map() // pubkeyHex -> { latency: number, successes: number, failures: number, bytesServed: number, connectedSince: number }
     this._registry = null
+
+    // Service RPC state
+    this._pendingServiceRequests = new Map() // requestId -> { resolve, reject, timer }
+    this._serviceRequestId = 1
   }
 
   /**
@@ -547,6 +551,7 @@ export class HiveRelayClient extends EventEmitter {
         pubkey,
         hasSeedProtocol: !!relay.channels.seed,
         hasCircuitProtocol: !!relay.channels.circuit,
+        hasServiceProtocol: !!relay.channels.service,
         connectedAt: relay.connectedAt
       })
     }
@@ -575,6 +580,46 @@ export class HiveRelayClient extends EventEmitter {
       drives: this.drives.size,
       connections: this.swarm ? this.swarm.connections.size : 0
     }
+  }
+
+  // ─── Service RPC ──────────────────────────────────────────────────
+
+  /**
+   * Call a remote service on a relay node.
+   *
+   *   const result = await client.callService('identity', 'whoami')
+   *   const drive = await client.callService('storage', 'drive-create', {}, { relay: pubkeyHex })
+   */
+  async callService (service, method, params = {}, opts = {}) {
+    this._ensureStarted()
+
+    const relayPubkey = opts.relay || this._selectBestRelay('service')
+    if (!relayPubkey) throw new Error('NO_RELAY: no relay with service channel')
+
+    const relay = this.relays.get(relayPubkey)
+    if (!relay?.channels?.service) {
+      throw new Error('NO_SERVICE_CHANNEL: relay ' + relayPubkey + ' has no service protocol')
+    }
+
+    const id = this._serviceRequestId++
+    const timeout = opts.timeout || 30_000
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingServiceRequests.delete(id)
+        reject(new Error('SERVICE_TIMEOUT'))
+      }, timeout)
+
+      this._pendingServiceRequests.set(id, { resolve, reject, timer })
+
+      relay.channels.service.msg.send({
+        type: 1,
+        id,
+        service,
+        method,
+        params
+      })
+    })
   }
 
   // ─── Internal ────────────────────────────────────────────────────
@@ -685,7 +730,47 @@ export class HiveRelayClient extends EventEmitter {
       this.emit('protocol-error', { relay: pubkeyHex, protocol: 'circuit', error: err })
     }
 
-    if (!channels.seed && !channels.circuit) return
+    // ─── Service Protocol Channel ───
+    try {
+      const serviceChannel = mux.createChannel({
+        protocol: 'hiverelay-services',
+        id: b4a.from('services-v1'),
+        onopen: () => {
+          this.emit('service-channel-open', { relay: pubkeyHex })
+        },
+        onclose: () => { channels.service = null }
+      })
+
+      const serviceMsg = serviceChannel.addMessage({
+        encoding: {
+          preencode (state, msg) {
+            const json = JSON.stringify(msg)
+            state.end += 4 + b4a.byteLength(json)
+          },
+          encode (state, msg) {
+            const json = JSON.stringify(msg)
+            const buf = b4a.from(json)
+            state.buffer.writeUInt32BE(buf.length, state.start)
+            buf.copy(state.buffer, state.start + 4)
+            state.start += 4 + buf.length
+          },
+          decode (state) {
+            const len = state.buffer.readUInt32BE(state.start)
+            const json = state.buffer.subarray(state.start + 4, state.start + 4 + len).toString()
+            state.start += 4 + len
+            return JSON.parse(json)
+          }
+        },
+        onmessage: (msg) => this._onServiceMessage(pubkeyHex, msg)
+      })
+
+      channels.service = { channel: serviceChannel, msg: serviceMsg }
+      serviceChannel.open()
+    } catch (err) {
+      this.emit('protocol-error', { relay: pubkeyHex, protocol: 'service', error: err })
+    }
+
+    if (!channels.seed && !channels.circuit && !channels.service) return
 
     this.relays.set(pubkeyHex, {
       conn,
@@ -813,6 +898,29 @@ export class HiveRelayClient extends EventEmitter {
     })
   }
 
+  _onServiceMessage (relayPubkey, msg) {
+    const relay = this.relays.get(relayPubkey)
+    if (relay) relay.lastSeen = Date.now()
+
+    if (msg.type === 2) { // MSG_RESPONSE
+      const pending = this._pendingServiceRequests.get(msg.id)
+      if (pending) {
+        clearTimeout(pending.timer)
+        this._pendingServiceRequests.delete(msg.id)
+        pending.resolve(msg.result)
+      }
+    } else if (msg.type === 3) { // MSG_ERROR
+      const pending = this._pendingServiceRequests.get(msg.id)
+      if (pending) {
+        clearTimeout(pending.timer)
+        this._pendingServiceRequests.delete(msg.id)
+        pending.reject(new Error(msg.error))
+      }
+    } else if (msg.type === 0) { // MSG_CATALOG
+      this.emit('service-catalog', { relay: relayPubkey, services: msg.services })
+    }
+  }
+
   _serializeForSigning (msg) {
     const parts = [msg.appKey]
     for (const dk of msg.discoveryKeys) parts.push(dk)
@@ -934,6 +1042,13 @@ export class HiveRelayClient extends EventEmitter {
     this.relays.clear()
     this.seedRequests.clear()
     this.reservations.clear()
+
+    // Clean up pending service requests
+    for (const pending of this._pendingServiceRequests.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error('CLIENT_DESTROYED'))
+    }
+    this._pendingServiceRequests.clear()
 
     // Stop registry
     if (this._registry) {

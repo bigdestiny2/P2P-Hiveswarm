@@ -593,23 +593,29 @@ export class RelayAPI extends EventEmitter {
             seeder: stats.seeder || { coresSeeded: 0, totalBytesStored: 0, totalBytesServed: 0 },
             memory: { heapUsed: mem.heapUsed, rss: mem.rss },
             errors: this.node.metrics ? this.node.metrics._errorCount : 0,
-            reputation: this.node.reputation ? {
-              trackedRelays: Object.keys(this.node.reputation.export()).length,
-              topRelay: (() => {
-                const lb = this.node.reputation.getLeaderboard(1)
-                return lb.length ? lb[0] : null
-              })()
-            } : null,
+            reputation: this.node.reputation
+              ? {
+                  trackedRelays: Object.keys(this.node.reputation.export()).length,
+                  topRelay: (() => {
+                    const lb = this.node.reputation.getLeaderboard(1)
+                    return lb.length ? lb[0] : null
+                  })()
+                }
+              : null,
             tor: this.node.torTransport ? this.node.torTransport.getInfo() : null,
             health: this.node.getHealthStatus(),
-            bandwidth: this.node._bandwidthReceipt ? {
-              totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
-              receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
-            } : null,
-            registry: this.node.seedingRegistry ? {
-              running: this.node.seedingRegistry.running,
-              autoAccept: this.node.config.registryAutoAccept !== false
-            } : null,
+            bandwidth: this.node._bandwidthReceipt
+              ? {
+                  totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
+                  receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
+                }
+              : null,
+            registry: this.node.seedingRegistry
+              ? {
+                  running: this.node.seedingRegistry.running,
+                  autoAccept: this.node.config.registryAutoAccept !== false
+                }
+              : null,
             gateway: this._gateway ? this._gateway.getStats() : null
           })
         }
@@ -726,6 +732,50 @@ export class RelayAPI extends EventEmitter {
             apps: violations
           })
         }
+      }
+
+      // ─── AI Inference ───
+      if (path.startsWith('/api/v1/ai/')) {
+        if (!this.node.serviceRegistry) {
+          return this._json(res, { error: 'Services not enabled' }, 503)
+        }
+        const aiEntry = this.node.serviceRegistry.services.get('ai')
+        if (!aiEntry) {
+          return this._json(res, { error: 'AI service not enabled. Start with --ai --ai-model <name>' }, 503)
+        }
+        const ai = aiEntry.provider
+
+        if (req.method === 'GET' && path === '/api/v1/ai/models') {
+          return this._json(res, await ai['list-models']())
+        }
+        if (req.method === 'GET' && path === '/api/v1/ai/status') {
+          return this._json(res, await ai.status())
+        }
+        if (req.method === 'POST' && path === '/api/v1/ai/infer') {
+          const body = await this._readBody(req)
+          if (!body.modelId || body.input === undefined) {
+            return this._json(res, { error: 'modelId and input required' }, 400)
+          }
+          const result = await ai.infer(body)
+          return this._json(res, result)
+        }
+        if (req.method === 'POST' && path === '/api/v1/ai/embed') {
+          const body = await this._readBody(req)
+          if (!body.modelId || !body.input) {
+            return this._json(res, { error: 'modelId and input required' }, 400)
+          }
+          const result = await ai.embed(body)
+          return this._json(res, result)
+        }
+        if (req.method === 'POST' && path === '/api/v1/ai/register') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          const result = await ai['register-model'](body)
+          return this._json(res, result)
+        }
+        return this._json(res, { error: 'Unknown AI endpoint' }, 404)
       }
 
       // POST routes
@@ -956,6 +1006,17 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
         return this._json(res, this.node.router.getStats())
+      }
+
+      // ─── Service Catalog ───
+      if (req.method === 'GET' && path === '/api/v1/services') {
+        if (!this.node.serviceRegistry) {
+          return this._json(res, { error: 'Services not enabled' }, 503)
+        }
+        return this._json(res, {
+          services: this.node.serviceRegistry.catalog(),
+          count: this.node.serviceRegistry.services.size
+        })
       }
 
       // 404

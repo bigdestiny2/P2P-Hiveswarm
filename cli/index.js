@@ -207,6 +207,19 @@ async function start () {
     }
   }
 
+  // ─── AI / Ollama ───
+  if (args.ai) {
+    const models = args['ai-model']
+      ? [].concat(args['ai-model']).flatMap(m => m.split(','))
+      : []
+    cliOverrides.ai = {
+      enabled: true,
+      ollamaUrl: args['ai-endpoint'] || 'http://localhost:11434',
+      models,
+      timeout: args['ai-timeout'] ? parseInt(args['ai-timeout']) : 120_000
+    }
+  }
+
   const config = loadConfig(cliOverrides)
 
   console.log('HiveRelay v0.1.0')
@@ -234,6 +247,11 @@ async function start () {
     }
     if (config.payment && config.payment.enabled) {
       console.log(`  Payment:    Lightning (${config.lightning ? config.lightning.rpcUrl || 'localhost:10009' : 'localhost:10009'})`)
+    }
+    if (config.ai && config.ai.enabled) {
+      const modelList = config.ai.models?.length ? config.ai.models.join(', ') : 'none (register via API)'
+      console.log(`  AI:         enabled (${config.ai.ollamaUrl || 'localhost:11434'})`)
+      console.log(`  Models:     ${modelList}`)
     }
     if (config.access && config.access.allowlist && config.access.allowlist.length) {
       console.log(`  Allowlist:  ${config.access.allowlist.length} device(s)`)
@@ -640,6 +658,10 @@ Start Options:
   --lightning-rpc <url>          LND gRPC endpoint (default: localhost:10009)
   --lightning-macaroon <path>    Path to admin.macaroon
   --lightning-cert <path>        Path to tls.cert
+  --ai                           Enable AI inference service (Ollama)
+  --ai-model <name,...>          Ollama model(s) to register (e.g., gemma4:latest)
+  --ai-endpoint <url>            Ollama API URL (default: http://localhost:11434)
+  --ai-timeout <ms>              Inference timeout in ms (default: 120000)
   --tor [password]               Enable Tor hidden service transport
   --tor-socks-port <n>           Tor SOCKS5 port (default: 9050)
   --tor-control-port <n>         Tor control port (default: 9051)

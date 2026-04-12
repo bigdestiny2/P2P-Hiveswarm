@@ -269,18 +269,21 @@ export class AIService extends ServiceProvider {
 
   /**
    * HTTP inference for endpoint-based models.
-   * Supports Ollama, OpenAI-compatible, and generic HTTP APIs.
+   * Supports Ollama and OpenAI-compatible APIs.
    */
   async _httpInfer (model, request) {
-    // Dynamic import to avoid hard dependency
     const { request: httpRequest } = await import('http')
     const url = new URL(model.endpoint)
+    const format = model.config.format || this._detectFormat(url)
+
+    const payload = this._buildPayload(model, request, format)
+    const path = this._resolvePath(url, request, format)
 
     return new Promise((resolve, reject) => {
       const req = httpRequest({
         hostname: url.hostname,
         port: url.port,
-        path: url.pathname,
+        path,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         timeout: model.config.timeout || 60_000
@@ -289,7 +292,8 @@ export class AIService extends ServiceProvider {
         res.on('data', chunk => { body += chunk })
         res.on('end', () => {
           try {
-            resolve(JSON.parse(body))
+            const parsed = JSON.parse(body)
+            resolve(this._normalizeResponse(parsed, format))
           } catch {
             resolve({ raw: body })
           }
@@ -302,12 +306,81 @@ export class AIService extends ServiceProvider {
         reject(new Error('AI_TIMEOUT'))
       })
 
-      req.write(JSON.stringify({
-        model: model.modelId,
-        ...request
-      }))
+      req.write(JSON.stringify(payload))
       req.end()
     })
+  }
+
+  _detectFormat (url) {
+    if (url.port === '11434' || url.pathname.startsWith('/api/')) return 'ollama'
+    if (url.pathname.includes('/v1/')) return 'openai'
+    return 'generic'
+  }
+
+  _resolvePath (url, request, format) {
+    // If endpoint already has a specific path, use it
+    if (url.pathname !== '/' && url.pathname !== '') return url.pathname
+
+    if (format === 'ollama') {
+      if (request.type === 'embed') return '/api/embed'
+      return Array.isArray(request.input) ? '/api/chat' : '/api/generate'
+    }
+    if (format === 'openai') {
+      if (request.type === 'embed') return '/v1/embeddings'
+      return Array.isArray(request.input) ? '/v1/chat/completions' : '/v1/completions'
+    }
+    return url.pathname || '/'
+  }
+
+  _buildPayload (model, request, format) {
+    const input = request.input
+
+    if (format === 'ollama') {
+      if (request.type === 'embed') {
+        return { model: model.modelId, input }
+      }
+      // Chat-style input: array of messages
+      if (Array.isArray(input)) {
+        return { model: model.modelId, messages: input, stream: false }
+      }
+      // Simple prompt string
+      return { model: model.modelId, prompt: String(input), stream: false }
+    }
+
+    if (format === 'openai') {
+      if (request.type === 'embed') {
+        return { model: model.modelId, input }
+      }
+      if (Array.isArray(input)) {
+        return { model: model.modelId, messages: input, stream: false }
+      }
+      return { model: model.modelId, prompt: String(input), stream: false }
+    }
+
+    // Generic: pass through as-is
+    return { model: model.modelId, ...request }
+  }
+
+  _normalizeResponse (parsed, format) {
+    if (format === 'ollama') {
+      return {
+        text: parsed.response || parsed.message?.content || null,
+        tokens: parsed.eval_count || 0,
+        model: parsed.model || null,
+        done: parsed.done,
+        raw: parsed
+      }
+    }
+    if (format === 'openai') {
+      const choice = parsed.choices?.[0]
+      return {
+        text: choice?.text || choice?.message?.content || null,
+        tokens: parsed.usage?.total_tokens || 0,
+        model: parsed.model || null,
+        raw: parsed
+      }
+    }
+    return parsed
   }
 
   async stop () {
