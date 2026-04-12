@@ -876,6 +876,65 @@ export class RelayAPI extends EventEmitter {
         }
       }
 
+      // ─── Router Dispatch Endpoint ───
+      if (req.method === 'POST' && path === '/api/v1/dispatch') {
+        if (!this._verifyApiKey(req)) {
+          return this._json(res, { error: 'Authentication required' }, 401)
+        }
+        if (!this.node.router) {
+          return this._json(res, { error: 'Router not enabled' }, 503)
+        }
+        const body = await this._readBody(req)
+        if (!body.route || typeof body.route !== 'string') {
+          return this._json(res, { error: 'route required' }, 400)
+        }
+        if (body.route.length > 128) {
+          return this._json(res, { error: 'route too long' }, 400)
+        }
+        const result = await this.node.router.dispatch(body.route, body.params || {}, {
+          transport: 'http',
+          ip,
+          caller: 'http'
+        })
+        return this._json(res, { result })
+      }
+
+      // ─── Router Pub/Sub SSE Endpoint ───
+      if (req.method === 'GET' && path === '/api/v1/subscribe') {
+        if (!this.node.router) {
+          return this._json(res, { error: 'Router not enabled' }, 503)
+        }
+        const topic = url.searchParams.get('topic')
+        if (!topic || topic.length > 256) {
+          return this._json(res, { error: 'topic required (max 256 chars)' }, 400)
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive'
+        })
+        res.write(':ok\n\n')
+
+        const subId = this.node.router.pubsub.subscribe(topic, (t, data) => {
+          try {
+            res.write(`data: ${JSON.stringify({ topic: t, data })}\n\n`)
+          } catch {}
+        }, { ttl: 60 * 60 * 1000 })
+
+        req.on('close', () => {
+          this.node.router.pubsub.unsubscribe(subId)
+        })
+        return // Keep connection open
+      }
+
+      // ─── Router Stats ───
+      if (req.method === 'GET' && path === '/api/v1/router') {
+        if (!this.node.router) {
+          return this._json(res, { error: 'Router not enabled' }, 503)
+        }
+        return this._json(res, this.node.router.getStats())
+      }
+
       // 404
       this._json(res, { error: 'Not found' }, 404)
     } catch (err) {

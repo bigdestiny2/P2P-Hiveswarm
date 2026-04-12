@@ -86,6 +86,12 @@ export class SeedProtocol extends EventEmitter {
       sodium.crypto_sign_detached(request.publisherSignature, payload, this.keyPair.secretKey)
     }
 
+    if (this.pendingRequests.size >= this._maxPendingRequests) {
+      // Evict oldest entry
+      const oldest = this.pendingRequests.keys().next().value
+      this.pendingRequests.delete(oldest)
+    }
+    request._addedAt = Date.now()
     this.pendingRequests.set(appKeyHex, request)
 
     // Broadcast to all connected channels
@@ -231,7 +237,16 @@ export class SeedProtocol extends EventEmitter {
     return b4a.concat(parts)
   }
 
+  _evictStalePending () {
+    const now = Date.now()
+    for (const [key, req] of this.pendingRequests) {
+      const age = now - (req._addedAt || 0)
+      if (age > this._pendingTTL) this.pendingRequests.delete(key)
+    }
+  }
+
   destroy () {
+    clearInterval(this._pendingCleanup)
     for (const channel of this.channels) {
       channel.close()
     }

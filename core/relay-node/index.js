@@ -25,7 +25,8 @@ import { SeedingRegistry } from '../registry/index.js'
 import { AccessControl } from './access-control.js'
 import { MDNSDiscovery } from './mdns-discovery.js'
 import { RelayTunnel } from './relay-tunnel.js'
-import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService } from '../services/index.js'
+import { ServiceRegistry, ServiceProtocol, StorageService, IdentityService, ComputeService, SLAService, SchemaService, ArbitrationService } from '../services/index.js'
+import { Router } from '../router/index.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -165,6 +166,7 @@ export class RelayNode extends EventEmitter {
     this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version, blind }
     this.appIndex = new Map() // appId string -> appKey hex (deduplication index)
     this.appRegistry = new Map() // appId string -> { driveKey, version, name, blind, updatedAt }
+    this.router = null
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -470,6 +472,9 @@ export class RelayNode extends EventEmitter {
         this.serviceRegistry.register(storageService)
         this.serviceRegistry.register(identityService)
         this.serviceRegistry.register(computeService)
+        this.serviceRegistry.register(new SLAService())
+        this.serviceRegistry.register(new SchemaService())
+        this.serviceRegistry.register(new ArbitrationService())
 
         // Register any custom services from config
         if (Array.isArray(this.config.services)) {
@@ -480,6 +485,26 @@ export class RelayNode extends EventEmitter {
 
         await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
         this.emit('services-started', { count: this.serviceRegistry.services.size })
+
+        // ─── Application-Layer Router ───
+        if (this.config.enableRouter !== false) {
+          this.router = new Router({
+            registry: this.serviceRegistry,
+            workers: this.config.routerWorkers ?? 0
+          })
+          this.router.registerFromRegistry(this.serviceRegistry)
+          await this.router.start()
+
+          // Wire router into service protocol for P2P dispatch
+          this.serviceProtocol.router = this.router
+
+          // Bridge relay events to pub/sub
+          for (const evt of ['connection', 'connection-closed', 'seeding', 'unseeded', 'circuit-closed', 'seed-accepted', 'seed-rejected']) {
+            this.on(evt, (data) => this.router.pubsub.publish(`events/${evt}`, data))
+          }
+
+          this.emit('router-started', { routes: this.router.routes().length })
+        }
       }
 
       this._startHealthChecks()
@@ -552,6 +577,7 @@ export class RelayNode extends EventEmitter {
       if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
       if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
       if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
+      if (this.router) { try { await this.router.stop() } catch (err) { this.emit('stop-error', { component: 'router', error: err.message }) } this.router = null }
       if (this.serviceProtocol) { try { this.serviceProtocol.destroy() } catch (err) { this.emit('stop-error', { component: 'serviceProtocol', error: err.message }) } this.serviceProtocol = null }
       if (this.serviceRegistry) { try { await this.serviceRegistry.stopAll() } catch (err) { this.emit('stop-error', { component: 'serviceRegistry', error: err.message }) } this.serviceRegistry = null }
       if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
@@ -1152,6 +1178,9 @@ export class RelayNode extends EventEmitter {
    * Call a local service method.
    */
   async callService (serviceName, method, params = {}) {
+    if (this.router) {
+      return this.router.dispatch(`${serviceName}.${method}`, params, { caller: 'local', transport: 'local' })
+    }
     if (!this.serviceRegistry) throw new Error('Services not enabled')
     return this.serviceRegistry.handleRequest(serviceName, method, params, { caller: 'local' })
   }
@@ -1558,7 +1587,8 @@ export class RelayNode extends EventEmitter {
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
 
-    // Destroy services and protocol handlers
+    // Destroy router, services, and protocol handlers
+    if (this.router) { try { await this.router.stop() } catch (err) { this.emit('stop-error', { component: 'router', error: err.message }) } this.router = null }
     if (this.serviceProtocol) { this.serviceProtocol.destroy(); this.serviceProtocol = null }
     if (this.serviceRegistry) { try { await this.serviceRegistry.stopAll() } catch (err) { this.emit('stop-error', { component: 'serviceRegistry', error: err.message }) } this.serviceRegistry = null }
     if (this._seedProtocol) { this._seedProtocol.destroy(); this._seedProtocol = null }

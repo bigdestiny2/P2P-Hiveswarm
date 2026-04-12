@@ -25,12 +25,18 @@ const MSG_REQUEST = 1
 const MSG_RESPONSE = 2
 const MSG_ERROR = 3
 
+const MSG_SUBSCRIBE = 4
+const MSG_UNSUBSCRIBE = 5
+const MSG_EVENT = 6
+
 export class ServiceProtocol extends EventEmitter {
   constructor (registry) {
     super()
     this.registry = registry
+    this.router = null // Set by RelayNode after Router creation
     this.channels = new Map() // remotePubkey -> channel
     this._pendingRequests = new Map() // requestId -> { resolve, reject, timer }
+    this._peerSubscriptions = new Map() // remotePubkey -> [subId]
     this._nextId = 1
     this.requestTimeout = 30_000
   }
@@ -136,6 +142,12 @@ export class ServiceProtocol extends EventEmitter {
 
   _onClose (remotePubkey) {
     this.channels.delete(remotePubkey)
+    // Clean up pub/sub subscriptions for this peer
+    const subs = this._peerSubscriptions.get(remotePubkey)
+    if (subs && this.router) {
+      for (const subId of subs) this.router.pubsub.unsubscribe(subId)
+    }
+    this._peerSubscriptions.delete(remotePubkey)
     this.emit('channel-close', { remotePubkey })
   }
 
@@ -169,6 +181,14 @@ export class ServiceProtocol extends EventEmitter {
         }
         break
       }
+
+      case MSG_SUBSCRIBE:
+        this._handleSubscribe(remotePubkey, msg)
+        break
+
+      case MSG_UNSUBSCRIBE:
+        this._handleUnsubscribe(remotePubkey, msg)
+        break
     }
   }
 
@@ -177,12 +197,22 @@ export class ServiceProtocol extends EventEmitter {
     if (!entry) return
 
     try {
-      const result = await this.registry.handleRequest(
-        msg.service,
-        msg.method,
-        msg.params,
-        { remotePubkey }
-      )
+      let result
+      if (this.router) {
+        const route = `${msg.service}.${msg.method}`
+        result = await this.router.dispatch(route, msg.params, {
+          transport: 'p2p',
+          remotePubkey,
+          caller: 'remote'
+        })
+      } else {
+        result = await this.registry.handleRequest(
+          msg.service,
+          msg.method,
+          msg.params,
+          { remotePubkey }
+        )
+      }
       entry.msgHandler.send({
         type: MSG_RESPONSE,
         id: msg.id,
@@ -195,6 +225,43 @@ export class ServiceProtocol extends EventEmitter {
         error: err.message
       })
     }
+  }
+
+  /**
+   * Handle P2P pub/sub subscription request from a peer.
+   */
+  _handleSubscribe (remotePubkey, msg) {
+    if (!this.router || !msg.topics || !Array.isArray(msg.topics)) return
+    const entry = this.channels.get(remotePubkey)
+    if (!entry) return
+
+    const subs = this._peerSubscriptions.get(remotePubkey) || []
+
+    for (const topic of msg.topics) {
+      if (typeof topic !== 'string' || topic.length > 256) continue
+      const subId = this.router.pubsub.subscribe(topic, (t, data) => {
+        if (entry.channel.opened) {
+          entry.msgHandler.send({ type: MSG_EVENT, topic: t, data })
+        }
+      }, { remotePubkey, ttl: 60 * 60 * 1000 })
+      subs.push(subId)
+    }
+
+    this._peerSubscriptions.set(remotePubkey, subs)
+  }
+
+  /**
+   * Handle P2P pub/sub unsubscription request from a peer.
+   */
+  _handleUnsubscribe (remotePubkey, msg) {
+    if (!this.router || !msg.topics) return
+    const subs = this._peerSubscriptions.get(remotePubkey) || []
+
+    // Remove all subscriptions for this peer
+    for (const subId of subs) {
+      this.router.pubsub.unsubscribe(subId)
+    }
+    this._peerSubscriptions.delete(remotePubkey)
   }
 
   /**
