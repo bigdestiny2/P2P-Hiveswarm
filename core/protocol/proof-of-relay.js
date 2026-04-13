@@ -27,9 +27,12 @@ export class ProofOfRelay extends EventEmitter {
 
     // Track challenge/response for scoring
     this.scores = new Map() // relay pubkey hex -> { challenges, passes, fails, avgLatencyMs }
+    this._maxScores = opts.maxScores || 10000
     this.pendingChallenges = new Map() // nonce hex -> { coreKey, blockIndex, sentAt, relayPubkey }
     this.channels = new Set()
+    this._batchTimers = new Set() // Track batch timeout timer IDs for cleanup
     this._cleanupInterval = setInterval(() => this._cleanupStale(), 30_000)
+    this._challengeRateLimiter = null
   }
 
   attach (conn) {
@@ -109,8 +112,9 @@ export class ProofOfRelay extends EventEmitter {
       }
     }
 
-    // Set single timeout for entire batch
-    setTimeout(() => {
+    // Set single timeout for entire batch (tracked for cleanup on destroy)
+    const timer = setTimeout(() => {
+      this._batchTimers.delete(timer)
       const pending = this.pendingChallenges.get(batchId)
       if (pending) {
         this.pendingChallenges.delete(batchId)
@@ -122,6 +126,7 @@ export class ProofOfRelay extends EventEmitter {
         this.emit('batch-timeout', { batchId, coreKey: coreKeyHex, relayPubkey: relayPubkeyHex })
       }
     }, this.maxLatencyMs + 1000)
+    this._batchTimers.add(timer)
 
     this.emit('batch-challenge-sent', {
       batchId,
@@ -229,6 +234,23 @@ export class ProofOfRelay extends EventEmitter {
   async _onChallenge (channel, msg) {
     if (!this._blockProvider) {
       this.emit('challenge-skipped', { reason: 'no block provider' })
+      return
+    }
+
+    // Rate limit incoming challenges to prevent DoS
+    const peerKey = channel.stream?.remotePublicKey
+      ? b4a.toString(channel.stream.remotePublicKey, 'hex')
+      : 'unknown'
+    if (!this._challengeRateLimiter) {
+      const { TokenBucketRateLimiter } = await import('./rate-limiter.js')
+      this._challengeRateLimiter = new TokenBucketRateLimiter({
+        tokensPerMinute: 30,
+        burstSize: 10
+      })
+    }
+    const rateCheck = this._challengeRateLimiter.check(peerKey)
+    if (!rateCheck.allowed) {
+      this.emit('challenge-rate-limited', { peer: peerKey })
       return
     }
 
@@ -357,12 +379,16 @@ export class ProofOfRelay extends EventEmitter {
       const nodeCount = (merkleProof.byteLength / 32) - 1
       const expectedRoot = merkleProof.subarray(nodeCount * 32)
 
-      // Walk up the tree: combine the current hash with each sibling node
+      // Walk up the tree: combine hashes in canonical (sorted) order to prevent reordering attacks
       let current = leafHash
       for (let i = 0; i < nodeCount; i++) {
         const sibling = merkleProof.subarray(i * 32, (i + 1) * 32)
         const combined = b4a.alloc(32)
-        sodium.crypto_generichash(combined, b4a.concat([current, sibling]))
+        // Canonical ordering: always hash the smaller value first
+        const ordered = b4a.compare(current, sibling) <= 0
+          ? b4a.concat([current, sibling])
+          : b4a.concat([sibling, current])
+        sodium.crypto_generichash(combined, ordered)
         current = combined
       }
 
@@ -386,6 +412,20 @@ export class ProofOfRelay extends EventEmitter {
       score.avgLatencyMs = Math.round(score.totalLatencyMs / score.passes)
     } else {
       score.fails++
+    }
+
+    // Evict lowest-reliability entries when scores map exceeds cap
+    if (this.scores.size > this._maxScores) {
+      let worstKey = null
+      let worstReliability = Infinity
+      for (const [key, s] of this.scores) {
+        const reliability = s.challenges > 0 ? s.passes / s.challenges : 0
+        if (reliability < worstReliability) {
+          worstReliability = reliability
+          worstKey = key
+        }
+      }
+      if (worstKey) this.scores.delete(worstKey)
     }
   }
 
@@ -436,6 +476,9 @@ export class ProofOfRelay extends EventEmitter {
 
   destroy () {
     if (this._cleanupInterval) clearInterval(this._cleanupInterval)
+    for (const timer of this._batchTimers) clearTimeout(timer)
+    this._batchTimers.clear()
+    if (this._challengeRateLimiter) this._challengeRateLimiter.destroy()
     this.channels.clear()
     this.pendingChallenges.clear()
   }

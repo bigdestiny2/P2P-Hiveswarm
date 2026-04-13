@@ -32,8 +32,8 @@ export function loadConfig (cliOverrides = {}) {
     }
   }
 
-  // Merge: defaults < file < CLI
-  const config = { ...defaults, ...fileConfig, ...cliOverrides }
+  // Deep merge: defaults < file < CLI (preserves nested object keys)
+  const config = deepMerge(deepMerge(defaults, fileConfig), cliOverrides)
 
   // Always resolve storage to absolute path
   if (config.storage === defaults.storage && fileConfig.storage == null && cliOverrides.storage == null) {
@@ -68,4 +68,22 @@ export function saveConfig (config) {
 export function ensureDirs () {
   mkdirSync(HIVERELAY_DIR, { recursive: true })
   mkdirSync(STORAGE_DIR, { recursive: true })
+}
+
+/**
+ * Recursively merge source into target, preserving sibling keys in nested objects.
+ */
+function deepMerge (target, source) {
+  const result = { ...target }
+  for (const key of Object.keys(source)) {
+    if (
+      source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) &&
+      target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])
+    ) {
+      result[key] = deepMerge(target[key], source[key])
+    } else {
+      result[key] = source[key]
+    }
+  }
+  return result
 }

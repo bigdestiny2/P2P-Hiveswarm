@@ -15,16 +15,19 @@
 
 set -e
 
-UTAH_IP="REDACTED_SERVER_IP"
-UTAH_PASS="REDACTED_PASSWORD"
-UTAH_US_IP="REDACTED_SERVER_IP"
-UTAH_US_PASS="REDACTED_PASSWORD"
-SINGAPORE_IP="REDACTED_SERVER_IP"
-SINGAPORE_PASS="REDACTED_PASSWORD"
+# IMPORTANT: Set these as environment variables before running.
+# Credentials must NEVER be hardcoded — previous values are compromised and must be rotated.
+# Recommended: Use SSH key auth instead of sshpass with passwords.
+UTAH_IP="${UTAH_IP:?Set UTAH_IP environment variable}"
+UTAH_PASS="${UTAH_PASS:?Set UTAH_PASS environment variable}"
+UTAH_US_IP="${UTAH_US_IP:?Set UTAH_US_IP environment variable}"
+UTAH_US_PASS="${UTAH_US_PASS:?Set UTAH_US_PASS environment variable}"
+SINGAPORE_IP="${SINGAPORE_IP:?Set SINGAPORE_IP environment variable}"
+SINGAPORE_PASS="${SINGAPORE_PASS:?Set SINGAPORE_PASS environment variable}"
 
 REPO_DIR="/root/hiverelay"
 REPO_URL="https://github.com/bigdestiny2/P2P-Hiveswarm.git"
-API_KEY="REDACTED_API_KEY"
+API_KEY="${HIVERELAY_API_KEY:?Set HIVERELAY_API_KEY environment variable}"
 
 deploy_server() {
     local IP=$1

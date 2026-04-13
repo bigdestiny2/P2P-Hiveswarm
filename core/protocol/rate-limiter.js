@@ -23,6 +23,11 @@ export class TokenBucketRateLimiter {
    * @returns {object} { allowed: boolean, remaining: number, banned: boolean }
    */
   check (peerKey) {
+    // Validate peer key to prevent all anonymous peers sharing a single bucket
+    if (!peerKey || typeof peerKey !== 'string') {
+      return { allowed: false, remaining: 0, banned: false }
+    }
+
     // Check if peer is banned
     const bannedUntil = this.bannedPeers.get(peerKey)
     if (bannedUntil) {
@@ -61,6 +66,8 @@ export class TokenBucketRateLimiter {
     bucket.violations += 1
 
     // Auto-ban if violations exceed threshold
+    // Formula: burstSize * banThreshold (default: 20 * 5 = 100 violations)
+    // This allows some burst tolerance before banning; tighten banThreshold for stricter limits
     if (bucket.violations > this.burstSize * this.banThreshold) {
       const banUntil = Date.now() + this.banDurationMs
       this.bannedPeers.set(peerKey, banUntil)

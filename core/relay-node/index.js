@@ -183,7 +183,7 @@ export class RelayNode extends EventEmitter {
       enabled: this.config.bootstrapCacheEnabled !== false,
       maxPeers: this.config.bootstrapCachePeers || 50
     })
-    this.reputation = new ReputationSystem()
+    this.reputation = null
     this._proofOfRelay = null
     this._bandwidthReceipt = null
     this._reputationDecayInterval = null
@@ -279,6 +279,8 @@ export class RelayNode extends EventEmitter {
         : []
 
       const keyPair = await this._loadOrCreateKeyPair()
+      this.keyPair = keyPair
+      this.publicKey = keyPair.publicKey
 
       this.swarm = new Hyperswarm({
         bootstrap,
@@ -377,7 +379,25 @@ export class RelayNode extends EventEmitter {
 
       // Feed proof results into reputation scoring
       this._proofOfRelay.on('proof-result', (result) => {
-        this.reputation.recordChallenge(result.relayPubkey, result.passed, result.latencyMs)
+        if (this.reputation) {
+          this.reputation.recordChallenge(result.relayPubkey, result.passed, result.latencyMs)
+        }
+      })
+
+      // Provide block data from seeded cores for proof-of-relay challenges
+      this._proofOfRelay.setBlockProvider(async (coreKeyHex, blockIndex) => {
+        for (const [, entry] of this.seededApps) {
+          if (entry.cores) {
+            for (const core of entry.cores) {
+              if (core.key && b4a.toString(core.key, 'hex') === coreKeyHex) {
+                if (blockIndex < core.length) {
+                  return await core.get(blockIndex)
+                }
+              }
+            }
+          }
+        }
+        return null
       })
 
       // Load persisted reputation data
@@ -427,7 +447,12 @@ export class RelayNode extends EventEmitter {
       }
 
       if (this.config.enableAPI) {
-        this.api = new RelayAPI(this, { apiPort: this.config.apiPort })
+        this.api = new RelayAPI(this, {
+          apiPort: this.config.apiPort,
+          apiHost: this.config.apiHost,
+          apiKey: this.config.apiKey,
+          trustProxy: this.config.trustProxy
+        })
         startups.push(this.api.start())
       }
 
@@ -546,10 +571,10 @@ export class RelayNode extends EventEmitter {
         })
         const identityService = new IdentityService()
         const computeService = new ComputeService()
-        computeService.registerHandler('js', (input) => {
-          const ctx = vm.createContext({ input: input.data })
-          return vm.runInContext(input.code, ctx, { timeout: input.timeout || 5000 })
+        computeService.registerHandler('js', () => {
+          throw new Error('COMPUTE_DISABLED: js execution requires a sandboxed runtime (isolated-vm or container)')
         })
+        this.emit('compute-warning', { message: 'Built-in JS compute handler disabled — vm module is not a security sandbox' })
 
         this.serviceRegistry.register(storageService)
         this.serviceRegistry.register(identityService)
@@ -701,7 +726,7 @@ export class RelayNode extends EventEmitter {
 
           // Bridge relay events to pub/sub
           for (const evt of ['connection', 'connection-closed', 'seeding', 'unseeded', 'circuit-closed', 'seed-accepted', 'seed-rejected']) {
-            this.on(evt, (data) => this.router.pubsub.publish(`events/${evt}`, data))
+            this.on(evt, (data) => this.router?.pubsub?.publish(`events/${evt}`, data))
           }
 
           // Broadcast app catalog to all clients when apps change
@@ -1865,7 +1890,7 @@ export class RelayNode extends EventEmitter {
     if (this.relayTunnel) { try { await this.relayTunnel.stop() } catch (err) { this.emit('stop-error', { component: 'relayTunnel', error: err.message }) } this.relayTunnel = null }
     if (this.mdnsDiscovery) { try { await this.mdnsDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'mdnsDiscovery', error: err.message }) } this.mdnsDiscovery = null }
     if (this.accessControl) { try { await this.accessControl.save() } catch (err) { this.emit('stop-error', { component: 'accessControl', error: err.message }) } this.accessControl.destroy(); this.accessControl = null }
-    if (this._proofOfRelay) { this._proofOfRelay = null }
+    if (this._proofOfRelay) { this._proofOfRelay.destroy(); this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
     if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
     if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }

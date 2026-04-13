@@ -289,7 +289,8 @@ test('integration: HTTP API returns health and status', async (t) => {
 test('integration: HTTP API seed and unseed', async (t) => {
   const testnet = await createTestnet(3)
   const port = 9200 + Math.floor(Math.random() * 800)
-  const node = createNode(testnet, { enableAPI: true, apiPort: port })
+  const apiKey = 'test-api-key-' + randomBytes(8).toString('hex')
+  const node = createNode(testnet, { enableAPI: true, apiPort: port, apiKey })
 
   t.teardown(async () => {
     await node.stop()
@@ -299,11 +300,12 @@ test('integration: HTTP API seed and unseed', async (t) => {
   await node.start()
 
   const fakeKey = randomBytes(32).toString('hex')
+  const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }
 
   // Seed via API
   const seedRes = await fetch(`http://127.0.0.1:${port}/seed`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({ appKey: fakeKey })
   })
   t.is(seedRes.status, 200, 'seed returns 200')
@@ -319,7 +321,7 @@ test('integration: HTTP API seed and unseed', async (t) => {
   // Unseed via API
   const unseedRes = await fetch(`http://127.0.0.1:${port}/unseed`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({ appKey: fakeKey })
   })
   t.is(unseedRes.status, 200, 'unseed returns 200')

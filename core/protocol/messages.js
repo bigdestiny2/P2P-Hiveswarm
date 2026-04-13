@@ -196,34 +196,7 @@ export const proofResponseEncoding = {
   }
 }
 
-export const bandwidthReceiptEncoding = {
-  preencode (state, msg) {
-    c.fixed32.preencode(state, msg.relayPubkey)
-    c.fixed32.preencode(state, msg.peerPubkey)
-    c.uint.preencode(state, msg.bytesTransferred)
-    c.uint.preencode(state, msg.timestamp)
-    c.fixed32.preencode(state, msg.sessionId)
-    c.fixed64.preencode(state, msg.peerSignature)
-  },
-  encode (state, msg) {
-    c.fixed32.encode(state, msg.relayPubkey)
-    c.fixed32.encode(state, msg.peerPubkey)
-    c.uint.encode(state, msg.bytesTransferred)
-    c.uint.encode(state, msg.timestamp)
-    c.fixed32.encode(state, msg.sessionId)
-    c.fixed64.encode(state, msg.peerSignature)
-  },
-  decode (state) {
-    return {
-      relayPubkey: c.fixed32.decode(state),
-      peerPubkey: c.fixed32.decode(state),
-      bytesTransferred: c.uint.decode(state),
-      timestamp: c.uint.decode(state),
-      sessionId: c.fixed32.decode(state),
-      peerSignature: c.fixed64.decode(state)
-    }
-  }
-}
+// bandwidthReceiptEncoding removed — BandwidthReceipt class does its own signing/encoding
 
 export const relayReserveEncoding = {
   preencode (state, msg) {

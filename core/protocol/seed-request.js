@@ -189,6 +189,18 @@ export class SeedProtocol extends EventEmitter {
   }
 
   _onOpen (channel) {
+    // Validate protocol version from handshake
+    if (channel.handshake) {
+      try {
+        const remote = JSON.parse(b4a.toString(channel.handshake))
+        if (remote.major !== PROTOCOL_VERSION.major) {
+          this.emit('version-mismatch', { local: PROTOCOL_VERSION, remote })
+          channel.close()
+          return
+        }
+      } catch {}
+    }
+
     this.emit('channel-open', channel)
 
     // Send all pending requests to newly connected peer
@@ -228,11 +240,12 @@ export class SeedProtocol extends EventEmitter {
     }
     parts.push(discoveryKeysHash)
     
-    const meta = Buffer.alloc(24)
+    const meta = b4a.alloc(28)
     const view = new DataView(meta.buffer, meta.byteOffset)
     view.setUint8(0, msg.replicationFactor)
     view.setBigUint64(8, BigInt(msg.maxStorageBytes))
     view.setBigUint64(16, BigInt(msg.ttlSeconds))
+    view.setUint32(24, msg.bountyRate || 0)
     parts.push(meta)
     return b4a.concat(parts)
   }

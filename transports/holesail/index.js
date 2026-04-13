@@ -26,6 +26,7 @@
 
 import { EventEmitter } from 'events'
 import { createHash, randomBytes } from 'crypto'
+import b4a from 'b4a'
 
 export class HolesailTransport extends EventEmitter {
   constructor (opts = {}) {
@@ -102,7 +103,6 @@ export class HolesailTransport extends EventEmitter {
 
     const firewall = this.secure
       ? (remotePublicKey) => {
-          const b4a = require('b4a')
           return !b4a.equals(remotePublicKey, this._keyPair.publicKey)
         }
       : false

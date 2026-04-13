@@ -96,6 +96,7 @@ export class StorageService extends ServiceProvider {
   }
 
   async 'drive-read' (params) {
+    this._checkPolicy(params.key, 'read-from-relay')
     const drive = this._getDrive(params.key)
     const data = await drive.get(params.path)
     if (!data) throw new Error('FILE_NOT_FOUND: ' + params.path)
@@ -112,6 +113,7 @@ export class StorageService extends ServiceProvider {
   }
 
   async 'drive-delete' (params) {
+    this._checkPolicy(params.key, 'delete-from-relay')
     const drive = this._getDrive(params.key)
     if (!drive.writable) throw new Error('DRIVE_READONLY')
     await drive.del(params.path)

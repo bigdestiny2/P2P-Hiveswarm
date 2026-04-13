@@ -559,6 +559,20 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   /**
+   * Get the cached service catalog from connected relays.
+   * Catalogs are received via MSG_CATALOG on connect.
+   */
+  getServiceCatalog () {
+    const catalogs = {}
+    for (const [pubkey, relay] of this.relays) {
+      if (relay.serviceCatalog) {
+        catalogs[pubkey] = relay.serviceCatalog
+      }
+    }
+    return catalogs
+  }
+
+  /**
    * Get all seeded apps across connected relays.
    * Returns a deduplicated list of apps with which relays host them.
    */
@@ -785,7 +799,11 @@ export class HiveRelayClient extends EventEmitter {
             const len = state.buffer.readUInt32BE(state.start)
             const json = state.buffer.subarray(state.start + 4, state.start + 4 + len).toString()
             state.start += 4 + len
-            return JSON.parse(json)
+            try {
+              return JSON.parse(json)
+            } catch {
+              return { type: -1, error: 'malformed JSON' }
+            }
           }
         },
         onmessage: (msg) => this._onServiceMessage(pubkeyHex, msg)
@@ -902,6 +920,15 @@ export class HiveRelayClient extends EventEmitter {
     const entry = this.seedRequests.get(appKeyHex)
 
     if (entry) {
+      // Verify relay signature before accepting
+      if (msg.relayPubkey && msg.relaySignature) {
+        const payload = b4a.concat([msg.appKey, msg.relayPubkey, b4a.from(msg.region || '')])
+        const valid = sodium.crypto_sign_verify_detached(msg.relaySignature, payload, msg.relayPubkey)
+        if (!valid) {
+          this.emit('invalid-accept', { appKey: appKeyHex, reason: 'bad relay signature' })
+          return
+        }
+      }
       entry.acceptances.push(msg)
     }
 
@@ -944,6 +971,8 @@ export class HiveRelayClient extends EventEmitter {
         pending.reject(new Error(msg.error))
       }
     } else if (msg.type === 0) { // MSG_CATALOG
+      const relay3 = this.relays.get(relayPubkey)
+      if (relay3) relay3.serviceCatalog = msg.services || []
       this.emit('service-catalog', { relay: relayPubkey, services: msg.services })
     } else if (msg.type === 7) { // MSG_APP_CATALOG
       const relay2 = this.relays.get(relayPubkey)
@@ -954,12 +983,21 @@ export class HiveRelayClient extends EventEmitter {
 
   _serializeForSigning (msg) {
     const parts = [msg.appKey]
-    for (const dk of msg.discoveryKeys) parts.push(dk)
-    const meta = Buffer.alloc(24)
+
+    // Hash discoveryKeys array (must match server's _serializeForSigning)
+    const discoveryKeysHash = b4a.alloc(32)
+    if (msg.discoveryKeys && msg.discoveryKeys.length > 0) {
+      const dkConcat = b4a.concat(msg.discoveryKeys)
+      sodium.crypto_generichash(discoveryKeysHash, dkConcat)
+    }
+    parts.push(discoveryKeysHash)
+
+    const meta = b4a.alloc(28)
     const view = new DataView(meta.buffer, meta.byteOffset)
     view.setUint8(0, msg.replicationFactor)
     view.setBigUint64(8, BigInt(msg.maxStorageBytes))
     view.setBigUint64(16, BigInt(msg.ttlSeconds))
+    view.setUint32(24, msg.bountyRate || 0)
     parts.push(meta)
     return b4a.concat(parts)
   }

@@ -77,7 +77,7 @@ export class BandwidthReceipt extends EventEmitter {
     this.collectedReceipts = new CircularBuffer(this.maxReceipts)
 
     // Replay attack prevention: track seen receipt nonces
-    this._seenNonces = new Set()
+    this._seenNonces = new Map() // nonce hex -> timestamp for time-based eviction
     this._maxSeenNonces = opts.maxSeenNonces || 50_000 // Limit memory usage
 
     // Maximum allowed bytes per receipt (100 TB - prevents integer overflow attacks)
@@ -113,12 +113,21 @@ export class BandwidthReceipt extends EventEmitter {
    */
   _markNonceSeen (nonce) {
     const key = b4a.toString(nonce, 'hex')
-    // Evict oldest if at capacity (FIFO)
+    const now = Date.now()
+    // Time-based eviction: remove nonces older than 1 hour
     if (this._seenNonces.size >= this._maxSeenNonces) {
-      const oldest = this._seenNonces.values().next().value
-      this._seenNonces.delete(oldest)
+      for (const [k, ts] of this._seenNonces) {
+        if (now - ts > 3600_000) {
+          this._seenNonces.delete(k)
+        }
+      }
+      // If still at capacity after time-based eviction, remove oldest
+      if (this._seenNonces.size >= this._maxSeenNonces) {
+        const oldest = this._seenNonces.keys().next().value
+        this._seenNonces.delete(oldest)
+      }
     }
-    this._seenNonces.add(key)
+    this._seenNonces.set(key, now)
   }
 
   /**
@@ -239,6 +248,12 @@ export class BandwidthReceipt extends EventEmitter {
     if (!entry) {
       entry = { bytes: 0, startTime: Date.now(), chunks: 0, relayPubkey, sessionId }
       this._pendingReceipts.set(keyHex, entry)
+    }
+
+    // Validate bytesTransferred (same checks as createReceipt)
+    if (typeof bytesTransferred !== 'number' || bytesTransferred < 0 ||
+        bytesTransferred > this._maxReceiptBytes || !Number.isFinite(bytesTransferred)) {
+      return null
     }
 
     entry.bytes += bytesTransferred

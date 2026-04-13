@@ -51,11 +51,25 @@ export class SchemaService extends ServiceProvider {
     }
     if (params.schemaId.length > 128) throw new Error('SCHEMA_ID_TOO_LONG')
 
+    // Enforce size limit on schema definitions (64KB max)
+    if (JSON.stringify(params.definition).length > 65536) {
+      throw new Error('SCHEMA_DEFINITION_TOO_LARGE')
+    }
+
     const versions = this.schemas.get(params.schemaId) || []
 
     // Check for duplicate version
     if (versions.some(v => v.version === params.version)) {
       throw new Error('SCHEMA_VERSION_EXISTS')
+    }
+
+    // Ownership check: if schema already exists, only original publisher can add versions
+    if (versions.length > 0) {
+      const originalPublisher = versions[0].publisherPubkey
+      const caller = context?.remotePubkey || 'local'
+      if (originalPublisher !== 'local' && caller !== originalPublisher) {
+        throw new Error('SCHEMA_UNAUTHORIZED: only the original publisher can add versions')
+      }
     }
 
     const entry = {

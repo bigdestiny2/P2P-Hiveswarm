@@ -18,6 +18,7 @@
  */
 
 import b4a from 'b4a'
+import Protomux from 'protomux'
 import { EventEmitter } from 'events'
 
 const MSG_CATALOG = 0
@@ -46,6 +47,7 @@ export class ServiceProtocol extends EventEmitter {
    * Set up the service protocol on a Protomux instance.
    */
   attach (mux, remotePubkey) {
+    mux = Protomux.from(mux)
     const channel = mux.createChannel({
       protocol: 'hiverelay-services',
       id: b4a.from('services-v1'),
@@ -176,7 +178,7 @@ export class ServiceProtocol extends EventEmitter {
     // Clean up pub/sub subscriptions for this peer
     const subs = this._peerSubscriptions.get(remotePubkey)
     if (subs && this.router) {
-      for (const subId of subs) this.router.pubsub.unsubscribe(subId)
+      for (const entry of subs) this.router.pubsub.unsubscribe(entry.subId)
     }
     this._peerSubscriptions.delete(remotePubkey)
     this.emit('channel-close', { remotePubkey })
@@ -283,7 +285,7 @@ export class ServiceProtocol extends EventEmitter {
           entry.msgHandler.send({ type: MSG_EVENT, topic: t, data })
         }
       }, { remotePubkey, ttl: 60 * 60 * 1000 })
-      subs.push(subId)
+      subs.push({ subId, topic })
     }
 
     this._peerSubscriptions.set(remotePubkey, subs)
@@ -295,12 +297,23 @@ export class ServiceProtocol extends EventEmitter {
   _handleUnsubscribe (remotePubkey, msg) {
     if (!this.router || !msg.topics) return
     const subs = this._peerSubscriptions.get(remotePubkey) || []
+    const topicsToRemove = new Set(msg.topics)
 
-    // Remove all subscriptions for this peer
-    for (const subId of subs) {
-      this.router.pubsub.unsubscribe(subId)
+    // Only unsubscribe from requested topics, retain the rest
+    const remaining = []
+    for (const entry of subs) {
+      if (topicsToRemove.has(entry.topic)) {
+        this.router.pubsub.unsubscribe(entry.subId)
+      } else {
+        remaining.push(entry)
+      }
     }
-    this._peerSubscriptions.delete(remotePubkey)
+
+    if (remaining.length > 0) {
+      this._peerSubscriptions.set(remotePubkey, remaining)
+    } else {
+      this._peerSubscriptions.delete(remotePubkey)
+    }
   }
 
   /**

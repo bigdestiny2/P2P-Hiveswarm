@@ -57,7 +57,11 @@ export class SLAService extends ServiceProvider {
    * @param {number} params.premiumRate - Multiplier over base rate (e.g., 3.0)
    * @param {number} params.duration - Contract duration in ms
    */
-  async create (params) {
+  async create (params, context) {
+    // Remote callers must identify themselves
+    if (context?.caller === 'remote' && !context?.remotePubkey) {
+      throw new Error('SLA_UNAUTHORIZED: remote caller must be authenticated')
+    }
     if (!params.appKey || typeof params.appKey !== 'string') {
       throw new Error('SLA_MISSING_APP_KEY')
     }
@@ -136,9 +140,17 @@ export class SLAService extends ServiceProvider {
   /**
    * Terminate a contract. Optionally slash remaining collateral.
    */
-  async terminate (params) {
+  async terminate (params, context) {
     const contract = this.contracts.get(params.id)
     if (!contract) throw new Error('SLA_NOT_FOUND')
+
+    // Only contract parties can terminate
+    if (context?.caller === 'remote') {
+      const caller = context.remotePubkey
+      if (caller !== contract.relayPubkey && caller !== contract.appKey) {
+        throw new Error('SLA_UNAUTHORIZED: only contract parties can terminate')
+      }
+    }
 
     contract.status = 'terminated'
 

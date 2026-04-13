@@ -109,6 +109,13 @@ export class CircuitRelay extends EventEmitter {
   }
 
   _onReserve (channel, msg) {
+    // Validate that peerPubkey matches the authenticated connection identity
+    const authenticatedKey = channel.stream?.remotePublicKey
+    if (authenticatedKey && msg.peerPubkey && !b4a.equals(authenticatedKey, msg.peerPubkey)) {
+      this._sendStatus(channel, ERR.NOT_FOUND, 'Peer identity mismatch')
+      return
+    }
+
     const peerHex = b4a.toString(msg.peerPubkey, 'hex')
 
     // Per-peer reserve rate limiting
@@ -156,6 +163,13 @@ export class CircuitRelay extends EventEmitter {
   }
 
   _onConnect (channel, msg) {
+    // Validate that sourcePubkey matches the authenticated connection identity
+    const authenticatedKey = channel.stream?.remotePublicKey
+    if (authenticatedKey && msg.sourcePubkey && !b4a.equals(authenticatedKey, msg.sourcePubkey)) {
+      this._sendStatus(channel, ERR.NOT_FOUND, 'Source identity mismatch')
+      return
+    }
+
     const targetHex = b4a.toString(msg.targetPubkey, 'hex')
     const reservation = this.reservations.get(targetHex)
 

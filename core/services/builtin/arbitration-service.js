@@ -62,7 +62,11 @@ export class ArbitrationService extends ServiceProvider {
     }
 
     const id = crypto.randomBytes(16).toString('hex')
-    const claimant = context?.remotePubkey || params.claimant || 'local'
+    // Use authenticated identity when available, fall back to params for local calls
+    const claimant = context?.remotePubkey || (context?.caller === 'remote' ? null : params.claimant) || 'local'
+    if (context?.caller === 'remote' && !context.remotePubkey) {
+      throw new Error('ARBITRATION_UNAUTHORIZED')
+    }
 
     if (claimant === params.respondent) {
       throw new Error('ARBITRATION_SELF_DISPUTE')
@@ -113,7 +117,10 @@ export class ArbitrationService extends ServiceProvider {
       throw new Error('ARBITRATION_INVALID_VERDICT')
     }
 
-    const voter = context?.remotePubkey || params.voterPubkey
+    // Remote callers must use their authenticated identity
+    const voter = context?.caller === 'remote'
+      ? context.remotePubkey
+      : (params.voterPubkey || context?.remotePubkey)
     if (!voter) throw new Error('ARBITRATION_MISSING_VOTER')
 
     // Eligibility check

@@ -95,6 +95,39 @@ export default {
     minSettlementSats: 1000
   },
 
+  // Discovery
+  discovery: {
+    dht: true,
+    announce: true,
+    mdns: true
+  },
+
+  // Services
+  enableServices: true,
+  enableRouter: false,
+  routerWorkers: 0, // 0 = auto (based on CPU cores)
+
+  // AI inference
+  ai: {
+    enabled: false,
+    maxConcurrent: 2,
+    maxQueue: 10,
+    ollamaUrl: 'http://127.0.0.1:11434',
+    models: [],
+    timeout: 30000
+  },
+
+  // Holesail transport
+  holesail: {
+    enabled: false,
+    seed: null,
+    connectorMode: false,
+    secure: false
+  },
+
+  // Proxy trust (set true when behind a reverse proxy like Caddy/NGINX)
+  trustProxy: false,
+
   // Shutdown
   shutdownTimeoutMs: 10_000,
 

@@ -62,9 +62,13 @@ export class IdentityService extends ServiceProvider {
     return { valid }
   }
 
-  async sign (params) {
+  async sign (params, context) {
     if (!this.node.keyPair) {
       throw new Error('NO_KEYPAIR: node has no signing keypair')
+    }
+    // Remote callers must not be able to sign arbitrary data with the node's key
+    if (context?.caller === 'remote') {
+      throw new Error('UNAUTHORIZED: sign is not available to remote peers')
     }
 
     const msgBuf = b4a.from(params.message)
@@ -95,9 +99,15 @@ export class IdentityService extends ServiceProvider {
   }
 
   async peers () {
-    const connections = this.node.connections || []
-    return connections.map(c => ({
-      pubkey: c.remotePubKey || null,
+    const connections = this.node.connections
+    if (!connections) return []
+    // Handle both Map (production) and Array (test) formats
+    const entries = connections instanceof Map
+      ? Array.from(connections.values())
+      : connections
+    if (entries.length === 0) return []
+    return entries.map(c => ({
+      pubkey: c.remotePubkey || c.remotePubKey || null,
       type: c.type || 'hyperswarm'
     }))
   }

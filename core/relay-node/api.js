@@ -277,7 +277,7 @@ export class RelayAPI extends EventEmitter {
     if (allowedOrigin) {
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin)
     }
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-App-Key')
 
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
@@ -813,6 +813,14 @@ export class RelayAPI extends EventEmitter {
           if (!body.modelId || body.input === undefined) {
             return this._json(res, { error: 'modelId and input required' }, 400)
           }
+          // Route through router for credit deduction + metering
+          const appKey = req.headers['x-app-key'] || 'anonymous'
+          if (this.node.router) {
+            const result = await this.node.router.dispatch('ai.infer', body, {
+              transport: 'http', appKey, caller: 'http-ai'
+            })
+            return this._json(res, result)
+          }
           const result = await ai.infer(body)
           return this._json(res, result)
         }
@@ -823,6 +831,14 @@ export class RelayAPI extends EventEmitter {
           const body = await this._readBody(req)
           if (!body.modelId || !body.input) {
             return this._json(res, { error: 'modelId and input required' }, 400)
+          }
+          // Route through router for credit deduction + metering
+          const appKey = req.headers['x-app-key'] || 'anonymous'
+          if (this.node.router) {
+            const result = await this.node.router.dispatch('ai.embed', body, {
+              transport: 'http', appKey, caller: 'http-ai'
+            })
+            return this._json(res, result)
           }
           const result = await ai.embed(body)
           return this._json(res, result)

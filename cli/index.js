@@ -218,6 +218,11 @@ async function start () {
     if (args['holesail-connector']) cliOverrides.holesail.connectorMode = true
   }
 
+  // ─── Router (enables credit deduction + metering middleware) ───
+  if (args.router) {
+    cliOverrides.enableRouter = true
+  }
+
   // ─── AI / Ollama ───
   if (args.ai) {
     const models = args['ai-model']
