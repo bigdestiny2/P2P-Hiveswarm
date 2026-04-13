@@ -51,15 +51,16 @@ deploy_server() {
         # Restart the relay process (using pm2 if available, otherwise direct)
         if command -v pm2 &> /dev/null; then
             pm2 stop hiverelay 2>/dev/null || true
-            pm2 start scripts/start-relay.js --name hiverelay -- --mode public
+            pm2 start cli/index.js --name hiverelay -- start --mode public
             pm2 save
         else
             # Kill existing process
+            pkill -f "node.*cli/index.js" 2>/dev/null || true
             pkill -f "node.*start-relay" 2>/dev/null || true
             sleep 2
 
             # Start in background
-            nohup node scripts/start-relay.js --mode public > /var/log/hiverelay.log 2>&1 &
+            nohup node cli/index.js start --mode public > /var/log/hiverelay.log 2>&1 &
             echo "Started with PID $!"
         fi
 
