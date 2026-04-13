@@ -13,10 +13,21 @@ import b4a from 'b4a'
 import sodium from 'sodium-universal'
 
 // --- Config ---
-const KNOWN_RELAYS = {
-  local:   { pkPrefix: 'f1b82032', label: 'Local   (127.0.0.1:9100)' },
-  cloudzy: { pkPrefix: '6d905b17', label: 'Cloudzy (REDACTED_SERVER_IP:9100)' }
-}
+// Set via HIVERELAY_KNOWN_RELAYS env var: "name:pkPrefix:label,name2:pkPrefix2:label2"
+const KNOWN_RELAYS = (() => {
+  const env = process.env.HIVERELAY_KNOWN_RELAYS
+  if (env) {
+    const relays = {}
+    for (const entry of env.split(',')) {
+      const [name, pkPrefix, label] = entry.trim().split(':')
+      relays[name] = { pkPrefix, label }
+    }
+    return relays
+  }
+  return {
+    local: { pkPrefix: 'f1b82032', label: 'Local (127.0.0.1:9100)' }
+  }
+})()
 const DISCOVERY_TIMEOUT_MS = 45_000
 const STABILITY_WINDOW_MS  = 15_000
 

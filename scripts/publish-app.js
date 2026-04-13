@@ -40,13 +40,11 @@ import { existsSync } from 'fs'
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
 sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
 
-// Default relay endpoints (Utah x3 + Singapore x1)
-const DEFAULT_RELAYS = [
-  'http://REDACTED_SERVER_IP:9100',
-  'http://REDACTED_SERVER_IP:9101',
-  'http://REDACTED_SERVER_IP:9102',
-  'http://REDACTED_SERVER_IP:9100'
-]
+// Default relay endpoints — set HIVERELAY_RELAYS env var or pass --relay flags
+// Example: HIVERELAY_RELAYS="http://host1:9100,http://host2:9100"
+const DEFAULT_RELAYS = process.env.HIVERELAY_RELAYS
+  ? process.env.HIVERELAY_RELAYS.split(',').map(s => s.trim())
+  : ['http://127.0.0.1:9100']
 
 function parseArgs (argv) {
   const args = argv.slice(2)

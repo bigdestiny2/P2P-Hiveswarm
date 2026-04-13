@@ -15,10 +15,13 @@
  *   /opt/homebrew/bin/node scripts/test-api-resilience.js
  */
 
-const RELAYS = [
-  { name: 'Local',   base: 'http://127.0.0.1:9100' },
-  { name: 'Cloudzy', base: 'http://REDACTED_SERVER_IP:9100' },
-]
+// Configure relays via HIVERELAY_TEST_RELAYS env var (comma-separated name=url pairs)
+// Example: HIVERELAY_TEST_RELAYS="Local=http://127.0.0.1:9100,Production=http://relay.example.com:9100"
+const RELAYS = (process.env.HIVERELAY_TEST_RELAYS || 'Local=http://127.0.0.1:9100')
+  .split(',').map(s => {
+    const [name, base] = s.trim().split('=')
+    return { name, base }
+  })
 
 const JSON_ENDPOINTS = ['/health', '/status', '/metrics', '/api/overview', '/api/history', '/api/apps', '/api/peers']
 const HTML_ENDPOINTS = ['/dashboard']
