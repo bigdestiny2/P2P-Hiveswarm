@@ -251,8 +251,8 @@ tr:hover td{background:rgba(0,170,255,.03)}
   <table id="appsTable">
     <thead>
       <tr>
+        <th data-col="name">Name <span class="sort-arrow"></span></th>
         <th data-col="key">App Key <span class="sort-arrow"></span></th>
-        <th data-col="discoveryKey">Discovery Key <span class="sort-arrow"></span></th>
         <th data-col="started">Started <span class="sort-arrow"></span></th>
         <th data-col="uptime">Uptime <span class="sort-arrow"></span></th>
         <th data-col="bytesServed">Bytes Served <span class="sort-arrow"></span></th>
@@ -315,7 +315,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
     <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);margin-bottom:.5rem">Active Seeds</div>
     <table style="width:100%">
       <thead><tr>
-        <th>App Key</th><th>Discovery Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
+        <th>Name</th><th>App Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
       </tr></thead>
       <tbody id="seedsBody"><tr><td colspan="5" class="empty-state">No apps seeded</td></tr></tbody>
     </table>
@@ -326,6 +326,22 @@ tr:hover td{background:rgba(0,170,255,.03)}
 <div class="conn-status" id="connStatus">LIVE</div>
 
 <script>
+/* ===== Catalog Name Lookup ===== */
+var catalogNames = {}; // appKey -> display name
+
+function fetchCatalogNames() {
+  fetch('/catalog.json').then(function(r) { return r.json(); }).then(function(data) {
+    if (data.apps && Array.isArray(data.apps)) {
+      data.apps.forEach(function(app) {
+        if (app.driveKey && app.name) catalogNames[app.driveKey] = app.name;
+      });
+      // Re-render tables with names
+      renderAppsTable();
+      if (window._lastSeedApps) renderSeeds(window._lastSeedApps);
+    }
+  }).catch(function() {});
+}
+
 /* ===== Helpers ===== */
 function formatBytes(b) {
   if (b == null || isNaN(b)) return '--';
@@ -512,9 +528,11 @@ function renderAppsTable() {
   }
   tbody.innerHTML = currentApps.map(function(app) {
     var uptime = app.started ? Date.now() - new Date(app.started).getTime() : app.uptime || 0;
+    var appKey = app.appKey || app.key || '';
+    var name = catalogNames[appKey] || app.appId || appKey.slice(0, 12);
     return '<tr>' +
-      '<td>' + truncateKey(app.key) + '</td>' +
-      '<td>' + truncateKey(app.discoveryKey) + '</td>' +
+      '<td style="color:var(--text-bright);font-weight:500">' + name + '</td>' +
+      '<td>' + truncateKey(appKey) + '</td>' +
       '<td>' + (app.started ? formatTime(app.started) : '--') + '</td>' +
       '<td>' + formatUptime(uptime) + '</td>' +
       '<td>' + formatBytes(app.bytesServed || 0) + '</td>' +
@@ -850,6 +868,7 @@ function rejectRequest(appKey) {
 }
 
 function renderSeeds(apps) {
+  window._lastSeedApps = apps;
   var tbody = document.getElementById('seedsBody');
   if (!apps || !apps.length) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No apps seeded</td></tr>';
@@ -857,9 +876,10 @@ function renderSeeds(apps) {
   }
   tbody.innerHTML = apps.map(function(app) {
     var uptime = app.startedAt ? Date.now() - app.startedAt : 0;
+    var name = catalogNames[app.appKey] || app.appId || app.appKey.slice(0, 12);
     return '<tr>' +
+      '<td style="color:var(--text-bright);font-weight:500">' + name + '</td>' +
       '<td>' + truncateKey(app.appKey) + '</td>' +
-      '<td>' + truncateKey(app.discoveryKey) + '</td>' +
       '<td>' + formatUptime(uptime) + '</td>' +
       '<td>' + formatBytes(app.bytesServed || 0) + '</td>' +
       '<td><button onclick="unseedApp(\'' + app.appKey + '\')" style="background:rgba(255,68,68,.15);color:var(--red);border:1px solid rgba(255,68,68,.3);border-radius:4px;padding:2px 8px;font-size:.7rem;cursor:pointer;font-family:var(--mono)">UNSEED</button></td>' +
@@ -920,6 +940,7 @@ fetchRegistryState();
 
 // Boot: start HTTP fetch immediately, then try WS
 fetchData();
+fetchCatalogNames();
 setPollInterval(POLL_INTERVAL_HTTP);
 connectWS();
 
