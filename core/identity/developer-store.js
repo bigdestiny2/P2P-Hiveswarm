@@ -15,6 +15,7 @@
  * and it propagates to every relay that knows your key.
  */
 
+import crypto from 'crypto'
 import { EventEmitter } from 'events'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
@@ -137,8 +138,7 @@ export class DeveloperStore extends EventEmitter {
    * Called after successful LNURL-auth verification.
    */
   createSession (developerKey) {
-    const { randomBytes } = require('crypto')
-    const token = randomBytes(32).toString('hex')
+    const token = crypto.randomBytes(32).toString('hex')
     const now = Date.now()
 
     this.sessions.set(token, {

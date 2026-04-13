@@ -38,7 +38,8 @@ deploy_server() {
         # Clone or pull
         if [ -d hiverelay ]; then
             cd hiverelay
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
         else
             git clone https://github.com/bigdestiny2/P2P-Hiveswarm.git hiverelay
             cd hiverelay

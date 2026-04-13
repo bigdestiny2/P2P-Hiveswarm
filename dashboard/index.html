@@ -260,7 +260,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
       </tr>
     </thead>
     <tbody id="appsBody">
-      <tr><td colspan="5" class="empty-state">No apps seeded yet</td></tr>
+      <tr><td colspan="6" class="empty-state">No apps seeded yet</td></tr>
     </tbody>
   </table>
 </div>
@@ -318,7 +318,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
       <thead><tr>
         <th>Name</th><th>Developer</th><th>App Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
       </tr></thead>
-      <tbody id="seedsBody"><tr><td colspan="5" class="empty-state">No apps seeded</td></tr></tbody>
+      <tbody id="seedsBody"><tr><td colspan="6" class="empty-state">No apps seeded</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -345,11 +345,19 @@ function fetchCatalogNames() {
   }).catch(function() {});
 }
 
+function escapeHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 function renderDev(appKey) {
   var dev = catalogDevs[appKey];
   if (!dev) return '<span style="color:var(--text-dim);font-style:italic;font-size:.75rem">unlinked</span>';
-  var avatar = dev.avatar ? '<img src="' + dev.avatar + '" style="width:16px;height:16px;border-radius:50%;vertical-align:middle;margin-right:4px" onerror="this.style.display=\'none\'">' : '';
-  var name = dev.displayName || dev.pubkey.slice(0, 8) + '...';
+  var name = escapeHtml(dev.displayName || dev.pubkey.slice(0, 8) + '...');
+  var avatar = '';
+  if (dev.avatar && /^https?:\/\//.test(dev.avatar)) {
+    avatar = '<img src="' + escapeHtml(dev.avatar) + '" style="width:16px;height:16px;border-radius:50%;vertical-align:middle;margin-right:4px" onerror="this.style.display=\'none\'">';
+  }
   return avatar + '<span style="color:var(--cyan);font-size:.8rem">' + name + '</span>';
 }
 

@@ -1444,7 +1444,8 @@ export class RelayAPI extends EventEmitter {
           if (!this.node.identity) {
             return this._json(res, { error: 'Identity system not enabled' }, 503)
           }
-          const challenge = this.node.identity.lnurlAuth.createChallenge()
+          const baseUrl = `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host || 'localhost'}`
+          const challenge = this.node.identity.lnurlAuth.createChallenge({ baseUrl })
           return this._json(res, challenge)
         }
 
@@ -1459,12 +1460,13 @@ export class RelayAPI extends EventEmitter {
           if (!k1 || !sig || !key) {
             return this._json(res, { status: 'ERROR', reason: 'Missing k1, sig, or key' })
           }
-          const result = this.node.identity.lnurlAuth.verifyCallback(k1, sig, key)
-          if (result.success) {
-            const session = this.node.identity.developerStore.createSession(key)
-            return this._json(res, { status: 'OK', session: session.token })
+          const result = await this.node.identity.lnurlAuth.verifyCallback(k1, sig, key)
+          if (result.ok) {
+            // verifyCallback already creates a session internally with the x-only developerKey
+            const token = result.session?.token || null
+            return this._json(res, { status: 'OK', session: token, developerKey: result.developerKey })
           }
-          return this._json(res, { status: 'ERROR', reason: result.error })
+          return this._json(res, { status: 'ERROR', reason: result.reason })
         }
 
         // GET /api/v1/identity/lnurl-auth/poll/:k1 — poll challenge status
@@ -1473,12 +1475,8 @@ export class RelayAPI extends EventEmitter {
             return this._json(res, { error: 'Identity system not enabled' }, 503)
           }
           const k1 = path.split('/').pop()
-          const challenge = this.node.identity.lnurlAuth.challenges.get(k1)
-          if (!challenge) return this._json(res, { status: 'unknown' })
-          return this._json(res, {
-            status: challenge.verified ? 'verified' : 'pending',
-            pubkey: challenge.pubkey || null
-          })
+          const pending = this.node.identity.lnurlAuth.isChallengePending(k1)
+          return this._json(res, { status: pending ? 'pending' : 'unknown' })
         }
 
         // POST /api/v1/identity/attest — submit attestation
@@ -1488,19 +1486,22 @@ export class RelayAPI extends EventEmitter {
           }
           const body = await this._readBody(req)
           const result = await this.node.identity.attestation.submitAttestation(body)
-          if (result.success) {
-            return this._json(res, { success: true, developer: result.developer })
+          if (result.valid) {
+            return this._json(res, { success: true })
           }
-          return this._json(res, { error: result.error }, 400)
+          return this._json(res, { error: result.reason }, 400)
         }
 
-        // POST /api/v1/identity/revoke — revoke attestation
+        // POST /api/v1/identity/revoke — revoke attestation (auth required)
         if (req.method === 'POST' && path === '/api/v1/identity/revoke') {
           if (!this.node.identity) {
             return this._json(res, { error: 'Identity system not enabled' }, 503)
           }
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const body = await this._readBody(req)
-          const result = this.node.identity.attestation.revokeAttestation(body.appKey, body.developerKey)
+          const result = await this.node.identity.attestation.revokeAttestation(body.appKey, body.developerKey)
           return this._json(res, result)
         }
 
