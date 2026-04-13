@@ -511,6 +511,12 @@ export class RelayAPI extends EventEmitter {
 
         // --- Dashboard endpoints ---
 
+        if (path === '/') {
+          res.writeHead(302, { Location: '/dashboard' })
+          res.end()
+          return
+        }
+
         if (path === '/dashboard') {
           if (!this._dashboardHtml) {
             const htmlPath = join(__dirname, '..', '..', 'dashboard', 'index.html')
