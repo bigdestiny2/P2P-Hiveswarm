@@ -61,6 +61,14 @@ export class Router extends EventEmitter {
   }
 
   /**
+   * Add a global middleware function.
+   * Middleware runs before every route handler.
+   */
+  addMiddleware (fn) {
+    this._middleware.push(fn)
+  }
+
+  /**
    * Auto-generate routes from a ServiceRegistry.
    * For each service, creates a route for each capability in its manifest.
    */
