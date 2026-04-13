@@ -1,44 +1,37 @@
 #!/bin/bash
 # Deploy HiveRelay to VPS servers
-# Usage: ./scripts/deploy-vps.sh [utah|singapore|all]
+# Usage: ./scripts/deploy-vps.sh [utah|utah-us|singapore|all]
 #
 # Prerequisites:
-#   - SSH access to the servers
-#   - sshpass installed (or SSH key auth configured)
+#   - SSH key auth configured (ssh-copy-id -i ~/.ssh/cloudzy_hiverelay.pub root@<ip>)
+#   - HIVERELAY_API_KEY env var set
 #
 # The script:
 #   1. Pushes code to GitHub
-#   2. SSHs into each server
+#   2. SSHs into each server via key auth
 #   3. Pulls latest code
 #   4. Installs dependencies
 #   5. Restarts the relay in public mode
 
 set -e
 
-# IMPORTANT: Set these as environment variables before running.
-# Credentials must NEVER be hardcoded — previous values are compromised and must be rotated.
-# Recommended: Use SSH key auth instead of sshpass with passwords.
-UTAH_IP="${UTAH_IP:?Set UTAH_IP environment variable}"
-UTAH_PASS="${UTAH_PASS:?Set UTAH_PASS environment variable}"
-UTAH_US_IP="${UTAH_US_IP:?Set UTAH_US_IP environment variable}"
-UTAH_US_PASS="${UTAH_US_PASS:?Set UTAH_US_PASS environment variable}"
-SINGAPORE_IP="${SINGAPORE_IP:?Set SINGAPORE_IP environment variable}"
-SINGAPORE_PASS="${SINGAPORE_PASS:?Set SINGAPORE_PASS environment variable}"
-
-REPO_DIR="/root/hiverelay"
-REPO_URL="https://github.com/bigdestiny2/P2P-Hiveswarm.git"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/cloudzy_hiverelay}"
 API_KEY="${HIVERELAY_API_KEY:?Set HIVERELAY_API_KEY environment variable}"
+
+# Server IPs — set via env vars or use defaults
+UTAH_IP="${UTAH_IP:-144.172.101.215}"
+UTAH_US_IP="${UTAH_US_IP:-144.172.91.26}"
+SINGAPORE_IP="${SINGAPORE_IP:-104.194.153.179}"
 
 deploy_server() {
     local IP=$1
-    local PASS=$2
-    local NAME=$3
+    local NAME=$2
 
     echo "═══════════════════════════════════════════════════"
     echo "  Deploying to $NAME ($IP)"
     echo "═══════════════════════════════════════════════════"
 
-    sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no root@$IP << REMOTE_SCRIPT
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new root@"$IP" << REMOTE_SCRIPT
         set -e
         cd /root
 
@@ -86,18 +79,18 @@ echo
 
 case $TARGET in
     utah)
-        deploy_server $UTAH_IP "$UTAH_PASS" "Utah"
+        deploy_server "$UTAH_IP" "Utah"
         ;;
     utah-us)
-        deploy_server $UTAH_US_IP "$UTAH_US_PASS" "Utah-US (relay-us domain)"
+        deploy_server "$UTAH_US_IP" "Utah-US (relay-us domain)"
         ;;
     singapore)
-        deploy_server $SINGAPORE_IP "$SINGAPORE_PASS" "Singapore"
+        deploy_server "$SINGAPORE_IP" "Singapore"
         ;;
     all)
-        deploy_server $UTAH_IP "$UTAH_PASS" "Utah"
-        deploy_server $UTAH_US_IP "$UTAH_US_PASS" "Utah-US (relay-us domain)"
-        deploy_server $SINGAPORE_IP "$SINGAPORE_PASS" "Singapore"
+        deploy_server "$UTAH_IP" "Utah"
+        deploy_server "$UTAH_US_IP" "Utah-US (relay-us domain)"
+        deploy_server "$SINGAPORE_IP" "Singapore"
         ;;
     *)
         echo "Usage: $0 [utah|utah-us|singapore|all]"
