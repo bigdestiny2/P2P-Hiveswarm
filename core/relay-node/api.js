@@ -345,37 +345,42 @@ export class RelayAPI extends EventEmitter {
               continue
             }
 
-            // Public apps: read manifest from gateway
-            const driveResult = await Promise.race([
-              this._gateway._getDrive(appKey),
-              new Promise(resolve => setTimeout(() => resolve(null), 3000))
-            ])
-            if (!driveResult) continue
+            // Public apps: try to read manifest from gateway
+            let manifest = null
+            try {
+              const driveResult = await Promise.race([
+                this._gateway._getDrive(appKey),
+                new Promise(resolve => setTimeout(() => resolve(null), 3000))
+              ])
+              if (driveResult) {
+                const manifestBuf = await Promise.race([
+                  driveResult.get('/manifest.json'),
+                  new Promise(resolve => setTimeout(() => resolve(null), 2000))
+                ])
+                if (manifestBuf) {
+                  const raw = JSON.parse(manifestBuf.toString())
+                  manifest = validateManifest(raw)
+                }
+              }
+            } catch {}
 
-            const manifestBuf = await Promise.race([
-              driveResult.get('/manifest.json'),
-              new Promise(resolve => setTimeout(() => resolve(null), 2000))
-            ])
-            if (!manifestBuf) continue
-
-            const rawManifest = JSON.parse(manifestBuf.toString())
-            const manifest = validateManifest(rawManifest)
-            if (!manifest) continue // Skip invalid/manipulated manifests
-
-            const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : appKey.slice(0, 12))
-            const version = manifest.version || '1.0.0'
+            // Build catalog entry from manifest or fallback to seededApps metadata
+            const appId = manifest
+              ? (manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : entry.appId || appKey.slice(0, 12)))
+              : (entry.appId || appKey.slice(0, 12))
+            const version = (manifest && manifest.version) || entry.version || '1.0.0'
 
             const catalogEntry = {
               id: appId,
-              name: manifest.name || 'Unknown App',
-              description: manifest.description || '',
-              author: manifest.author || 'anonymous',
+              name: (manifest && manifest.name) || entry.appId || 'App ' + appKey.slice(0, 8),
+              description: (manifest && manifest.description) || '',
+              author: (manifest && manifest.author) || 'anonymous',
               version,
               driveKey: appKey,
               blind: false,
               access: 'public',
-              categories: manifest.categories || ['uncategorized'],
-              publishedAt: manifest.publishedAt || null,
+              categories: (manifest && manifest.categories) || ['uncategorized'],
+              publishedAt: (manifest && manifest.publishedAt) || null,
               seededAt: entry.startedAt
             }
 
