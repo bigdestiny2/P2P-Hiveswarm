@@ -17,11 +17,14 @@ set -e
 
 UTAH_IP="REDACTED_SERVER_IP"
 UTAH_PASS="REDACTED_PASSWORD"
+UTAH_US_IP="REDACTED_SERVER_IP"
+UTAH_US_PASS="REDACTED_PASSWORD"
 SINGAPORE_IP="REDACTED_SERVER_IP"
 SINGAPORE_PASS="REDACTED_PASSWORD"
 
 REPO_DIR="/root/hiverelay"
 REPO_URL="https://github.com/bigdestiny2/P2P-Hiveswarm.git"
+API_KEY="REDACTED_API_KEY"
 
 deploy_server() {
     local IP=$1
@@ -32,7 +35,7 @@ deploy_server() {
     echo "  Deploying to $NAME ($IP)"
     echo "═══════════════════════════════════════════════════"
 
-    sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no root@$IP << 'REMOTE_SCRIPT'
+    sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no root@$IP << REMOTE_SCRIPT
         set -e
         cd /root
 
@@ -51,7 +54,7 @@ deploy_server() {
         # Restart the relay process (using pm2 if available, otherwise direct)
         if command -v pm2 &> /dev/null; then
             pm2 stop hiverelay 2>/dev/null || true
-            pm2 start cli/index.js --name hiverelay -- start --mode public
+            HIVERELAY_API_KEY="${API_KEY}" pm2 start cli/index.js --name hiverelay -- start --mode public
             pm2 save
         else
             # Kill existing process
@@ -59,12 +62,12 @@ deploy_server() {
             pkill -f "node.*start-relay" 2>/dev/null || true
             sleep 2
 
-            # Start in background
-            nohup node cli/index.js start --mode public > /var/log/hiverelay.log 2>&1 &
-            echo "Started with PID $!"
+            # Start in background with API key
+            HIVERELAY_API_KEY="${API_KEY}" nohup node cli/index.js start --mode public > /var/log/hiverelay.log 2>&1 &
+            echo "Started with PID \\\$!"
         fi
 
-        echo "Deployment complete on $(hostname)"
+        echo "Deployment complete on \\\$(hostname)"
 REMOTE_SCRIPT
 
     echo "  Done: $NAME"
@@ -82,15 +85,19 @@ case $TARGET in
     utah)
         deploy_server $UTAH_IP "$UTAH_PASS" "Utah"
         ;;
+    utah-us)
+        deploy_server $UTAH_US_IP "$UTAH_US_PASS" "Utah-US (relay-us domain)"
+        ;;
     singapore)
         deploy_server $SINGAPORE_IP "$SINGAPORE_PASS" "Singapore"
         ;;
     all)
         deploy_server $UTAH_IP "$UTAH_PASS" "Utah"
+        deploy_server $UTAH_US_IP "$UTAH_US_PASS" "Utah-US (relay-us domain)"
         deploy_server $SINGAPORE_IP "$SINGAPORE_PASS" "Singapore"
         ;;
     *)
-        echo "Usage: $0 [utah|singapore|all]"
+        echo "Usage: $0 [utah|utah-us|singapore|all]"
         exit 1
         ;;
 esac
