@@ -3,6 +3,18 @@ import sodium from 'sodium-universal'
 import b4a from 'b4a'
 import { IdentityService } from '../../core/services/builtin/identity-service.js'
 
+function mockIPL (opts = {}) {
+  return {
+    resolveIdentity: opts.resolveIdentity || (async () => null),
+    developers: {
+      getProfile: opts.getProfile || (async () => null)
+    },
+    attestation: {
+      getDeveloperApps: opts.getDeveloperApps || (() => [])
+    }
+  }
+}
+
 function mockNode (opts = {}) {
   const pk = b4a.alloc(sodium.crypto_sign_PUBLICKEYBYTES)
   const sk = b4a.alloc(sodium.crypto_sign_SECRETKEYBYTES)
@@ -15,7 +27,8 @@ function mockNode (opts = {}) {
     mode: opts.mode || 'public',
     accessControl: opts.accessControl || null,
     listDevices: opts.listDevices || (() => []),
-    connections: opts.connections || []
+    connections: opts.connections || [],
+    identity: opts.identity || null
   }
 }
 
@@ -30,12 +43,13 @@ test('IdentityService - manifest', async (t) => {
   const svc = new IdentityService()
   const m = svc.manifest()
   t.is(m.name, 'identity')
-  t.is(m.version, '1.0.0')
+  t.is(m.version, '1.1.0')
   t.ok(m.capabilities.includes('whoami'))
   t.ok(m.capabilities.includes('sign'))
   t.ok(m.capabilities.includes('verify'))
   t.ok(m.capabilities.includes('resolve'))
   t.ok(m.capabilities.includes('peers'))
+  t.ok(m.capabilities.includes('developer'))
 })
 
 test('IdentityService - whoami', async (t) => {
@@ -50,6 +64,30 @@ test('IdentityService - whoami no key', async (t) => {
   const { svc } = await createService({ noKey: true })
   const result = await svc.whoami()
   t.is(result.pubkey, null)
+})
+
+test('IdentityService - whoami with IPL developer identity', async (t) => {
+  const { svc, node } = await createService({
+    identity: mockIPL({
+      resolveIdentity: async (appKey) => ({
+        developerKey: 'dev123abc',
+        profile: { displayName: 'TestDev', about: 'A developer' },
+        attestation: { timestamp: 1700000000 }
+      })
+    })
+  })
+  const result = await svc.whoami()
+  t.is(result.pubkey, b4a.toString(node.publicKey, 'hex'))
+  t.ok(result.developer)
+  t.is(result.developer.key, 'dev123abc')
+  t.is(result.developer.profile.displayName, 'TestDev')
+  t.is(result.developer.attestedAt, 1700000000)
+})
+
+test('IdentityService - whoami without IPL returns no developer field', async (t) => {
+  const { svc } = await createService()
+  const result = await svc.whoami()
+  t.is(result.developer, undefined)
 })
 
 test('IdentityService - sign', async (t) => {
@@ -143,7 +181,47 @@ test('IdentityService - verify bad pubkey length', async (t) => {
   t.is(result.reason, 'invalid pubkey length')
 })
 
-test('IdentityService - resolve from device allowlist', async (t) => {
+test('IdentityService - resolve via IPL attestation', async (t) => {
+  const pubkey = b4a.toString(b4a.alloc(32, 0xbb), 'hex')
+  const { svc } = await createService({
+    identity: mockIPL({
+      resolveIdentity: async (key) => key === pubkey ? {
+        developerKey: 'devABC',
+        profile: { displayName: 'Alice', name: 'alice' }
+      } : null
+    })
+  })
+  const result = await svc.resolve({ pubkey })
+  t.is(result.source, 'attestation')
+  t.is(result.developerKey, 'devABC')
+  t.is(result.name, 'Alice')
+  t.is(result.pubkey, pubkey)
+})
+
+test('IdentityService - resolve falls back to device allowlist', async (t) => {
+  const pubkey = b4a.toString(b4a.alloc(32, 0xaa), 'hex')
+  const { svc } = await createService({
+    identity: mockIPL(), // IPL returns null
+    accessControl: true,
+    listDevices: () => [
+      { pubkey, name: 'my-phone', addedAt: Date.now() }
+    ]
+  })
+  const result = await svc.resolve({ pubkey })
+  t.is(result.name, 'my-phone')
+  t.is(result.source, 'device-allowlist')
+})
+
+test('IdentityService - resolve not found', async (t) => {
+  const { svc } = await createService({
+    identity: mockIPL() // IPL returns null, no allowlist
+  })
+  const result = await svc.resolve({ pubkey: 'deadbeef' })
+  t.is(result.name, null)
+  t.is(result.source, 'not-found')
+})
+
+test('IdentityService - resolve without IPL uses allowlist', async (t) => {
   const pubkey = b4a.toString(b4a.alloc(32, 0xaa), 'hex')
   const { svc } = await createService({
     accessControl: true,
@@ -156,11 +234,35 @@ test('IdentityService - resolve from device allowlist', async (t) => {
   t.is(result.source, 'device-allowlist')
 })
 
-test('IdentityService - resolve not found', async (t) => {
+test('IdentityService - developer lookup', async (t) => {
+  const { svc } = await createService({
+    identity: mockIPL({
+      getProfile: async () => ({ displayName: 'Bob', about: 'Builder' }),
+      getDeveloperApps: () => ['app1hex', 'app2hex']
+    })
+  })
+  const result = await svc.developer({ key: 'devXYZ' })
+  t.is(result.developerKey, 'devXYZ')
+  t.ok(result.profile)
+  t.ok(result.apps)
+})
+
+test('IdentityService - developer without IPL', async (t) => {
   const { svc } = await createService()
-  const result = await svc.resolve({ pubkey: 'deadbeef' })
-  t.is(result.name, null)
-  t.is(result.source, 'not-found')
+  const result = await svc.developer({ key: 'devXYZ' })
+  t.is(result.error, 'Identity protocol not available')
+})
+
+test('IdentityService - developer missing key throws', async (t) => {
+  const { svc } = await createService({
+    identity: mockIPL()
+  })
+  try {
+    await svc.developer({})
+    t.fail('should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('MISSING_PARAM'))
+  }
 })
 
 test('IdentityService - peers', async (t) => {

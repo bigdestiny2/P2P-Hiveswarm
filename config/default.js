@@ -102,6 +102,16 @@ export default {
     mdns: true
   },
 
+  // Catalog Sync — auto-replicate apps from peer relays
+  catalogSync: {
+    enabled: true,              // Sync apps from discovered peer relays
+    syncInterval: 60_000,       // Check peer catalogs every 60s
+    maxStoragePercent: 90,       // Stop syncing if storage exceeds 90%
+    allowlist: null,             // null = sync all apps; array of appKeys to restrict
+    blocklist: [],               // appKeys to never sync
+    blindApps: true              // Also replicate blind/encrypted apps
+  },
+
   // Services
   enableServices: true,
   enableRouter: false,

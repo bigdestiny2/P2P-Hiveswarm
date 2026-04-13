@@ -44,6 +44,9 @@ export class IdentityProtocol extends EventEmitter {
       attestationService: this.attestation
     })
 
+    // Alias for API compatibility (api.js uses identity.developerStore)
+    this.developerStore = this.developers
+
     // Forward events
     this.attestation.on('attestation', (e) => this.emit('attestation', e))
     this.attestation.on('revocation', (e) => this.emit('revocation', e))

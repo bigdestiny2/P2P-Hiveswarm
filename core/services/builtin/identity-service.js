@@ -3,15 +3,19 @@
  *
  * Manages keypair identities and peer verification.
  * Apps use this to verify peer identities, manage local
- * keypairs, and resolve pubkeys to names (if a username
- * registry is available).
+ * keypairs, and resolve pubkeys to names.
+ *
+ * Integrates with the Identity Protocol Layer (IPL) when available
+ * to provide developer identity resolution via attestations and
+ * Nostr profile lookup.
  *
  * Capabilities:
- *   - whoami: Get local node identity
+ *   - whoami: Get local node identity (+ developer info if attested)
  *   - verify: Verify a signed message
  *   - sign: Sign a message with the node's key
- *   - resolve: Resolve a pubkey to a name (if registry available)
+ *   - resolve: Resolve a pubkey to a name (IPL attestation → device allowlist)
  *   - peers: List connected peers and their identity info
+ *   - developer: Look up a developer profile and their app keys
  */
 
 import { ServiceProvider } from '../provider.js'
@@ -24,12 +28,17 @@ export class IdentityService extends ServiceProvider {
     this.node = null
   }
 
+  /** Lazy access to Identity Protocol Layer (initialized after services start) */
+  get _ipl () {
+    return this.node?.identity || null
+  }
+
   manifest () {
     return {
       name: 'identity',
-      version: '1.0.0',
-      description: 'Keypair identity management and peer verification',
-      capabilities: ['whoami', 'verify', 'sign', 'resolve', 'peers']
+      version: '1.1.0',
+      description: 'Keypair identity management, peer verification, and developer resolution',
+      capabilities: ['whoami', 'verify', 'sign', 'resolve', 'peers', 'developer']
     }
   }
 
@@ -38,11 +47,27 @@ export class IdentityService extends ServiceProvider {
   }
 
   async whoami () {
-    return {
+    const result = {
       pubkey: this.node.publicKey ? b4a.toString(this.node.publicKey, 'hex') : null,
       name: this.node.config.name || null,
       mode: this.node.mode
     }
+
+    // Enrich with developer identity if IPL has an attestation for this node's key
+    if (this._ipl && result.pubkey) {
+      try {
+        const dev = await this._ipl.resolveIdentity(result.pubkey)
+        if (dev && dev.developerKey) {
+          result.developer = {
+            key: dev.developerKey,
+            profile: dev.profile || null,
+            attestedAt: dev.attestation?.timestamp || null
+          }
+        }
+      } catch {}
+    }
+
+    return result
   }
 
   async verify (params) {
@@ -83,10 +108,25 @@ export class IdentityService extends ServiceProvider {
   }
 
   async resolve (params) {
-    // If a username registry is wired up, resolve pubkey -> name
-    // For now, return what we know from connected peers
     const { pubkey } = params
 
+    // Try IPL attestation resolution first
+    if (this._ipl) {
+      try {
+        const dev = await this._ipl.resolveIdentity(pubkey)
+        if (dev && dev.developerKey) {
+          return {
+            pubkey,
+            name: dev.profile?.displayName || dev.profile?.name || null,
+            developerKey: dev.developerKey,
+            source: 'attestation',
+            profile: dev.profile || null
+          }
+        }
+      } catch {}
+    }
+
+    // Fall back to device allowlist
     if (this.node.accessControl) {
       const devices = this.node.listDevices()
       const device = devices.find(d => d.pubkey === pubkey)
@@ -110,5 +150,25 @@ export class IdentityService extends ServiceProvider {
       pubkey: c.remotePubkey || c.remotePubKey || null,
       type: c.type || 'hyperswarm'
     }))
+  }
+
+  async developer (params) {
+    if (!this._ipl) {
+      return { error: 'Identity protocol not available' }
+    }
+
+    const { key } = params
+    if (!key) {
+      throw new Error('MISSING_PARAM: developer key is required')
+    }
+
+    const profile = await this._ipl.developers.getProfile(key)
+    const apps = this._ipl.attestation.getDeveloperApps(key)
+
+    return {
+      developerKey: key,
+      profile,
+      apps
+    }
   }
 }

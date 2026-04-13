@@ -252,6 +252,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
     <thead>
       <tr>
         <th data-col="name">Name <span class="sort-arrow"></span></th>
+        <th data-col="developer">Developer <span class="sort-arrow"></span></th>
         <th data-col="key">App Key <span class="sort-arrow"></span></th>
         <th data-col="started">Started <span class="sort-arrow"></span></th>
         <th data-col="uptime">Uptime <span class="sort-arrow"></span></th>
@@ -315,7 +316,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
     <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);margin-bottom:.5rem">Active Seeds</div>
     <table style="width:100%">
       <thead><tr>
-        <th>Name</th><th>App Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
+        <th>Name</th><th>Developer</th><th>App Key</th><th>Uptime</th><th>Served</th><th>Actions</th>
       </tr></thead>
       <tbody id="seedsBody"><tr><td colspan="5" class="empty-state">No apps seeded</td></tr></tbody>
     </table>
@@ -328,18 +329,28 @@ tr:hover td{background:rgba(0,170,255,.03)}
 <script>
 /* ===== Catalog Name Lookup ===== */
 var catalogNames = {}; // appKey -> display name
+var catalogDevs = {}; // appKey -> { pubkey, displayName, avatar }
 
 function fetchCatalogNames() {
   fetch('/catalog.json').then(function(r) { return r.json(); }).then(function(data) {
     if (data.apps && Array.isArray(data.apps)) {
       data.apps.forEach(function(app) {
         if (app.driveKey && app.name) catalogNames[app.driveKey] = app.name;
+        if (app.driveKey && app.developer) catalogDevs[app.driveKey] = app.developer;
       });
       // Re-render tables with names
       renderAppsTable();
       if (window._lastSeedApps) renderSeeds(window._lastSeedApps);
     }
   }).catch(function() {});
+}
+
+function renderDev(appKey) {
+  var dev = catalogDevs[appKey];
+  if (!dev) return '<span style="color:var(--text-dim);font-style:italic;font-size:.75rem">unlinked</span>';
+  var avatar = dev.avatar ? '<img src="' + dev.avatar + '" style="width:16px;height:16px;border-radius:50%;vertical-align:middle;margin-right:4px" onerror="this.style.display=\'none\'">' : '';
+  var name = dev.displayName || dev.pubkey.slice(0, 8) + '...';
+  return avatar + '<span style="color:var(--cyan);font-size:.8rem">' + name + '</span>';
 }
 
 /* ===== Helpers ===== */
@@ -523,7 +534,7 @@ function sortApps(col) {
 function renderAppsTable() {
   var tbody = document.getElementById('appsBody');
   if (!currentApps.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No apps seeded yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No apps seeded yet</td></tr>';
     return;
   }
   tbody.innerHTML = currentApps.map(function(app) {
@@ -532,6 +543,7 @@ function renderAppsTable() {
     var name = catalogNames[appKey] || app.appId || appKey.slice(0, 12);
     return '<tr>' +
       '<td style="color:var(--text-bright);font-weight:500">' + name + '</td>' +
+      '<td>' + renderDev(appKey) + '</td>' +
       '<td>' + truncateKey(appKey) + '</td>' +
       '<td>' + (app.started ? formatTime(app.started) : '--') + '</td>' +
       '<td>' + formatUptime(uptime) + '</td>' +
@@ -871,7 +883,7 @@ function renderSeeds(apps) {
   window._lastSeedApps = apps;
   var tbody = document.getElementById('seedsBody');
   if (!apps || !apps.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No apps seeded</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No apps seeded</td></tr>';
     return;
   }
   tbody.innerHTML = apps.map(function(app) {
@@ -879,6 +891,7 @@ function renderSeeds(apps) {
     var name = catalogNames[app.appKey] || app.appId || app.appKey.slice(0, 12);
     return '<tr>' +
       '<td style="color:var(--text-bright);font-weight:500">' + name + '</td>' +
+      '<td>' + renderDev(app.appKey) + '</td>' +
       '<td>' + truncateKey(app.appKey) + '</td>' +
       '<td>' + formatUptime(uptime) + '</td>' +
       '<td>' + formatBytes(app.bytesServed || 0) + '</td>' +

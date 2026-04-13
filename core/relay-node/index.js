@@ -20,6 +20,7 @@ import { ProofOfRelay } from '../protocol/proof-of-relay.js'
 import { BandwidthReceipt } from '../protocol/bandwidth-receipt.js'
 import { ReputationSystem } from '../../incentive/reputation/index.js'
 import { NetworkDiscovery } from '../network-discovery.js'
+import { CatalogSync } from '../catalog-sync.js'
 import { HealthMonitor } from './health-monitor.js'
 import { SelfHeal } from './self-heal.js'
 import { SeedingRegistry } from '../registry/index.js'
@@ -36,6 +37,7 @@ import { FreeTierManager } from '../../incentive/free-tier/index.js'
 import { CreditManager } from '../../incentive/credits/index.js'
 import { PricingEngine } from '../../incentive/credits/pricing.js'
 import { InvoiceManager } from '../../incentive/credits/invoice.js'
+import { IdentityProtocol } from '../identity/index.js'
 import vm from 'node:vm'
 
 // Well-known discovery topic — clients join this to find relay nodes
@@ -189,6 +191,7 @@ export class RelayNode extends EventEmitter {
     this._reputationDecayInterval = null
     this._reputationSaveInterval = null
     this.networkDiscovery = null
+    this.catalogSync = null
     this.healthMonitor = null
     this.selfHeal = null
     this.seedingRegistry = null
@@ -662,6 +665,19 @@ export class RelayNode extends EventEmitter {
           rateCard: Object.keys(this.pricingEngine.rates).length
         })
 
+        // ─── Identity Protocol Layer ───
+        const identityStoragePath = this.config.storage
+          ? join(this.config.storage, 'identity')
+          : null
+        this.identity = new IdentityProtocol({
+          storagePath: identityStoragePath,
+          domain: this.config.domain || this.config.hostname || 'localhost',
+          nostrRelays: this.config.identity?.nostrRelays,
+          sessionTtl: this.config.identity?.sessionTtl
+        })
+        await this.identity.load()
+        this.emit('identity-ready', this.identity.stats())
+
         // ─── Application-Layer Router ───
         if (this.config.enableRouter !== false) {
           this.router = new Router({
@@ -669,6 +685,11 @@ export class RelayNode extends EventEmitter {
             workers: this.config.routerWorkers ?? 0
           })
           this.router.registerFromRegistry(this.serviceRegistry)
+
+          // Identity enrichment middleware — resolves developer from app key
+          if (this.identity) {
+            this.router.addMiddleware(this.identity.middleware())
+          }
 
           // Metering + quota + credit deduction middleware
           const meter = this.serviceMeter
@@ -687,14 +708,26 @@ export class RelayNode extends EventEmitter {
             // Calculate cost for this call
             const price = pricing.calculate(route, params)
 
-            // Deduct credits if the app has a wallet and the route costs something
-            if (price.cost > 0 && credits.getBalance(appKey) > 0) {
-              const result = credits.deduct(appKey, price.cost, route, {
-                inputTokens: params.inputTokens,
-                outputTokens: params.outputTokens
-              })
-              if (!result.success) {
-                // Fall through to free tier — don't block, just don't charge
+            // Deduct credits: try app wallet first, then developer wallet
+            if (price.cost > 0) {
+              let charged = false
+              if (credits.getBalance(appKey) > 0) {
+                const result = credits.deduct(appKey, price.cost, route, {
+                  inputTokens: params.inputTokens,
+                  outputTokens: params.outputTokens
+                })
+                if (result.success) charged = true
+              }
+              // Fall back to developer wallet (credits shared across all their apps)
+              if (!charged && context.developerKey) {
+                const devBalance = credits.getBalance(context.developerKey)
+                if (devBalance > 0) {
+                  credits.deduct(context.developerKey, price.cost, route, {
+                    inputTokens: params.inputTokens,
+                    outputTokens: params.outputTokens,
+                    onBehalfOf: appKey
+                  })
+                }
               }
             }
 
@@ -783,6 +816,22 @@ export class RelayNode extends EventEmitter {
       this.networkDiscovery.start().catch(err => {
         this.emit('network-discovery-error', { error: err.message })
       })
+
+      // Start catalog sync — auto-replicate apps from peer relays
+      const syncConfig = this.config.catalogSync || {}
+      this.catalogSync = new CatalogSync({
+        node: this,
+        discovery: this.networkDiscovery,
+        enabled: syncConfig.enabled !== false,
+        syncInterval: syncConfig.syncInterval,
+        maxStoragePercent: syncConfig.maxStoragePercent,
+        allowlist: syncConfig.allowlist,
+        blocklist: syncConfig.blocklist,
+        blindApps: syncConfig.blindApps
+      })
+      this.catalogSync.on('app-synced', (info) => this.emit('catalog-synced', info))
+      this.catalogSync.on('sync-error', (err) => this.emit('catalog-sync-error', { error: err.message }))
+      this.catalogSync.start()
 
       this.running = true
 
@@ -1886,6 +1935,7 @@ export class RelayNode extends EventEmitter {
     }
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
     if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (err) { this.emit('stop-error', { component: 'seedingRegistry', error: err.message }) } this.seedingRegistry = null }
+    if (this.catalogSync) { try { await this.catalogSync.stop() } catch (err) { this.emit('stop-error', { component: 'catalogSync', error: err.message }) } this.catalogSync = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'networkDiscovery', error: err.message }) } this.networkDiscovery = null }
     if (this.relayTunnel) { try { await this.relayTunnel.stop() } catch (err) { this.emit('stop-error', { component: 'relayTunnel', error: err.message }) } this.relayTunnel = null }
     if (this.mdnsDiscovery) { try { await this.mdnsDiscovery.stop() } catch (err) { this.emit('stop-error', { component: 'mdnsDiscovery', error: err.message }) } this.mdnsDiscovery = null }

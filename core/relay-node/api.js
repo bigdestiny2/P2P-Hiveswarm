@@ -400,6 +400,17 @@ export class RelayAPI extends EventEmitter {
           } catch {}
         }
 
+        // Enrich with developer identity if IPL is available
+        if (this.node.identity) {
+          for (const [appKey, entry] of appMap) {
+            const devKey = this.node.identity.attestation.appKeyIndex.get(appKey)
+            if (devKey) {
+              const profile = await this.node.identity.developerStore.getCompactProfile(devKey)
+              entry.developer = { pubkey: devKey, ...profile }
+            }
+          }
+        }
+
         // Apply pagination
         const allApps = Array.from(appMap.values())
         const total = allApps.length
@@ -1369,6 +1380,189 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
         return this._json(res, this.node.router.getStats())
+      }
+
+      // ─── Identity Protocol ───
+      if (path.startsWith('/api/v1/identity/')) {
+        // GET /api/v1/identity/stats — identity system stats
+        if (req.method === 'GET' && path === '/api/v1/identity/stats') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          return this._json(res, this.node.identity.stats())
+        }
+
+        // GET /api/v1/identity/developers — list all registered developers
+        if (req.method === 'GET' && path === '/api/v1/identity/developers') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const devs = []
+          for (const [devKey, dev] of this.node.identity.attestation.developers) {
+            const profile = await this.node.identity.developerStore.getCompactProfile(devKey)
+            devs.push({
+              pubkey: devKey,
+              appKeys: Array.from(dev.appKeys.keys()),
+              registeredAt: dev.registeredAt,
+              lastSeen: dev.lastSeen,
+              profile
+            })
+          }
+          return this._json(res, { developers: devs, count: devs.length })
+        }
+
+        // GET /api/v1/identity/resolve/:appKey — resolve app key to developer
+        if (req.method === 'GET' && path.startsWith('/api/v1/identity/resolve/')) {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const appKey = path.split('/').pop()
+          const result = await this.node.identity.resolveIdentity(appKey)
+          return this._json(res, result)
+        }
+
+        // GET /api/v1/identity/developer/:devKey — developer detail
+        if (req.method === 'GET' && path.startsWith('/api/v1/identity/developer/')) {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const devKey = path.split('/').pop()
+          const dev = this.node.identity.attestation.developers.get(devKey)
+          if (!dev) return this._json(res, { error: 'Developer not found' }, 404)
+          const profile = await this.node.identity.developerStore.getProfile(devKey)
+          return this._json(res, {
+            pubkey: devKey,
+            appKeys: Array.from(dev.appKeys.keys()),
+            registeredAt: dev.registeredAt,
+            lastSeen: dev.lastSeen,
+            profile
+          })
+        }
+
+        // GET /api/v1/identity/lnurl-auth — generate LNURL-auth challenge
+        if (req.method === 'GET' && path === '/api/v1/identity/lnurl-auth') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const challenge = this.node.identity.lnurlAuth.createChallenge()
+          return this._json(res, challenge)
+        }
+
+        // GET /api/v1/identity/lnurl-auth/callback — wallet callback (LUD-04)
+        if (req.method === 'GET' && path === '/api/v1/identity/lnurl-auth/callback') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const k1 = url.searchParams.get('k1')
+          const sig = url.searchParams.get('sig')
+          const key = url.searchParams.get('key')
+          if (!k1 || !sig || !key) {
+            return this._json(res, { status: 'ERROR', reason: 'Missing k1, sig, or key' })
+          }
+          const result = this.node.identity.lnurlAuth.verifyCallback(k1, sig, key)
+          if (result.success) {
+            const session = this.node.identity.developerStore.createSession(key)
+            return this._json(res, { status: 'OK', session: session.token })
+          }
+          return this._json(res, { status: 'ERROR', reason: result.error })
+        }
+
+        // GET /api/v1/identity/lnurl-auth/poll/:k1 — poll challenge status
+        if (req.method === 'GET' && path.startsWith('/api/v1/identity/lnurl-auth/poll/')) {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const k1 = path.split('/').pop()
+          const challenge = this.node.identity.lnurlAuth.challenges.get(k1)
+          if (!challenge) return this._json(res, { status: 'unknown' })
+          return this._json(res, {
+            status: challenge.verified ? 'verified' : 'pending',
+            pubkey: challenge.pubkey || null
+          })
+        }
+
+        // POST /api/v1/identity/attest — submit attestation
+        if (req.method === 'POST' && path === '/api/v1/identity/attest') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const body = await this._readBody(req)
+          const result = await this.node.identity.attestation.submitAttestation(body)
+          if (result.success) {
+            return this._json(res, { success: true, developer: result.developer })
+          }
+          return this._json(res, { error: result.error }, 400)
+        }
+
+        // POST /api/v1/identity/revoke — revoke attestation
+        if (req.method === 'POST' && path === '/api/v1/identity/revoke') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const body = await this._readBody(req)
+          const result = this.node.identity.attestation.revokeAttestation(body.appKey, body.developerKey)
+          return this._json(res, result)
+        }
+
+        // POST /api/v1/identity/profile — set developer profile manually
+        if (req.method === 'POST' && path === '/api/v1/identity/profile') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const developerKey = this.node.identity.authenticateRequest(req)
+          if (!developerKey) return this._json(res, { error: 'Authentication required' }, 401)
+          const body = await this._readBody(req)
+          this.node.identity.developerStore.setProfile(developerKey, body)
+          return this._json(res, { success: true })
+        }
+
+        // GET /api/v1/identity/session — validate session
+        if (req.method === 'GET' && path === '/api/v1/identity/session') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const developerKey = this.node.identity.authenticateRequest(req)
+          if (!developerKey) return this._json(res, { error: 'No valid session' }, 401)
+          const profile = await this.node.identity.developerStore.getCompactProfile(developerKey)
+          return this._json(res, { authenticated: true, devKey: developerKey, profile })
+        }
+
+        // POST /api/v1/identity/logout — destroy session
+        if (req.method === 'POST' && path === '/api/v1/identity/logout') {
+          if (!this.node.identity) {
+            return this._json(res, { error: 'Identity system not enabled' }, 503)
+          }
+          const token = (req.headers.authorization || '').replace('Bearer ', '')
+          if (token) this.node.identity.developerStore.destroySession(token)
+          return this._json(res, { success: true })
+        }
+
+        return this._json(res, { error: 'Unknown identity endpoint' }, 404)
+      }
+
+      // ─── Catalog Sync ───
+      if (path.startsWith('/api/v1/sync')) {
+        // GET /api/v1/sync — sync status and stats
+        if (req.method === 'GET' && path === '/api/v1/sync') {
+          if (!this.node.catalogSync) {
+            return this._json(res, { error: 'Catalog sync not enabled' }, 503)
+          }
+          return this._json(res, this.node.catalogSync.getStats())
+        }
+
+        // POST /api/v1/sync/trigger — force immediate sync
+        if (req.method === 'POST' && path === '/api/v1/sync/trigger') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!this.node.catalogSync) {
+            return this._json(res, { error: 'Catalog sync not enabled' }, 503)
+          }
+          await this.node.catalogSync.syncNow()
+          return this._json(res, { success: true, stats: this.node.catalogSync.getStats() })
+        }
+
+        return this._json(res, { error: 'Unknown sync endpoint' }, 404)
       }
 
       // ─── Service Catalog ───
