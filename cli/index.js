@@ -207,6 +207,17 @@ async function start () {
     }
   }
 
+  // ─── Holesail transport ───
+  if (args.holesail) {
+    if (!cliOverrides.transports) cliOverrides.transports = {}
+    cliOverrides.transports.holesail = true
+    if (!cliOverrides.holesail) cliOverrides.holesail = {}
+    if (args['holesail-port']) cliOverrides.holesail.port = parseInt(args['holesail-port'])
+    if (args['holesail-seed']) cliOverrides.holesail.seed = args['holesail-seed']
+    if (args['holesail-secure']) cliOverrides.holesail.secure = true
+    if (args['holesail-connector']) cliOverrides.holesail.connectorMode = true
+  }
+
   // ─── AI / Ollama ───
   if (args.ai) {
     const models = args['ai-model']
@@ -264,6 +275,13 @@ async function start () {
   node.on('tor-ready', ({ onionAddress }) => {
     log.info({ onionAddress }, 'tor hidden service active')
     console.log(`  Onion:      ${onionAddress}`)
+  })
+
+  node.on('holesail-ready', (info) => {
+    log.info({ connectionKey: info.connectionKey, mode: info.mode }, 'holesail transport active')
+    console.log(`  Holesail:   ${info.connectionUrl}`)
+    console.log(`  Mode:       ${info.mode} (${info.secure ? 'secure' : 'public'})`)
+    console.log()
   })
 
   node.on('connection', ({ remotePubKey }) => {
@@ -665,6 +683,11 @@ Start Options:
   --tor [password]               Enable Tor hidden service transport
   --tor-socks-port <n>           Tor SOCKS5 port (default: 9050)
   --tor-control-port <n>         Tor control port (default: 9051)
+  --holesail                     Enable Holesail tunnel transport
+  --holesail-port <n>            Local port to tunnel (default: API port)
+  --holesail-seed <hex>          Deterministic seed for stable connection key
+  --holesail-secure              Enable secure (private) mode
+  --holesail-connector           Connector mode (raw streams for P2P protocols)
   --quiet                       Suppress periodic status output
 
 Testnet Options:

@@ -731,7 +731,7 @@ curl https://relay-us.p2p-hiverelay.xyz/catalog.json?page=1&pageSize=50
 - **UDP (HyperDHT)** — Default, always on
 - **WebSocket** — Browser peer support via duplex stream adapter
 - **Tor** — SOCKS5 proxy + hidden service for IP privacy and censorship resistance
-- **I2P** — Garlic routing for anonymity (Phase 2 — not yet implemented)
+- **Holesail** — TCP/UDP tunnel transport over Hyperswarm for NAT traversal and port forwarding
 
 ### Production Ready
 - **Structured logging** — JSON logs via pino, configurable via `HIVERELAY_LOG_LEVEL`
@@ -896,7 +896,7 @@ All options in `config/default.js`:
   enableMetrics: true,
 
   // Transports
-  transports: { udp: true, websocket: false, tor: false, i2p: false },
+  transports: { udp: true, websocket: false, tor: false, holesail: false },
   wsPort: 8765,
 
   // Tor (when transports.tor = true)
@@ -962,7 +962,6 @@ Environment variables:
 - Arbitration governance refinement (staking, appeal mechanism)
 
 **Phase 4: Scale**
-- I2P transport
 - Cross-region relay routing
 - Predictive load balancing (historical data-driven routing)
 - Distributed tracing (OpenTelemetry integration)

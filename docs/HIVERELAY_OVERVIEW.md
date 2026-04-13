@@ -367,7 +367,6 @@ The following are fully implemented and tested (201 unit tests passing):
 - Proof-of-Contribution reward halving schedule
 
 **Phase 5: Scale**
-- I2P transport for garlic-routed anonymity
 - Cross-region relay routing with geographic optimization
 - Predictive load balancing from historical performance data
 - Governance mechanism for protocol parameter changes
@@ -449,7 +448,7 @@ A decentralized network with no nodes has no value. The following strategies boo
 | Tor Transport | Hidden service inbound + SOCKS5 outbound | Production |
 | WebSocket Transport | Browser peer connectivity | Production |
 | Lightning Payments | LND gRPC integration | Phase 2 |
-| I2P Transport | SAM bridge connectivity | Phase 2 |
+| Holesail Transport | TCP/UDP tunneling over Hyperswarm | Production |
 | OpenAPI Specification | Formal router dispatch contract | Phase 3 |
 
 ### Codebase

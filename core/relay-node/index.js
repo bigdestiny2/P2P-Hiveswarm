@@ -12,6 +12,7 @@ import { Metrics } from './metrics.js'
 import { RelayAPI } from './api.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
 import { TorTransport } from '../../transports/tor/index.js'
+import { HolesailTransport } from '../../transports/holesail/index.js'
 import { BootstrapCache } from '../bootstrap-cache.js'
 import { SeedProtocol } from '../protocol/seed-request.js'
 import { CircuitRelay } from '../protocol/relay-circuit.js'
@@ -460,6 +461,29 @@ export class RelayNode extends EventEmitter {
           this.emit('tor-ready', { onionAddress })
         })
         await this.torTransport.start()
+      }
+
+      if (this.config.transports && this.config.transports.holesail) {
+        const holesailOpts = this.config.holesail || {}
+        this.holesailTransport = new HolesailTransport({
+          port: holesailOpts.port || this.config.apiPort || 9100,
+          host: holesailOpts.host || '127.0.0.1',
+          seed: holesailOpts.seed || null,
+          secure: holesailOpts.secure || false,
+          udp: holesailOpts.udp || false,
+          connectorMode: holesailOpts.connectorMode || false,
+          maxConnections: this.config.maxConnections
+        })
+
+        if (holesailOpts.connectorMode) {
+          this.holesailTransport.on('connection', (stream, info) => this._onConnection(stream, info))
+        }
+
+        this.holesailTransport.on('started', (info) => {
+          this.emit('holesail-ready', info)
+        })
+
+        await this.holesailTransport.start()
       }
 
       if (this.config.payment && this.config.payment.enabled) {
@@ -1769,6 +1793,12 @@ export class RelayNode extends EventEmitter {
         this.emit('stop-error', { component: 'wsTransport', error: err.message })
       }
       this.wsTransport = null
+    }
+    if (this.holesailTransport) {
+      try { await withTimeout(this.holesailTransport.stop(), timeout, 'holesailTransport.stop') } catch (err) {
+        this.emit('stop-error', { component: 'holesailTransport', error: err.message })
+      }
+      this.holesailTransport = null
     }
     if (this.api) {
       try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch (err) {

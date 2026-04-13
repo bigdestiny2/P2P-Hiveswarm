@@ -116,7 +116,7 @@ npm start
 │  Kademlia DHT + Noise_XX encryption                         │
 ├─────────────────────────────────────────────────────────────┤
 │  TRANSPORTS                                                 │
-│  UDP (default) │ WebSocket │ Tor        │ I2P (stub)        │
+│  UDP (default) │ WebSocket │ Tor        │ Holesail          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -202,8 +202,8 @@ hiverelay/
 │   │   └── stream.js             # WebSocketStream — Duplex adapter for Protomux
 │   ├── tor/
 │   │   └── index.js              # TorTransport (hidden service + SOCKS5 proxy)
-│   └── i2p/
-│       └── index.js              # I2PTransport stub (SAM bridge, Phase 2+)
+│   └── holesail/
+│       └── index.js              # HolesailTransport (TCP/UDP tunneling over Hyperswarm)
 ├── platform/                         # Privacy platform APIs
 │   ├── index.js                      # Exports all platform primitives
 │   ├── crypto.js                     # XChaCha20-Poly1305 encrypt/decrypt, BLAKE2b hash
@@ -1258,11 +1258,11 @@ await tor.stop()
 - `TorStream` Duplex adapter wraps SOCKS5 sockets for Protomux compatibility
 - Automatic connection tracking and cleanup
 
-### 9.4 I2P Transport (Stub)
+### 9.4 Holesail Transport
 
-**File:** `transports/i2p/index.js` (51 lines)
+**File:** `transports/holesail/index.js`
 
-SAM bridge integration for garlic routing. Phase 2+ — currently a stub.
+TCP/UDP tunneling over Hyperswarm. Enables relay services to be exposed through NAT-traversing tunnels — any local port can be made accessible to peers on the network without port forwarding or static IPs. Built on the Holesail library which uses Hyperswarm for hole-punching.
 
 ---
 
@@ -1592,8 +1592,8 @@ The CLI supports human-readable byte sizes: `B`, `KB`, `MB`, `GB`, `TB` (case-in
   transports: {
     udp: true,       // Always on (HyperDHT)
     tor: false,
-    i2p: false,
-    websocket: false
+    websocket: false,
+    holesail: false
   },
   wsPort: 8765,
 

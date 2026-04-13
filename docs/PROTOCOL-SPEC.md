@@ -71,7 +71,7 @@ HiveRelay operates over Hyperswarm, which uses HyperDHT (a Kademlia-based DHT) f
 |---|---|---|
 | Tor | Implemented | Hidden service + SOCKS5 proxy for censorship resistance |
 | WebSocket | Implemented | Browser peer support via Duplex stream adapter |
-| I2P | Planned | Garlic routing for P2P-native anonymity |
+| Holesail | Implemented | TCP/UDP tunneling over Hyperswarm for NAT traversal |
 
 Optional transports are negotiated at the Hyperswarm layer and are transparent to the HiveRelay protocol.
 
@@ -608,7 +608,7 @@ The circuit relay forwards opaque bytes. The relay:
 - CAN observe the total byte count and duration of each circuit.
 - CAN observe the public keys of the two connected peers.
 
-For stronger anonymity, peers can use the optional Tor or I2P transports, which hide the IP addresses of participants from the relay.
+For stronger anonymity, peers can use the optional Tor transport, which hides the IP addresses of participants from the relay.
 
 ### 13.5 Relay Verification
 
@@ -734,7 +734,7 @@ Data stored via `platform/storage.js` is encrypted with XChaCha20-Poly1305 (AEAD
 | `metricsPort` | 9100 | Prometheus scrape port |
 | `transports.udp` | `true` | UDP transport (always on) |
 | `transports.tor` | `false` | Tor hidden service transport |
-| `transports.i2p` | `false` | I2P garlic routing transport |
+| `transports.holesail` | `false` | Holesail tunnel transport for NAT traversal |
 | `transports.websocket` | `false` | WebSocket transport for browsers |
 
 ---

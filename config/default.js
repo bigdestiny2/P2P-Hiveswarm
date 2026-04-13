@@ -57,8 +57,8 @@ export default {
   transports: {
     udp: true, // Always on (HyperDHT default)
     tor: false,
-    i2p: false,
-    websocket: false
+    websocket: false,
+    holesail: false
   },
   wsPort: 8765,
 
