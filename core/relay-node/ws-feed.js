@@ -182,7 +182,20 @@ export class DashboardFeed {
         bandwidth: node._bandwidthReceipt ? {
           totalProvenBytes: node._bandwidthReceipt.getTotalProvenBandwidth(),
           receiptsIssued: node._bandwidthReceipt._issuedReceipts ? node._bandwidthReceipt._issuedReceipts.length : 0
-        } : null
+        } : null,
+        credits: node.creditManager ? node.creditManager.stats() : null,
+        metering: node.serviceMeter ? node.serviceMeter.stats() : null,
+        invoices: node.invoiceManager ? node.invoiceManager.stats() : null,
+        payment: node.paymentManager
+          ? (() => {
+              const accounts = []
+              for (const [pubkey] of node.paymentManager.accounts) {
+                accounts.push(node.paymentManager.getAccountSummary(pubkey))
+              }
+              return { accounts, provider: node.paymentManager.paymentProvider?.constructor.name || 'none' }
+            })()
+          : null,
+        holesail: node.holesailTransport ? node.holesailTransport.getInfo() : null
       },
       dashboardClients: this.clientCount
     }

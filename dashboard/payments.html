@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveRelay - Payments & Credits</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2358a6ff'/%3E%3Cstop offset='100%25' stop-color='%233fb950'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5' fill='url(%23g)' opacity='.9'/%3E%3Cpolygon points='27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5' fill='url(%23g)' opacity='.7'/%3E%3Cpolygon points='73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5' fill='url(%23g)' opacity='.7'/%3E%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;--card:#16213e;--card-border:#1e2d50;
+  --green:#0f0;--orange:#f90;--cyan:#0af;--red:#f44;--purple:#bc8cff;--yellow:#ffd700;
+  --text:#e0e0e0;--text-dim:#7a8ba0;--text-bright:#fff;
+  --mono:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:1rem}
+
+.topbar{
+  background:var(--card);border-bottom:1px solid var(--card-border);
+  padding:1rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
+  position:sticky;top:0;z-index:100;margin:-1rem -1rem 1.5rem -1rem;
+}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
+.hive-logo{width:32px;height:32px;flex-shrink:0}
+.topbar h1{font-size:1.2rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-nav{display:flex;gap:.25rem;margin-left:1.5rem}
+.topbar-nav a{
+  font-size:.8rem;color:var(--text-dim);text-decoration:none;
+  padding:.35rem .75rem;border-radius:6px;transition:color .2s,background .2s;
+}
+.topbar-nav a:hover{color:var(--text-bright);background:rgba(255,255,255,.05)}
+.topbar-nav a.active{color:var(--orange);background:rgba(255,153,0,.1)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:1rem}
+
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem}
+.stat-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;transition:border-color .2s;
+}
+.stat-card:hover{border-color:var(--cyan)}
+.stat-label{font-size:.7rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:.5rem}
+.stat-value{font-size:2rem;font-weight:700;font-family:var(--mono);color:var(--text-bright);line-height:1}
+.stat-sub{font-size:.7rem;color:var(--text-dim);margin-top:.4rem;font-family:var(--mono)}
+.stat-value.cyan{color:var(--cyan)}
+.stat-value.green{color:var(--green)}
+.stat-value.orange{color:var(--orange)}
+.stat-value.purple{color:var(--purple)}
+.stat-value.yellow{color:var(--yellow)}
+
+.section-title{
+  font-size:.8rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);
+  margin:2rem 0 1rem;padding-bottom:.5rem;border-bottom:1px solid var(--card-border);
+}
+
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+
+.card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;
+}
+.card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem}
+
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{
+  text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--card-border);
+  color:var(--text-dim);font-weight:500;white-space:nowrap;font-size:.72rem;
+  text-transform:uppercase;letter-spacing:.8px;
+}
+td{padding:.5rem .8rem;border-bottom:1px solid rgba(30,45,80,.5);font-family:var(--mono);font-size:.78rem}
+tr:hover td{background:rgba(0,170,255,.03)}
+.empty-state{text-align:center;padding:2rem;color:var(--text-dim);font-style:italic}
+
+.rate-row{display:flex;justify-content:space-between;align-items:center;padding:.5rem 0;border-bottom:1px solid rgba(30,45,80,.3)}
+.rate-row:last-child{border-bottom:none}
+.rate-name{font-size:.82rem;color:var(--text)}
+.rate-price{font-family:var(--mono);font-size:.82rem;color:var(--yellow)}
+.rate-desc{font-size:.7rem;color:var(--text-dim)}
+.rate-free{color:var(--green)}
+
+.badge{
+  display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;
+  font-family:var(--mono);font-weight:600;
+}
+.badge-settled{background:rgba(0,255,0,.1);color:var(--green);border:1px solid rgba(0,255,0,.25)}
+.badge-pending{background:rgba(255,153,0,.1);color:var(--orange);border:1px solid rgba(255,153,0,.25)}
+.badge-expired{background:rgba(255,68,68,.1);color:var(--red);border:1px solid rgba(255,68,68,.25)}
+.badge-cancelled{background:rgba(120,120,120,.1);color:var(--text-dim);border:1px solid rgba(120,120,120,.25)}
+.badge-free{background:rgba(0,255,0,.1);color:var(--green);border:1px solid rgba(0,255,0,.25)}
+.badge-standard{background:rgba(0,170,255,.1);color:var(--cyan);border:1px solid rgba(0,170,255,.25)}
+.badge-unlimited{background:rgba(188,140,255,.1);color:var(--purple);border:1px solid rgba(188,140,255,.25)}
+
+.progress-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:.3rem}
+.progress-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.progress-fill.green{background:linear-gradient(90deg,#0a0,#0f0)}
+.progress-fill.cyan{background:linear-gradient(90deg,#08a,#0af)}
+.progress-fill.orange{background:linear-gradient(90deg,#c70,#f90)}
+
+.conn-status{
+  position:fixed;bottom:1rem;right:1rem;padding:.35rem .7rem;border-radius:6px;
+  font-size:.7rem;font-family:var(--mono);z-index:100;
+  background:rgba(0,255,0,.1);color:var(--green);border:1px solid rgba(0,255,0,.2);
+}
+.conn-status.error{background:rgba(255,68,68,.1);color:var(--red);border-color:rgba(255,68,68,.2)}
+
+.compare-table td:nth-child(2){color:var(--yellow);font-weight:600}
+.compare-table td:nth-child(3),.compare-table td:nth-child(4){color:var(--text-dim)}
+.savings{font-size:.7rem;color:var(--green);font-style:italic}
+
+@media(max-width:900px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .grid-2,.grid-3{grid-template-columns:1fr}
+}
+@media(max-width:500px){
+  .stats-row{grid-template-columns:1fr}
+  .stat-value{font-size:1.6rem}
+  .topbar{flex-direction:column;align-items:flex-start;padding:1rem}
+  .topbar-nav{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <a href="/dashboard" class="topbar-logo">
+    <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0af"/><stop offset="100%" stop-color="#0f0"/></linearGradient></defs>
+      <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
+      <polygon points="26,50 50,64 50,92 26,106 2,92 2,64" fill="url(#hg)" opacity=".7"/>
+      <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
+    </svg>
+    <h1>Payments & Credits</h1>
+  </a>
+  <nav class="topbar-nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/payments" class="active">Payments</a>
+    <a href="/network">Network</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/docs">Docs</a>
+  </nav>
+  <div class="topbar-right">
+    <span style="font-size:.75rem;color:var(--text-dim);font-family:var(--mono)" id="providerBadge">--</span>
+  </div>
+</div>
+
+<!-- Free-First Banner -->
+<div class="card" style="margin-bottom:1.5rem;border-color:rgba(0,255,0,.3);background:linear-gradient(135deg,rgba(0,255,0,.03),rgba(0,170,255,.03))">
+  <div style="display:flex;align-items:flex-start;gap:1rem">
+    <div style="font-size:1.8rem;line-height:1;flex-shrink:0;padding-top:.1rem">&#9889;</div>
+    <div>
+      <div style="font-size:.95rem;font-weight:600;color:var(--green);margin-bottom:.4rem">Everything Starts Free</div>
+      <div style="font-size:.82rem;color:var(--text);line-height:1.5">
+        All services operate on a <strong style="color:var(--green)">generous free tier</strong> — no payment required.
+        Every new app wallet automatically receives <strong style="color:var(--yellow)">1,000 free credits</strong>.
+        Relay operators also get 1k credits when their node starts.
+        Need more? Contact the relay operator for additional free credits, or top up via Lightning.
+      </div>
+      <div style="font-size:.72rem;color:var(--text-dim);margin-top:.5rem">
+        Free tier: 10k AI calls + 50k embeddings + 200k total calls/month.
+        Credits are only needed to exceed these limits or for priority routing.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Overview Stats -->
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">Total Revenue</div>
+    <div class="stat-value yellow" id="totalRevenue">--</div>
+    <div class="stat-sub">sats earned from services</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Credit Wallets</div>
+    <div class="stat-value cyan" id="totalWallets">--</div>
+    <div class="stat-sub" id="walletBalance">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Service Calls</div>
+    <div class="stat-value green" id="totalCalls">--</div>
+    <div class="stat-sub" id="totalApps">-- apps</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Invoices Settled</div>
+    <div class="stat-value orange" id="invoicesSettled">--</div>
+    <div class="stat-sub" id="invoicePending">-- pending</div>
+  </div>
+</div>
+
+<!-- Revenue & Settlement -->
+<div class="section-title">Relay Operator Earnings</div>
+<div class="grid-2">
+  <div class="card">
+    <h3>Settlement Account</h3>
+    <div id="accountInfo">
+      <div style="display:flex;justify-content:space-between;margin-bottom:.6rem">
+        <span style="font-size:.78rem;color:var(--text-dim)">Total Earned</span>
+        <span style="font-family:var(--mono);font-size:.82rem;color:var(--yellow)" id="accEarned">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:.6rem">
+        <span style="font-size:.78rem;color:var(--text-dim)">Total Paid Out</span>
+        <span style="font-family:var(--mono);font-size:.82rem;color:var(--green)" id="accPaid">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:.6rem">
+        <span style="font-size:.78rem;color:var(--text-dim)">Currently Held</span>
+        <span style="font-family:var(--mono);font-size:.82rem;color:var(--orange)" id="accHeld">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:.6rem">
+        <span style="font-size:.78rem;color:var(--text-dim)">Pending Payout</span>
+        <span style="font-family:var(--mono);font-size:.82rem;color:var(--cyan)" id="accPending">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">
+        <span style="font-size:.78rem;color:var(--text-dim)">Held %</span>
+        <span style="font-family:var(--mono);font-size:.82rem" id="accHeldPct">--</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill orange" id="heldBar" style="width:0"></div></div>
+      <div style="font-size:.68rem;color:var(--text-dim);margin-top:.5rem" id="accTenure">--</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Invoice Status</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-bottom:1rem">
+      <div style="text-align:center;padding:.8rem;background:rgba(0,255,0,.05);border-radius:8px;border:1px solid rgba(0,255,0,.15)">
+        <div style="font-size:1.5rem;font-weight:700;font-family:var(--mono);color:var(--green)" id="invSettled">0</div>
+        <div style="font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Settled</div>
+      </div>
+      <div style="text-align:center;padding:.8rem;background:rgba(255,153,0,.05);border-radius:8px;border:1px solid rgba(255,153,0,.15)">
+        <div style="font-size:1.5rem;font-weight:700;font-family:var(--mono);color:var(--orange)" id="invPending">0</div>
+        <div style="font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Pending</div>
+      </div>
+      <div style="text-align:center;padding:.8rem;background:rgba(255,68,68,.05);border-radius:8px;border:1px solid rgba(255,68,68,.15)">
+        <div style="font-size:1.5rem;font-weight:700;font-family:var(--mono);color:var(--red)" id="invExpired">0</div>
+        <div style="font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Expired</div>
+      </div>
+      <div style="text-align:center;padding:.8rem;background:rgba(120,120,120,.05);border-radius:8px;border:1px solid rgba(120,120,120,.15)">
+        <div style="font-size:1.5rem;font-weight:700;font-family:var(--mono);color:var(--text-dim)" id="invCancelled">0</div>
+        <div style="font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Cancelled</div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between">
+      <span style="font-size:.78rem;color:var(--text-dim)">Total Settled Value</span>
+      <span style="font-family:var(--mono);font-size:.82rem;color:var(--yellow)" id="invTotalSats">--</span>
+    </div>
+  </div>
+</div>
+
+<!-- Pricing -->
+<div class="section-title">Rate Card</div>
+<div class="grid-2">
+  <div class="card">
+    <h3>Service Pricing (sats)</h3>
+    <div id="rateCard">
+      <div class="empty-state">Loading rate card...</div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Price vs Cloud APIs</h3>
+    <table class="compare-table">
+      <thead><tr><th>Service</th><th>HiveRelay</th><th>Claude</th><th>OpenAI</th></tr></thead>
+      <tbody id="compareBody">
+        <tr><td colspan="4" class="empty-state">Loading comparison...</td></tr>
+      </tbody>
+    </table>
+    <div style="margin-top:.8rem;font-size:.7rem;color:var(--text-dim)">
+      Prices per 1K tokens. HiveRelay runs local models at near-zero marginal cost.
+    </div>
+  </div>
+</div>
+
+<!-- Wallets -->
+<div class="section-title">App Credit Wallets</div>
+<div class="card" style="margin-bottom:1.5rem">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem">
+    <h3 style="margin:0">Active Wallets</h3>
+    <span style="font-size:.72rem;color:var(--text-dim);font-family:var(--mono)" id="walletSummary">--</span>
+  </div>
+  <table>
+    <thead><tr>
+      <th>App</th><th>Balance</th><th>Deposited</th><th>Spent</th><th>Bonus</th><th>Tier</th><th>Last Active</th>
+    </tr></thead>
+    <tbody id="walletsBody">
+      <tr><td colspan="7" class="empty-state">No wallets yet. Apps get 1,000 free credits on first connect. Everything works on the free tier.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Connection Status -->
+<div class="conn-status" id="connStatus">LIVE</div>
+
+<script>
+/* ===== Helpers ===== */
+function formatSats(s) {
+  if (s == null || isNaN(s)) return '--';
+  if (s >= 100000000) return (s / 100000000).toFixed(4) + ' BTC';
+  if (s >= 1000000) return (s / 1000000).toFixed(1) + 'M sats';
+  if (s >= 1000) return (s / 1000).toFixed(1) + 'k sats';
+  return s + ' sats';
+}
+
+function formatCount(n) {
+  if (n == null || isNaN(n)) return '--';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toString();
+}
+
+function truncateKey(hex, len) {
+  len = len || 12;
+  if (!hex) return '--';
+  return hex.length > len ? hex.slice(0, len) + '...' : hex;
+}
+
+function timeAgo(ts) {
+  if (!ts) return '--';
+  var diff = Date.now() - ts;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  return Math.floor(diff / 86400000) + 'd ago';
+}
+
+function tierBadge(tier) {
+  if (tier === 'unlimited') return '<span class="badge badge-unlimited">UNLIMITED</span>';
+  if (tier === 'standard') return '<span class="badge badge-standard">STANDARD</span>';
+  return '<span class="badge badge-free">FREE</span>';
+}
+
+/* ===== Update Functions ===== */
+function updatePayments(data) {
+  var o = data.overview || data;
+  var credits = o.credits;
+  var metering = o.metering;
+  var invoices = o.invoices;
+  var payment = o.payment;
+
+  // Provider badge
+  if (payment) {
+    document.getElementById('providerBadge').textContent = 'Provider: ' + (payment.provider || 'none');
+  }
+
+  // Top stats
+  if (metering) {
+    document.getElementById('totalRevenue').textContent = formatSats(metering.totalRevenue || 0);
+    document.getElementById('totalCalls').textContent = formatCount(metering.totalCalls || 0);
+    document.getElementById('totalApps').textContent = (metering.totalApps || 0) + ' apps';
+  }
+  if (credits) {
+    document.getElementById('totalWallets').textContent = credits.totalWallets || 0;
+    document.getElementById('walletBalance').textContent = formatSats(credits.totalBalance || 0) + ' total balance';
+  }
+  if (invoices) {
+    document.getElementById('invoicesSettled').textContent = invoices.settled || 0;
+    document.getElementById('invoicePending').textContent = (invoices.pending || 0) + ' pending';
+    document.getElementById('invSettled').textContent = invoices.settled || 0;
+    document.getElementById('invPending').textContent = invoices.pending || 0;
+    document.getElementById('invExpired').textContent = invoices.expired || 0;
+    document.getElementById('invCancelled').textContent = invoices.cancelled || 0;
+    document.getElementById('invTotalSats').textContent = formatSats(invoices.totalSettledSats || 0);
+  }
+
+  // Settlement account
+  if (payment && payment.accounts && payment.accounts.length > 0) {
+    var acc = payment.accounts[0];
+    document.getElementById('accEarned').textContent = formatSats(acc.totalEarned || 0);
+    document.getElementById('accPaid').textContent = formatSats(acc.totalPaid || 0);
+    document.getElementById('accHeld').textContent = formatSats(acc.currentlyHeld || 0);
+    document.getElementById('accPending').textContent = formatSats(acc.pendingPayout || 0);
+    document.getElementById('accHeldPct').textContent = (acc.heldPercentage || 0) + '%';
+    document.getElementById('heldBar').style.width = (acc.heldPercentage || 0) + '%';
+    document.getElementById('accTenure').textContent = 'Active ' + (acc.monthsActive || 0) + ' months (held % decreases over time)';
+  }
+}
+
+/* ===== Fetch rate card and comparison ===== */
+async function fetchPricing() {
+  try {
+    var results = await Promise.all([
+      fetch('/api/v1/credits/pricing').then(function(r) { return r.json(); }),
+      fetch('/api/v1/credits/pricing/compare').then(function(r) { return r.json(); })
+    ]);
+
+    var rates = results[0];
+    var compare = results[1];
+
+    // Rate card
+    var rateHtml = '';
+    var routes = Object.keys(rates).sort();
+    for (var i = 0; i < routes.length; i++) {
+      var route = routes[i];
+      var rate = rates[route];
+      var priceStr = '';
+      if (rate.perCall === 0 && !rate.perInputToken && !rate.perOutputToken && !rate.perKB && !rate.perMs) {
+        priceStr = '<span class="rate-free">FREE</span>';
+      } else {
+        var parts = [];
+        if (rate.perCall) parts.push(rate.perCall + ' sat/call');
+        if (rate.perInputToken) parts.push((rate.perInputToken * 1000).toFixed(1) + ' sat/1K input');
+        if (rate.perOutputToken) parts.push((rate.perOutputToken * 1000).toFixed(1) + ' sat/1K output');
+        if (rate.perKB) parts.push(rate.perKB + ' sat/KB');
+        if (rate.perMs) parts.push((rate.perMs * 1000).toFixed(1) + ' sat/sec');
+        priceStr = parts.join(' + ');
+      }
+      rateHtml += '<div class="rate-row">' +
+        '<div><div class="rate-name">' + route + '</div><div class="rate-desc">' + (rate.description || '') + '</div></div>' +
+        '<div class="rate-price">' + priceStr + '</div></div>';
+    }
+    document.getElementById('rateCard').innerHTML = rateHtml;
+
+    // Comparison
+    if (compare && compare.services) {
+      var ai = compare.services['ai.infer'];
+      if (ai) {
+        var tbody = document.getElementById('compareBody');
+        tbody.innerHTML =
+          '<tr><td>AI Input (1K tokens)</td><td>' + (ai.hiverelay.per1kInput || 1) + ' sats ($' + (ai.hiverelay.per1kInputUsd || 0).toFixed(4) + ')</td>' +
+          '<td>$' + ai.claude.per1kInputUsd + '</td><td>$' + ai.openai.per1kInputUsd + '</td></tr>' +
+          '<tr><td>AI Output (1K tokens)</td><td>' + (ai.hiverelay.per1kOutput || 2) + ' sats ($' + (ai.hiverelay.per1kOutputUsd || 0).toFixed(4) + ')</td>' +
+          '<td>$' + ai.claude.per1kOutputUsd + '</td><td>$' + ai.openai.per1kOutputUsd + '</td></tr>' +
+          '<tr><td colspan="4" class="savings">' + (ai.savingsVsClaude || '') + '</td></tr>';
+      }
+    }
+  } catch (e) {
+    console.warn('Pricing fetch failed:', e);
+  }
+}
+
+/* ===== Fetch wallets ===== */
+async function fetchWallets() {
+  try {
+    var res = await fetch('/api/v1/credits/stats', { headers: { 'x-api-key': '' } });
+    // Stats endpoint may require auth - fall back gracefully
+    if (!res.ok) return;
+    var stats = await res.json();
+    if (stats.credits) {
+      document.getElementById('walletSummary').textContent =
+        stats.credits.totalWallets + ' wallets, ' + formatSats(stats.credits.totalDeposited) + ' deposited, ' +
+        formatSats(stats.credits.totalSpent) + ' spent';
+    }
+  } catch (e) {
+    // Stats may require auth — that's fine
+  }
+}
+
+/* ===== Data Fetching & WebSocket ===== */
+var connStatusEl = document.getElementById('connStatus');
+var wsConnected = false;
+var ws = null;
+var fetchErrors = 0;
+
+function updateConnIndicator() {
+  if (wsConnected) {
+    connStatusEl.textContent = '\u25CF WS LIVE';
+    connStatusEl.className = 'conn-status';
+  } else if (fetchErrors === 0) {
+    connStatusEl.textContent = '\u25CF POLLING';
+    connStatusEl.className = 'conn-status';
+  } else {
+    connStatusEl.textContent = '\u25CF DISCONNECTED';
+    connStatusEl.className = 'conn-status error';
+  }
+}
+
+async function fetchOverview() {
+  try {
+    var res = await fetch('/api/overview');
+    var data = await res.json();
+    fetchErrors = 0;
+    updateConnIndicator();
+    updatePayments({ overview: data });
+  } catch (e) {
+    fetchErrors++;
+    updateConnIndicator();
+  }
+}
+
+function connectWS() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws';
+  try { ws = new WebSocket(url); } catch (e) { return; }
+
+  ws.onopen = function() {
+    wsConnected = true;
+    updateConnIndicator();
+  };
+
+  ws.onmessage = function(evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      if (msg.type === 'update' && msg.overview) {
+        updatePayments(msg);
+      }
+    } catch (e) {}
+  };
+
+  ws.onclose = function() {
+    wsConnected = false;
+    ws = null;
+    updateConnIndicator();
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = function() {};
+}
+
+/* ===== Init ===== */
+fetchOverview();
+fetchPricing();
+fetchWallets();
+connectWS();
+setInterval(fetchOverview, 10000);
+setInterval(fetchWallets, 30000);
+</script>
+</body>
+</html>

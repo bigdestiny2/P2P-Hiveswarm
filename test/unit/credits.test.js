@@ -11,7 +11,7 @@ import { ServiceMeter } from '../../incentive/metering/index.js'
 // ──────────────────────────────────────────────
 
 test('CreditManager — creates wallet on first access', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const wallet = cm.getOrCreateWallet('app-1')
   t.is(wallet.balance, 0)
   t.is(wallet.appPubkey, 'app-1')
@@ -19,7 +19,7 @@ test('CreditManager — creates wallet on first access', async (t) => {
 })
 
 test('CreditManager — top-up adds credits', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const tx = cm.topUp('app-1', 5000)
   t.is(tx.amount, 5000)
   t.is(tx.type, 'deposit')
@@ -27,7 +27,7 @@ test('CreditManager — top-up adds credits', async (t) => {
 })
 
 test('CreditManager — top-up with volume bonus', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   // 10k sats → 5% bonus = 500 sats bonus
   const tx = cm.topUp('app-1', 10_000)
   t.is(tx.amount, 10_000)
@@ -37,7 +37,7 @@ test('CreditManager — top-up with volume bonus', async (t) => {
 })
 
 test('CreditManager — large deposit bonus tiers', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
 
   // 100k sats → 10% bonus
   const tx1 = cm.topUp('app-1', 100_000)
@@ -49,7 +49,7 @@ test('CreditManager — large deposit bonus tiers', async (t) => {
 })
 
 test('CreditManager — deduct subtracts from balance', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 1000)
 
   const result = cm.deduct('app-1', 100, 'ai.infer')
@@ -60,7 +60,7 @@ test('CreditManager — deduct subtracts from balance', async (t) => {
 })
 
 test('CreditManager — deduct fails on insufficient credits', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 200)
 
   const result = cm.deduct('app-1', 500, 'ai.infer')
@@ -71,14 +71,14 @@ test('CreditManager — deduct fails on insufficient credits', async (t) => {
 })
 
 test('CreditManager — deduct fails on no wallet', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const result = cm.deduct('unknown-app', 10, 'ai.infer')
   t.is(result.success, false)
   t.is(result.reason, 'NO_WALLET')
 })
 
 test('CreditManager — min top-up enforced', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   try {
     cm.topUp('app-1', 10) // Below 100 sat minimum
     t.fail('Should have thrown')
@@ -88,7 +88,7 @@ test('CreditManager — min top-up enforced', async (t) => {
 })
 
 test('CreditManager — max balance enforced', async (t) => {
-  const cm = new CreditManager({ maxBalance: 10_000 })
+  const cm = new CreditManager({ maxBalance: 10_000, welcomeCredits: 0 })
   cm.topUp('app-1', 8000)
   try {
     cm.topUp('app-1', 5000)
@@ -99,7 +99,7 @@ test('CreditManager — max balance enforced', async (t) => {
 })
 
 test('CreditManager — freeze blocks deductions', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.freezeWallet('app-1', 'suspected abuse')
 
@@ -109,7 +109,7 @@ test('CreditManager — freeze blocks deductions', async (t) => {
 })
 
 test('CreditManager — freeze blocks top-ups', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.freezeWallet('app-1', 'suspected abuse')
 
@@ -122,7 +122,7 @@ test('CreditManager — freeze blocks top-ups', async (t) => {
 })
 
 test('CreditManager — unfreeze restores access', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.freezeWallet('app-1', 'test')
   cm.unfreezeWallet('app-1')
@@ -132,7 +132,7 @@ test('CreditManager — unfreeze restores access', async (t) => {
 })
 
 test('CreditManager — canAfford check', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 500)
 
   t.is(cm.canAfford('app-1', 500), true)
@@ -141,7 +141,7 @@ test('CreditManager — canAfford check', async (t) => {
 })
 
 test('CreditManager — transaction history', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.deduct('app-1', 100, 'ai.infer')
   cm.deduct('app-1', 50, 'ai.embed')
@@ -154,7 +154,7 @@ test('CreditManager — transaction history', async (t) => {
 })
 
 test('CreditManager — wallet summary', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.deduct('app-1', 200, 'ai.infer')
 
@@ -166,7 +166,7 @@ test('CreditManager — wallet summary', async (t) => {
 })
 
 test('CreditManager — stats aggregation', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 5000)
   cm.topUp('app-2', 3000)
   cm.deduct('app-1', 200, 'ai.infer')
@@ -180,7 +180,7 @@ test('CreditManager — stats aggregation', async (t) => {
 
 test('CreditManager — events emitted', async (t) => {
   t.plan(4)
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
 
   cm.on('wallet-created', () => t.pass('wallet-created'))
   cm.on('credit-added', (data) => {
@@ -195,15 +195,93 @@ test('CreditManager — events emitted', async (t) => {
 
 test('CreditManager — save and load', async (t) => {
   const path = '/tmp/hiverelay-test-credits-' + Date.now() + '.json'
-  const cm1 = new CreditManager({ storagePath: path })
+  const cm1 = new CreditManager({ storagePath: path, welcomeCredits: 0 })
   cm1.topUp('app-1', 5000)
   cm1.deduct('app-1', 100, 'ai.infer')
   await cm1.save()
 
-  const cm2 = new CreditManager({ storagePath: path })
+  const cm2 = new CreditManager({ storagePath: path, welcomeCredits: 0 })
   await cm2.load()
   t.is(cm2.getBalance('app-1'), 4900)
   t.is(cm2.getWallet('app-1').totalSpent, 100)
+})
+
+// ──────────────────────────────────────────────
+// Welcome Credits & Grant Tests
+// ──────────────────────────────────────────────
+
+test('CreditManager — welcome credits on new wallet', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 1000 })
+  const wallet = cm.getOrCreateWallet('app-1')
+  t.is(wallet.balance, 1000)
+  t.is(wallet.welcomeCreditsReceived, 1000)
+  t.is(wallet.transactions.length, 1)
+  t.is(wallet.transactions[0].type, 'welcome')
+  t.is(wallet.transactions[0].amount, 1000)
+})
+
+test('CreditManager — welcome credits default is 1000', async (t) => {
+  const cm = new CreditManager()
+  const wallet = cm.getOrCreateWallet('app-1')
+  t.is(wallet.balance, 1000)
+  t.is(cm.welcomeCredits, 1000)
+})
+
+test('CreditManager — welcome credits can be zero', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 0 })
+  const wallet = cm.getOrCreateWallet('app-1')
+  t.is(wallet.balance, 0)
+  t.is(wallet.welcomeCreditsReceived, 0)
+  t.is(wallet.transactions.length, 0)
+})
+
+test('CreditManager — welcome credits only on first access', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 500 })
+  cm.getOrCreateWallet('app-1')
+  cm.getOrCreateWallet('app-1') // second call
+  t.is(cm.getBalance('app-1'), 500) // not doubled
+})
+
+test('CreditManager — grantCredits adds free credits', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 0 })
+  const tx = cm.grantCredits('app-1', 5000, 'Dev request')
+  t.is(tx.type, 'grant')
+  t.is(tx.amount, 5000)
+  t.is(tx.reason, 'Dev request')
+  t.is(cm.getBalance('app-1'), 5000)
+})
+
+test('CreditManager — grantCredits emits event', async (t) => {
+  t.plan(3)
+  const cm = new CreditManager({ welcomeCredits: 0 })
+  cm.on('credits-granted', (data) => {
+    t.is(data.app, 'app-1')
+    t.is(data.amount, 2000)
+    t.is(data.reason, 'testing')
+  })
+  cm.grantCredits('app-1', 2000, 'testing')
+})
+
+test('CreditManager — grantCredits rejects frozen wallet', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 0 })
+  cm.topUp('app-1', 1000)
+  cm.freezeWallet('app-1', 'abuse')
+  try {
+    cm.grantCredits('app-1', 500, 'grant')
+    t.fail('Should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('WALLET_FROZEN'))
+  }
+})
+
+test('CreditManager — stats includes welcome credits', async (t) => {
+  const cm = new CreditManager({ welcomeCredits: 500 })
+  cm.getOrCreateWallet('app-1')
+  cm.getOrCreateWallet('app-2')
+  const stats = cm.stats()
+  t.is(stats.totalWelcomeCredits, 1000)
+  t.is(stats.welcomeCreditsPerWallet, 500)
+  t.is(stats.totalBalance, 1000)
 })
 
 // ──────────────────────────────────────────────
@@ -338,7 +416,7 @@ test('PricingEngine — custom rate overrides', async (t) => {
 test('InvoiceManager — create invoice', async (t) => {
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   const inv = await im.createInvoice('app-1', 10_000)
@@ -354,7 +432,7 @@ test('InvoiceManager — create invoice', async (t) => {
 test('InvoiceManager — settle invoice credits wallet', async (t) => {
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   const inv = await im.createInvoice('app-1', 10_000)
@@ -370,7 +448,7 @@ test('InvoiceManager — settle invoice credits wallet', async (t) => {
 test('InvoiceManager — double settle is idempotent', async (t) => {
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   const inv = await im.createInvoice('app-1', 5000)
@@ -456,7 +534,7 @@ test('InvoiceManager — get app invoices', async (t) => {
 test('InvoiceManager — stats', async (t) => {
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   await im.createInvoice('app-1', 5000)
@@ -476,7 +554,7 @@ test('InvoiceManager — events', async (t) => {
   t.plan(2)
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   im.on('invoice-created', (data) => t.ok(data.id))
@@ -493,7 +571,7 @@ test('InvoiceManager — events', async (t) => {
 // ──────────────────────────────────────────────
 
 test('Integration — apps with credits auto-promote to standard tier', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('paid-app', 10_000)
 
   const ft = new FreeTierManager({ creditManager: cm })
@@ -505,7 +583,7 @@ test('Integration — apps with credits auto-promote to standard tier', async (t
 })
 
 test('Integration — app falls to free tier when credits depleted', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 200)
 
   const ft = new FreeTierManager({ creditManager: cm })
@@ -521,7 +599,7 @@ test('Integration — full credit purchase flow', async (t) => {
   // 1. Create provider + credit manager + invoice manager
   const provider = new MockProvider()
   await provider.connect()
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   const im = new InvoiceManager({ provider, creditManager: cm })
 
   // 2. App requests invoice to buy credits
@@ -546,7 +624,7 @@ test('Integration — full credit purchase flow', async (t) => {
 })
 
 test('Integration — metering + pricing + credits end-to-end', async (t) => {
-  const cm = new CreditManager()
+  const cm = new CreditManager({ welcomeCredits: 0 })
   cm.topUp('app-1', 50_000)
 
   const meter = new ServiceMeter()
@@ -577,8 +655,8 @@ test('Integration — metering + pricing + credits end-to-end', async (t) => {
 
   const usage = meter.getUsage('app-1')
   t.is(usage.totalCalls, 10)
-  // Started with 50k + 5% bonus = 52,500. Should have spent some on 10 calls.
-  t.ok(cm.getBalance('app-1') < 52_500)
+  // Started with 1k welcome + 50k deposit + 5% bonus = 53,500. Should have spent some on 10 calls.
+  t.ok(cm.getBalance('app-1') < 53_500)
   t.ok(cm.getBalance('app-1') > 0)
 })
 

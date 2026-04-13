@@ -164,6 +164,7 @@ tr:hover td{background:rgba(0,170,255,.03)}
   </a>
   <nav class="topbar-nav">
     <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/payments">Payments</a>
     <a href="/network">Network</a>
     <a href="/leaderboard">Leaderboard</a>
     <a href="/docs">Docs</a>
@@ -213,6 +214,33 @@ tr:hover td{background:rgba(0,170,255,.03)}
       <canvas id="chartTraffic"></canvas>
       <div class="chart-empty" id="chartTrafficEmpty">Waiting for data...</div>
     </div>
+  </div>
+</div>
+
+<!-- Payment & Credits Stats -->
+<div style="margin-bottom:.6rem;font-size:.72rem;color:var(--text-dim)">
+  All services free by default. 1k welcome credits per app. <a href="/payments" style="color:var(--cyan);text-decoration:none">View payments &rarr;</a>
+</div>
+<div class="stats-row" id="paymentStats" style="margin-bottom:1.5rem">
+  <div class="stat-card">
+    <div class="stat-label">Revenue (sats)</div>
+    <div class="stat-value orange" id="statRevenue">--</div>
+    <div class="stat-sub" id="statRevenueSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Credit Wallets</div>
+    <div class="stat-value cyan" id="statWallets">--</div>
+    <div class="stat-sub" id="statWalletsSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Service Calls</div>
+    <div class="stat-value green" id="statCalls">--</div>
+    <div class="stat-sub" id="statCallsSub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Invoices</div>
+    <div class="stat-value" id="statInvoices">--</div>
+    <div class="stat-sub" id="statInvoicesSub">&nbsp;</div>
   </div>
 </div>
 
@@ -497,6 +525,21 @@ document.querySelectorAll('#appsTable th').forEach(function(th) {
   th.addEventListener('click', function() { sortApps(th.dataset.col); });
 });
 
+function formatSats(s) {
+  if (s == null || isNaN(s)) return '--';
+  if (s >= 100000000) return (s / 100000000).toFixed(2) + ' BTC';
+  if (s >= 1000000) return (s / 1000000).toFixed(1) + 'M';
+  if (s >= 1000) return (s / 1000).toFixed(1) + 'k';
+  return s.toString();
+}
+
+function formatCount(n) {
+  if (n == null || isNaN(n)) return '--';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toString();
+}
+
 /* ===== Dashboard Update ===== */
 function updateDashboard(overview, history, apps) {
   // Header
@@ -552,6 +595,27 @@ function updateDashboard(overview, history, apps) {
   document.getElementById('sysCircuits').textContent =
     (overview.activeCircuits || 0) + ' active / ' + (overview.totalCircuits || 0) + ' total';
   document.getElementById('sysErrors').textContent = overview.errors || 0;
+
+  // Payment & Credits stats
+  var credits = overview.credits;
+  var metering = overview.metering;
+  var invoices = overview.invoices;
+  var payment = overview.payment;
+
+  if (metering) {
+    document.getElementById('statRevenue').textContent = formatSats(metering.totalRevenue || 0);
+    document.getElementById('statRevenueSub').textContent = (metering.totalApps || 0) + ' apps metered';
+    document.getElementById('statCalls').textContent = formatCount(metering.totalCalls || 0);
+    document.getElementById('statCallsSub').textContent = 'across all services';
+  }
+  if (credits) {
+    document.getElementById('statWallets').textContent = credits.totalWallets || 0;
+    document.getElementById('statWalletsSub').textContent = formatSats(credits.totalBalance || 0) + ' total balance';
+  }
+  if (invoices) {
+    document.getElementById('statInvoices').textContent = (invoices.settled || 0) + '/' + (invoices.total || 0);
+    document.getElementById('statInvoicesSub').textContent = formatSats(invoices.totalSettledSats || 0) + ' settled';
+  }
 
   // Peers
   var peers = overview.peers || [];
@@ -684,7 +748,11 @@ function connectWS() {
           totalCircuits: o.relay ? o.relay.totalCircuitsServed : 0,
           memory: o.memory || {},
           errors: o.errors || 0,
-          peers: []
+          peers: [],
+          credits: o.credits || null,
+          metering: o.metering || null,
+          invoices: o.invoices || null,
+          payment: o.payment || null
         };
         // We don't get history/apps from WS, pass null to preserve last state
         updateDashboard(overview, null, null);

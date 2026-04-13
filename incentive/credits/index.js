@@ -5,12 +5,17 @@
  * App devs buy credits (denominated in sats) via Lightning invoices.
  * Credits are deducted per service call based on the pricing engine.
  *
+ * Everything operates FREE by default — the free tier is generous.
+ * New wallets receive welcome credits (default 1,000 sats) automatically.
+ * Developers can contact the relay operator for additional free credits.
+ * Relay operators receive welcome credits when their node starts.
+ *
  * Flow:
- *   1. App requests invoice → InvoiceManager generates Lightning invoice
- *   2. App pays invoice → InvoiceManager detects settlement
- *   3. CreditManager credits the app's wallet
+ *   1. App connects → gets free tier access immediately (no wallet needed)
+ *   2. App requests wallet → auto-credited with welcome credits
+ *   3. App buys more credits via Lightning invoice (optional)
  *   4. On each service call, router middleware deducts from wallet
- *   5. If balance hits zero, app falls to free-tier limits
+ *   5. If balance hits zero, app falls back to free-tier limits (still works!)
  *
  * Persistence:
  *   Wallets are serialized to disk and restored on startup.
@@ -30,6 +35,7 @@ export class CreditManager extends EventEmitter {
     this.minTopUp = opts.minTopUp || 100 // minimum 100 sats top-up
     this.maxBalance = opts.maxBalance || 100_000_000 // 1 BTC max balance
     this.bonusSchedule = opts.bonusSchedule || DEFAULT_BONUS_SCHEDULE
+    this.welcomeCredits = opts.welcomeCredits != null ? opts.welcomeCredits : 1000
   }
 
   /**
@@ -45,6 +51,7 @@ export class CreditManager extends EventEmitter {
       totalDeposited: 0,
       totalSpent: 0,
       totalBonusReceived: 0,
+      welcomeCreditsReceived: 0,
       createdAt: Date.now(),
       lastActivity: Date.now(),
       transactions: [],
@@ -52,7 +59,23 @@ export class CreditManager extends EventEmitter {
     }
 
     this.wallets.set(appPubkey, wallet)
-    this.emit('wallet-created', { app: appPubkey })
+
+    // Auto-credit welcome credits to new wallets
+    if (this.welcomeCredits > 0) {
+      wallet.balance += this.welcomeCredits
+      wallet.welcomeCreditsReceived = this.welcomeCredits
+      wallet.transactions.push({
+        id: this._txId(),
+        type: 'welcome',
+        amount: this.welcomeCredits,
+        balance: wallet.balance,
+        timestamp: Date.now(),
+        note: 'Welcome credits — everything starts free on HiveRelay'
+      })
+      this.emit('welcome-credits', { app: appPubkey, amount: this.welcomeCredits })
+    }
+
+    this.emit('wallet-created', { app: appPubkey, welcomeCredits: this.welcomeCredits })
     return wallet
   }
 
@@ -184,6 +207,7 @@ export class CreditManager extends EventEmitter {
       totalDeposited: wallet.totalDeposited,
       totalSpent: wallet.totalSpent,
       totalBonusReceived: wallet.totalBonusReceived,
+      welcomeCreditsReceived: wallet.welcomeCreditsReceived || 0,
       frozen: wallet.frozen,
       createdAt: wallet.createdAt,
       lastActivity: wallet.lastActivity,
@@ -246,6 +270,45 @@ export class CreditManager extends EventEmitter {
   }
 
   /**
+   * Grant free credits to an app (operator/admin action).
+   * Used when devs contact the relay operator to request credits.
+   */
+  grantCredits (appPubkey, amountSats, reason) {
+    if (amountSats <= 0) throw new Error('INVALID_AMOUNT: must be positive')
+    const wallet = this.getOrCreateWallet(appPubkey)
+
+    if (wallet.frozen) {
+      throw new Error('WALLET_FROZEN: wallet is frozen')
+    }
+
+    if (wallet.balance + amountSats > this.maxBalance) {
+      throw new Error(`MAX_BALANCE: would exceed maximum balance of ${this.maxBalance} sats`)
+    }
+
+    wallet.balance += amountSats
+    wallet.lastActivity = Date.now()
+
+    const tx = {
+      id: this._txId(),
+      type: 'grant',
+      amount: amountSats,
+      balance: wallet.balance,
+      timestamp: Date.now(),
+      reason: reason || 'Operator credit grant'
+    }
+    wallet.transactions.push(tx)
+
+    this.emit('credits-granted', {
+      app: appPubkey,
+      amount: amountSats,
+      balance: wallet.balance,
+      reason
+    })
+
+    return tx
+  }
+
+  /**
    * Check if an app has enough credits for a given cost.
    * Non-destructive check (no deduction).
    */
@@ -264,6 +327,7 @@ export class CreditManager extends EventEmitter {
     let totalBalance = 0
     let totalDeposited = 0
     let totalSpent = 0
+    let totalWelcomeCredits = 0
     let frozenWallets = 0
 
     for (const wallet of this.wallets.values()) {
@@ -271,6 +335,7 @@ export class CreditManager extends EventEmitter {
       totalBalance += wallet.balance
       totalDeposited += wallet.totalDeposited
       totalSpent += wallet.totalSpent
+      totalWelcomeCredits += wallet.welcomeCreditsReceived || 0
       if (wallet.frozen) frozenWallets++
     }
 
@@ -279,6 +344,8 @@ export class CreditManager extends EventEmitter {
       totalBalance,
       totalDeposited,
       totalSpent,
+      totalWelcomeCredits,
+      welcomeCreditsPerWallet: this.welcomeCredits,
       frozenWallets,
       avgBalance: totalWallets > 0 ? Math.floor(totalBalance / totalWallets) : 0
     }

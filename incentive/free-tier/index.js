@@ -1,13 +1,16 @@
 /**
  * Free-Tier Manager
  *
- * Manages usage quotas for apps on the free tier.
- * Apps get a generous free allowance — this is the user acquisition lever.
- * Once they exceed the free tier, they need an SLA contract (paid).
+ * Everything starts free. No payment required to use services.
+ * Apps get generous free-tier limits — 10k AI calls, 50k embeddings,
+ * 200k total calls per month. New wallets also get 1k welcome credits.
+ *
+ * When free-tier limits are hit, devs can contact the relay operator
+ * for free credits or top up via Lightning.
  *
  * Tiers:
- *   free      - Default. Rate-limited, capped per month.
- *   standard  - Paid SLA. Higher limits, guaranteed uptime.
+ *   free      - Default. Generous rate limits, no payment needed.
+ *   standard  - Auto-promoted when app has credit balance, or via SLA.
  *   unlimited - Whitelisted apps (operator's own apps, partners).
  */
 
@@ -167,7 +170,7 @@ export class FreeTierManager extends EventEmitter {
       tier,
       totalCalls: { limit: limits._totalCalls, used: usage.totalCalls, remaining: Math.max(0, limits._totalCalls - usage.totalCalls) },
       routes: remaining,
-      message: tier === 'free' ? 'Upgrade to standard tier via SLA contract for higher limits' : null
+      message: tier === 'free' ? 'Free tier — contact relay operator for free credits, or top up via Lightning for higher limits' : null
     }
   }
 }

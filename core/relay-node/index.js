@@ -618,8 +618,22 @@ export class RelayNode extends EventEmitter {
         })
         this.invoiceManager.start()
 
+        // Grant relay operator welcome credits if this is a fresh node
+        if (this.publicKey) {
+          const opKey = this.publicKey.toString('hex')
+          const existing = this.creditManager.wallets.get(opKey)
+          if (!existing) {
+            this.creditManager.getOrCreateWallet(opKey)
+            this.emit('operator-credits', {
+              publicKey: opKey,
+              credits: this.creditManager.welcomeCredits
+            })
+          }
+        }
+
         this.emit('credits-ready', {
           wallets: this.creditManager.wallets.size,
+          welcomeCredits: this.creditManager.welcomeCredits,
           rateCard: Object.keys(this.pricingEngine.rates).length
         })
 

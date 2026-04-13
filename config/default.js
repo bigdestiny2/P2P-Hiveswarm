@@ -81,6 +81,13 @@ export default {
     network: 'mainnet'
   },
 
+  // Credits — everything starts free
+  credits: {
+    welcomeCredits: 1000, // 1k free credits for every new wallet
+    minTopUp: 100,
+    maxBalance: 100_000_000
+  },
+
   // Payment settlement
   payment: {
     enabled: false,

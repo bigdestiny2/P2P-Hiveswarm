@@ -555,6 +555,17 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/payments') {
+          if (!this._paymentsHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'payments.html')
+            this._paymentsHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._paymentsHtml)
+          return
+        }
+
         if (path === '/api/health-detail') {
           const healthStatus = this.node.getHealthStatus()
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
@@ -616,7 +627,20 @@ export class RelayAPI extends EventEmitter {
                   autoAccept: this.node.config.registryAutoAccept !== false
                 }
               : null,
-            gateway: this._gateway ? this._gateway.getStats() : null
+            gateway: this._gateway ? this._gateway.getStats() : null,
+            credits: this.node.creditManager ? this.node.creditManager.stats() : null,
+            metering: this.node.serviceMeter ? this.node.serviceMeter.stats() : null,
+            invoices: this.node.invoiceManager ? this.node.invoiceManager.stats() : null,
+            payment: this.node.paymentManager
+              ? (() => {
+                  const accounts = []
+                  for (const [pubkey] of this.node.paymentManager.accounts) {
+                    accounts.push(this.node.paymentManager.getAccountSummary(pubkey))
+                  }
+                  return { accounts, provider: this.node.paymentManager.paymentProvider?.constructor.name || 'none' }
+                })()
+              : null,
+            holesail: this.node.holesailTransport ? this.node.holesailTransport.getInfo() : null
           })
         }
 
@@ -993,6 +1017,27 @@ export class RelayAPI extends EventEmitter {
           try {
             this.node.creditManager.unfreezeWallet(body.appKey)
             return this._json(res, { ok: true, frozen: false })
+          } catch (err) {
+            return this._json(res, { error: err.message }, 400)
+          }
+        }
+
+        // POST /api/v1/credits/grant — grant free credits to an app (admin)
+        if (req.method === 'POST' && path === '/api/v1/credits/grant') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          const body = await this._readBody(req)
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!body.amount || body.amount <= 0) return this._json(res, { error: 'amount required (positive integer)' }, 400)
+          try {
+            const tx = this.node.creditManager.grantCredits(body.appKey, body.amount, body.reason)
+            return this._json(res, {
+              ok: true,
+              granted: body.amount,
+              balance: tx.balance,
+              reason: body.reason || 'Operator credit grant'
+            })
           } catch (err) {
             return this._json(res, { error: err.message }, 400)
           }
