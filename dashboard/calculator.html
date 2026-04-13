@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveRelay - Node Earnings Calculator</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2358a6ff'/%3E%3Cstop offset='100%25' stop-color='%233fb950'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='50,8 72,20.5 72,45.5 50,58 28,45.5 28,20.5' fill='url(%23g)' opacity='.9'/%3E%3Cpolygon points='27,52 49,64.5 49,89.5 27,102 5,89.5 5,64.5' fill='url(%23g)' opacity='.7'/%3E%3Cpolygon points='73,52 95,64.5 95,89.5 73,102 51,89.5 51,64.5' fill='url(%23g)' opacity='.7'/%3E%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;--card:#16213e;--card-border:#1e2d50;
+  --green:#0f0;--orange:#f90;--cyan:#0af;--red:#f44;--purple:#bc8cff;--yellow:#ffd700;
+  --text:#e0e0e0;--text-dim:#7a8ba0;--text-bright:#fff;
+  --mono:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;padding:1rem}
+
+.topbar{
+  background:var(--card);border-bottom:1px solid var(--card-border);
+  padding:1rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
+  position:sticky;top:0;z-index:100;margin:-1rem -1rem 1.5rem -1rem;
+}
+.topbar-logo{display:flex;align-items:center;gap:.75rem;text-decoration:none}
+.hive-logo{width:32px;height:32px;flex-shrink:0}
+.topbar h1{font-size:1.2rem;color:var(--text-bright);font-weight:600;letter-spacing:.3px}
+.topbar-nav{display:flex;gap:.25rem;margin-left:1.5rem}
+.topbar-nav a{
+  font-size:.8rem;color:var(--text-dim);text-decoration:none;
+  padding:.35rem .75rem;border-radius:6px;transition:color .2s,background .2s;
+}
+.topbar-nav a:hover{color:var(--text-bright);background:rgba(255,255,255,.05)}
+.topbar-nav a.active{color:var(--orange);background:rgba(255,153,0,.1)}
+
+.section-title{
+  font-size:.8rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);
+  margin:2rem 0 1rem;padding-bottom:.5rem;border-bottom:1px solid var(--card-border);
+}
+.card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;
+}
+.card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem}
+
+/* Layout */
+.calc-layout{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+.results-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem}
+
+/* Inputs */
+.input-group{margin-bottom:1.2rem}
+.input-group label{display:block;font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.8px}
+.input-group .hint{font-size:.68rem;color:var(--text-dim);margin-top:.3rem;font-style:italic}
+.input-row{display:flex;gap:.5rem;align-items:center}
+input[type="range"]{
+  -webkit-appearance:none;width:100%;height:6px;border-radius:3px;
+  background:rgba(255,255,255,.08);outline:none;
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:var(--cyan);cursor:pointer;border:2px solid var(--bg);
+}
+input[type="number"]{
+  background:rgba(255,255,255,.06);border:1px solid var(--card-border);border-radius:6px;
+  color:var(--text-bright);font-family:var(--mono);font-size:.82rem;
+  padding:.4rem .6rem;width:100px;text-align:right;outline:none;
+}
+input[type="number"]:focus{border-color:var(--cyan)}
+.slider-value{
+  font-family:var(--mono);font-size:.9rem;color:var(--cyan);font-weight:600;
+  min-width:80px;text-align:right;
+}
+
+/* Presets */
+.presets{display:flex;gap:.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.preset-btn{
+  background:rgba(255,255,255,.05);border:1px solid var(--card-border);border-radius:6px;
+  color:var(--text);font-size:.75rem;padding:.5rem 1rem;cursor:pointer;
+  transition:all .2s;font-family:var(--sans);
+}
+.preset-btn:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(0,170,255,.05)}
+.preset-btn.active{border-color:var(--orange);color:var(--orange);background:rgba(255,153,0,.08)}
+.preset-label{font-size:.72rem;color:var(--text-dim);display:block;margin-top:.2rem}
+
+/* Results */
+.result-card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:10px;
+  padding:1.2rem;text-align:center;transition:border-color .3s;
+}
+.result-card:hover{border-color:var(--cyan)}
+.result-label{font-size:.7rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:.5rem}
+.result-value{font-size:1.8rem;font-weight:700;font-family:var(--mono);line-height:1}
+.result-sub{font-size:.72rem;color:var(--text-dim);margin-top:.4rem;font-family:var(--mono)}
+.result-value.yellow{color:var(--yellow)}
+.result-value.green{color:var(--green)}
+.result-value.cyan{color:var(--cyan)}
+.result-value.orange{color:var(--orange)}
+.result-value.purple{color:var(--purple)}
+
+/* Breakdown */
+.breakdown-row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:.55rem 0;border-bottom:1px solid rgba(30,45,80,.3);
+}
+.breakdown-row:last-child{border-bottom:none}
+.breakdown-name{font-size:.82rem;color:var(--text)}
+.breakdown-detail{font-size:.7rem;color:var(--text-dim)}
+.breakdown-sats{font-family:var(--mono);font-size:.82rem;color:var(--yellow);text-align:right}
+.breakdown-usd{font-size:.68rem;color:var(--text-dim);font-family:var(--mono)}
+.breakdown-bar{height:4px;border-radius:2px;background:rgba(255,255,255,.04);margin-top:.3rem;overflow:hidden}
+.breakdown-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--orange),var(--yellow))}
+
+/* Big number hero */
+.hero-result{
+  background:linear-gradient(135deg,rgba(255,215,0,.06),rgba(0,255,0,.04));
+  border:1px solid rgba(255,215,0,.2);border-radius:12px;
+  padding:2rem;text-align:center;margin-bottom:1.5rem;
+}
+.hero-result .hero-label{font-size:.8rem;text-transform:uppercase;letter-spacing:2px;color:var(--text-dim);margin-bottom:.5rem}
+.hero-result .hero-value{font-size:3rem;font-weight:800;font-family:var(--mono);color:var(--yellow);line-height:1}
+.hero-result .hero-sub{font-size:1rem;color:var(--green);margin-top:.5rem;font-family:var(--mono)}
+.hero-result .hero-btc{font-size:.85rem;color:var(--orange);margin-top:.3rem;font-family:var(--mono)}
+
+/* Cost section */
+.cost-card{
+  background:rgba(255,68,68,.03);border:1px solid rgba(255,68,68,.15);border-radius:10px;
+  padding:1.2rem;
+}
+.cost-row{display:flex;justify-content:space-between;padding:.4rem 0;font-size:.82rem}
+.cost-label{color:var(--text-dim)}
+.cost-value{font-family:var(--mono);color:var(--red)}
+.profit-row{display:flex;justify-content:space-between;padding:.6rem 0;font-size:.95rem;font-weight:600;border-top:1px solid var(--card-border);margin-top:.4rem}
+.profit-label{color:var(--text)}
+.profit-value{font-family:var(--mono);color:var(--green)}
+
+/* Notes */
+.notes{font-size:.72rem;color:var(--text-dim);line-height:1.6;margin-top:1.5rem;padding:1rem;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid var(--card-border)}
+.notes strong{color:var(--text)}
+
+@media(max-width:900px){
+  .calc-layout{grid-template-columns:1fr}
+  .results-grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:500px){
+  .results-grid{grid-template-columns:1fr}
+  .hero-result .hero-value{font-size:2rem}
+  .topbar{flex-direction:column;align-items:flex-start;padding:1rem}
+  .topbar-nav{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <a href="/dashboard" class="topbar-logo">
+    <svg class="hive-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0af"/><stop offset="100%" stop-color="#0f0"/></linearGradient></defs>
+      <polygon points="50,4 74,18 74,46 50,60 26,46 26,18" fill="url(#hg)" opacity=".9"/>
+      <polygon points="26,50 50,64 50,92 26,106 2,92 2,64" fill="url(#hg)" opacity=".7"/>
+      <polygon points="74,50 98,64 98,92 74,106 50,92 50,64" fill="url(#hg)" opacity=".7"/>
+    </svg>
+    <h1>Node Earnings Calculator</h1>
+  </a>
+  <nav class="topbar-nav">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/payments">Payments</a>
+    <a href="/calculator" class="active">Calculator</a>
+    <a href="/network">Network</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/docs">Docs</a>
+  </nav>
+</div>
+
+<!-- Presets -->
+<div style="margin-bottom:.5rem;font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Quick Presets</div>
+<div class="presets">
+  <button class="preset-btn" onclick="applyPreset('hobby')">
+    Hobby Node<span class="preset-label">Raspberry Pi, 2 apps</span>
+  </button>
+  <button class="preset-btn" onclick="applyPreset('small')">
+    Small Relay<span class="preset-label">VPS, 10 apps, local AI</span>
+  </button>
+  <button class="preset-btn" onclick="applyPreset('medium')">
+    Medium Relay<span class="preset-label">Dedicated, 50 apps, GPU</span>
+  </button>
+  <button class="preset-btn" onclick="applyPreset('large')">
+    Large Relay<span class="preset-label">Multi-GPU, 200+ apps</span>
+  </button>
+  <button class="preset-btn" onclick="applyPreset('enterprise')">
+    Enterprise<span class="preset-label">Data center, 1000+ apps</span>
+  </button>
+</div>
+
+<!-- Hero Result -->
+<div class="hero-result">
+  <div class="hero-label">Estimated Monthly Earnings</div>
+  <div class="hero-value" id="heroMonthly">--</div>
+  <div class="hero-sub" id="heroUsd">--</div>
+  <div class="hero-btc" id="heroBtc">--</div>
+</div>
+
+<!-- Results Row -->
+<div class="results-grid">
+  <div class="result-card">
+    <div class="result-label">Daily Revenue</div>
+    <div class="result-value yellow" id="dailyRevenue">--</div>
+    <div class="result-sub" id="dailyUsd">--</div>
+  </div>
+  <div class="result-card">
+    <div class="result-label">Monthly Costs</div>
+    <div class="result-value orange" id="monthlyCosts">--</div>
+    <div class="result-sub" id="costsUsd">--</div>
+  </div>
+  <div class="result-card">
+    <div class="result-label">Monthly Profit</div>
+    <div class="result-value green" id="monthlyProfit">--</div>
+    <div class="result-sub" id="profitUsd">--</div>
+  </div>
+</div>
+
+<!-- Inputs + Breakdown -->
+<div class="calc-layout">
+  <!-- Left: Inputs -->
+  <div>
+    <div class="card">
+      <h3>Traffic & Apps</h3>
+
+      <div class="input-group">
+        <label>Connected Apps</label>
+        <div class="input-row">
+          <input type="range" id="apps" min="1" max="2000" value="10" oninput="onSlider(this,'appsVal')">
+          <span class="slider-value" id="appsVal">10</span>
+        </div>
+        <div class="hint">Apps connected to your relay via P2P or HTTP</div>
+      </div>
+
+      <div class="input-group">
+        <label>AI Inference Calls / Day</label>
+        <div class="input-row">
+          <input type="range" id="aiCalls" min="0" max="100000" value="500" step="100" oninput="onSlider(this,'aiCallsVal')">
+          <span class="slider-value" id="aiCallsVal">500</span>
+        </div>
+        <div class="hint">LLM inference requests routed through your node</div>
+      </div>
+
+      <div class="input-group">
+        <label>Avg Tokens per AI Call</label>
+        <div class="input-row">
+          <input type="range" id="avgTokens" min="100" max="8000" value="1000" step="100" oninput="onSlider(this,'avgTokensVal')">
+          <span class="slider-value" id="avgTokensVal">1,000</span>
+        </div>
+        <div class="hint">Input + output tokens combined</div>
+      </div>
+
+      <div class="input-group">
+        <label>Embedding Calls / Day</label>
+        <div class="input-row">
+          <input type="range" id="embedCalls" min="0" max="200000" value="2000" step="500" oninput="onSlider(this,'embedCallsVal')">
+          <span class="slider-value" id="embedCallsVal">2,000</span>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>Compute Jobs / Day</label>
+        <div class="input-row">
+          <input type="range" id="computeJobs" min="0" max="10000" value="50" step="10" oninput="onSlider(this,'computeJobsVal')">
+          <span class="slider-value" id="computeJobsVal">50</span>
+        </div>
+        <div class="hint">Sandboxed code execution jobs (avg 2s each)</div>
+      </div>
+
+      <div class="input-group">
+        <label>Storage Writes / Day</label>
+        <div class="input-row">
+          <input type="range" id="storageWrites" min="0" max="50000" value="200" step="50" oninput="onSlider(this,'storageWritesVal')">
+          <span class="slider-value" id="storageWritesVal">200</span>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>Identity Signs / Day</label>
+        <div class="input-row">
+          <input type="range" id="signCalls" min="0" max="10000" value="100" step="10" oninput="onSlider(this,'signCallsVal')">
+          <span class="slider-value" id="signCallsVal">100</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h3>Operator Settings</h3>
+
+      <div class="input-group">
+        <label>Pricing Margin</label>
+        <div class="input-row">
+          <input type="range" id="margin" min="0.5" max="3.0" value="1.0" step="0.1" oninput="onSlider(this,'marginVal', 'x')">
+          <span class="slider-value" id="marginVal">1.0x</span>
+        </div>
+        <div class="hint">1.0x = default rates. 1.5x = 50% markup. Lower margins attract more apps.</div>
+      </div>
+
+      <div class="input-group">
+        <label>BTC Price (USD)</label>
+        <div class="input-row">
+          <input type="number" id="btcPrice" value="100000" min="1000" max="10000000" step="1000" oninput="recalculate()">
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h3>Monthly Costs</h3>
+
+      <div class="input-group">
+        <label>Server / VPS (USD/mo)</label>
+        <div class="input-row">
+          <input type="number" id="costServer" value="20" min="0" max="10000" step="5" oninput="recalculate()">
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>Electricity (USD/mo)</label>
+        <div class="input-row">
+          <input type="number" id="costElectricity" value="10" min="0" max="5000" step="5" oninput="recalculate()">
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>Bandwidth (USD/mo)</label>
+        <div class="input-row">
+          <input type="number" id="costBandwidth" value="0" min="0" max="5000" step="5" oninput="recalculate()">
+        </div>
+        <div class="hint">Often included with VPS. Set 0 if bundled.</div>
+      </div>
+
+      <div class="input-group">
+        <label>GPU Rental (USD/mo)</label>
+        <div class="input-row">
+          <input type="number" id="costGpu" value="0" min="0" max="10000" step="10" oninput="recalculate()">
+        </div>
+        <div class="hint">Only if running local AI models on rented GPU</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Breakdown -->
+  <div>
+    <div class="card">
+      <h3>Revenue Breakdown (Daily)</h3>
+      <div id="breakdownList">
+        <div style="padding:1rem;color:var(--text-dim);text-align:center">Calculating...</div>
+      </div>
+      <div style="border-top:1px solid var(--card-border);margin-top:.5rem;padding-top:.8rem;display:flex;justify-content:space-between;font-weight:600">
+        <span style="font-size:.85rem">Daily Total</span>
+        <span style="font-family:var(--mono);color:var(--yellow);font-size:.85rem" id="breakdownTotal">--</span>
+      </div>
+    </div>
+
+    <div class="cost-card" style="margin-top:1rem">
+      <h3 style="font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.8rem">Monthly P&L</h3>
+      <div class="cost-row">
+        <span class="cost-label">Server / VPS</span>
+        <span class="cost-value" id="plServer">--</span>
+      </div>
+      <div class="cost-row">
+        <span class="cost-label">Electricity</span>
+        <span class="cost-value" id="plElectricity">--</span>
+      </div>
+      <div class="cost-row">
+        <span class="cost-label">Bandwidth</span>
+        <span class="cost-value" id="plBandwidth">--</span>
+      </div>
+      <div class="cost-row">
+        <span class="cost-label">GPU Rental</span>
+        <span class="cost-value" id="plGpu">--</span>
+      </div>
+      <div class="cost-row" style="border-top:1px solid rgba(255,68,68,.15);padding-top:.6rem;margin-top:.3rem">
+        <span style="font-weight:600;color:var(--text)">Total Costs</span>
+        <span style="font-family:var(--mono);color:var(--red);font-weight:600" id="plTotalCost">--</span>
+      </div>
+      <div class="cost-row">
+        <span style="color:var(--text)">Gross Revenue</span>
+        <span style="font-family:var(--mono);color:var(--yellow)" id="plRevenue">--</span>
+      </div>
+      <div class="profit-row">
+        <span class="profit-label">Net Profit</span>
+        <span class="profit-value" id="plProfit">--</span>
+      </div>
+      <div style="font-size:.7rem;color:var(--text-dim);margin-top:.5rem" id="plRoi">--</div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h3>Annual Projection</h3>
+      <div class="breakdown-row">
+        <span class="breakdown-name">Yearly Revenue</span>
+        <div style="text-align:right">
+          <div class="breakdown-sats" id="yearlyRevenue">--</div>
+          <div class="breakdown-usd" id="yearlyRevenueUsd">--</div>
+        </div>
+      </div>
+      <div class="breakdown-row">
+        <span class="breakdown-name">Yearly Costs</span>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:.82rem;color:var(--red)" id="yearlyCosts">--</div>
+        </div>
+      </div>
+      <div class="breakdown-row">
+        <span class="breakdown-name" style="font-weight:600">Yearly Profit</span>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:.82rem;color:var(--green);font-weight:600" id="yearlyProfit">--</div>
+          <div class="breakdown-usd" id="yearlyProfitUsd">--</div>
+        </div>
+      </div>
+      <div class="breakdown-row">
+        <span class="breakdown-name">BTC Stacked / Year</span>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:.82rem;color:var(--orange);font-weight:600" id="yearlyBtc">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Notes -->
+<div class="notes">
+  <strong>How earnings work:</strong> Relay operators earn sats from every paid service call routed through their node.
+  AI inference, compute jobs, storage writes, and identity operations all generate revenue at the published rate card.
+  Free-tier calls (within monthly quotas) don't generate revenue, but attract apps that eventually exceed free limits.
+  Revenue is settled via Lightning Network. Operators keep 100% of service fees on their own node.<br><br>
+  <strong>Assumptions:</strong> Default rates from the HiveRelay pricing engine. ~40% of input tokens, ~60% output tokens per AI call.
+  Compute jobs average 2 seconds. Storage writes average 4KB. All estimates assume consistent daily traffic.
+  Actual earnings depend on app adoption, network effects, and your relay's uptime and reputation score.<br><br>
+  <strong>Getting started:</strong> Run <code style="color:var(--cyan)">npx hiverelay start --mode public</code> on any VPS or home server.
+  All services are free by default. Operators earn 1,000 welcome credits on startup. Apps earn 1,000 credits on first connect.
+</div>
+
+<script>
+/* ===== Rate Card (matches incentive/credits/pricing.js defaults) ===== */
+var RATES = {
+  ai: { perInputToken: 0.001, perOutputToken: 0.002, perCall: 1 },
+  embed: { perInputToken: 0.0005, perCall: 0.5 },
+  compute: { perCall: 10, perMs: 0.001 },
+  storageWrite: { perCall: 1, perKB: 0.01 },
+  sign: { perCall: 1 }
+};
+
+/* ===== Presets ===== */
+var PRESETS = {
+  hobby: { apps:2, aiCalls:20, avgTokens:500, embedCalls:100, computeJobs:5, storageWrites:20, signCalls:10, margin:1.0, costServer:0, costElectricity:5, costBandwidth:0, costGpu:0 },
+  small: { apps:10, aiCalls:500, avgTokens:1000, embedCalls:2000, computeJobs:50, storageWrites:200, signCalls:100, margin:1.0, costServer:20, costElectricity:10, costBandwidth:0, costGpu:0 },
+  medium: { apps:50, aiCalls:5000, avgTokens:1500, embedCalls:20000, computeJobs:500, storageWrites:2000, signCalls:500, margin:1.0, costServer:80, costElectricity:30, costBandwidth:10, costGpu:50 },
+  large: { apps:200, aiCalls:25000, avgTokens:2000, embedCalls:100000, computeJobs:2000, storageWrites:10000, signCalls:2000, margin:1.0, costServer:200, costElectricity:80, costBandwidth:30, costGpu:200 },
+  enterprise: { apps:1000, aiCalls:100000, avgTokens:2500, embedCalls:200000, computeJobs:10000, storageWrites:50000, signCalls:10000, margin:0.8, costServer:500, costElectricity:200, costBandwidth:100, costGpu:800 }
+};
+
+function applyPreset(name) {
+  var p = PRESETS[name];
+  if (!p) return;
+  document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+  event.target.closest('.preset-btn').classList.add('active');
+
+  setInput('apps', p.apps);
+  setInput('aiCalls', p.aiCalls);
+  setInput('avgTokens', p.avgTokens);
+  setInput('embedCalls', p.embedCalls);
+  setInput('computeJobs', p.computeJobs);
+  setInput('storageWrites', p.storageWrites);
+  setInput('signCalls', p.signCalls);
+  setInput('margin', p.margin);
+  document.getElementById('costServer').value = p.costServer;
+  document.getElementById('costElectricity').value = p.costElectricity;
+  document.getElementById('costBandwidth').value = p.costBandwidth;
+  document.getElementById('costGpu').value = p.costGpu;
+
+  // Update display values
+  document.getElementById('appsVal').textContent = fmt(p.apps);
+  document.getElementById('aiCallsVal').textContent = fmt(p.aiCalls);
+  document.getElementById('avgTokensVal').textContent = fmt(p.avgTokens);
+  document.getElementById('embedCallsVal').textContent = fmt(p.embedCalls);
+  document.getElementById('computeJobsVal').textContent = fmt(p.computeJobs);
+  document.getElementById('storageWritesVal').textContent = fmt(p.storageWrites);
+  document.getElementById('signCallsVal').textContent = fmt(p.signCalls);
+  document.getElementById('marginVal').textContent = p.margin.toFixed(1) + 'x';
+
+  recalculate();
+}
+
+function setInput(id, val) {
+  var el = document.getElementById(id);
+  el.value = val;
+}
+
+/* ===== Formatting ===== */
+function fmt(n) { return n.toLocaleString(); }
+
+function formatSats(s) {
+  if (s >= 100000000) return (s / 100000000).toFixed(4) + ' BTC';
+  if (s >= 1000000) return (s / 1000000).toFixed(1) + 'M sats';
+  if (s >= 1000) return Math.round(s).toLocaleString() + ' sats';
+  return Math.round(s) + ' sats';
+}
+
+function formatUsd(sats, btcPrice) {
+  var usd = (sats / 100000000) * btcPrice;
+  if (usd >= 1000) return '$' + usd.toLocaleString(undefined, {maximumFractionDigits:0});
+  if (usd >= 1) return '$' + usd.toFixed(2);
+  if (usd >= 0.01) return '$' + usd.toFixed(2);
+  return '$' + usd.toFixed(4);
+}
+
+/* ===== Slider handler ===== */
+function onSlider(el, displayId, suffix) {
+  var val = parseFloat(el.value);
+  var display = suffix === 'x' ? val.toFixed(1) + 'x' : fmt(val);
+  document.getElementById(displayId).textContent = display;
+  // Clear active preset
+  document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+  recalculate();
+}
+
+/* ===== Main Calculation ===== */
+function recalculate() {
+  var margin = parseFloat(document.getElementById('margin').value) || 1.0;
+  var btcPrice = parseFloat(document.getElementById('btcPrice').value) || 100000;
+  var aiCalls = parseInt(document.getElementById('aiCalls').value) || 0;
+  var avgTokens = parseInt(document.getElementById('avgTokens').value) || 1000;
+  var embedCalls = parseInt(document.getElementById('embedCalls').value) || 0;
+  var computeJobs = parseInt(document.getElementById('computeJobs').value) || 0;
+  var storageWrites = parseInt(document.getElementById('storageWrites').value) || 0;
+  var signCalls = parseInt(document.getElementById('signCalls').value) || 0;
+
+  // Costs
+  var costServer = parseFloat(document.getElementById('costServer').value) || 0;
+  var costElectricity = parseFloat(document.getElementById('costElectricity').value) || 0;
+  var costBandwidth = parseFloat(document.getElementById('costBandwidth').value) || 0;
+  var costGpu = parseFloat(document.getElementById('costGpu').value) || 0;
+  var totalCostUsd = costServer + costElectricity + costBandwidth + costGpu;
+
+  // Calculate daily revenue (sats)
+  var inputTokens = avgTokens * 0.4;
+  var outputTokens = avgTokens * 0.6;
+
+  var aiRevenue = aiCalls * (
+    RATES.ai.perCall +
+    (inputTokens * RATES.ai.perInputToken) +
+    (outputTokens * RATES.ai.perOutputToken)
+  ) * margin;
+
+  var embedRevenue = embedCalls * (
+    RATES.embed.perCall +
+    (512 * RATES.embed.perInputToken) // avg 512 tokens per embed
+  ) * margin;
+
+  var computeRevenue = computeJobs * (
+    RATES.compute.perCall +
+    (2000 * RATES.compute.perMs) // avg 2s per job
+  ) * margin;
+
+  var storageRevenue = storageWrites * (
+    RATES.storageWrite.perCall +
+    (4 * RATES.storageWrite.perKB) // avg 4KB per write
+  ) * margin;
+
+  var signRevenue = signCalls * RATES.sign.perCall * margin;
+
+  var dailySats = aiRevenue + embedRevenue + computeRevenue + storageRevenue + signRevenue;
+  var monthlySats = dailySats * 30;
+  var yearlySats = dailySats * 365;
+
+  // Convert costs to sats
+  var satToUsd = btcPrice / 100000000;
+  var totalCostSats = totalCostUsd / satToUsd;
+
+  var monthlyProfit = monthlySats - totalCostSats;
+  var yearlyProfit = yearlySats - (totalCostSats * 12);
+
+  // ===== Update Hero =====
+  document.getElementById('heroMonthly').textContent = formatSats(monthlySats);
+  document.getElementById('heroUsd').textContent = formatUsd(monthlySats, btcPrice) + ' /month';
+  document.getElementById('heroBtc').textContent = (monthlySats / 100000000).toFixed(8) + ' BTC';
+
+  // ===== Update Results Row =====
+  document.getElementById('dailyRevenue').textContent = formatSats(dailySats);
+  document.getElementById('dailyUsd').textContent = formatUsd(dailySats, btcPrice) + ' /day';
+
+  document.getElementById('monthlyCosts').textContent = '$' + totalCostUsd.toLocaleString();
+  document.getElementById('costsUsd').textContent = formatSats(totalCostSats);
+
+  var profitEl = document.getElementById('monthlyProfit');
+  profitEl.textContent = formatUsd(monthlyProfit, btcPrice);
+  profitEl.className = 'result-value ' + (monthlyProfit >= 0 ? 'green' : 'red');
+  document.getElementById('profitUsd').textContent = formatSats(monthlyProfit);
+
+  // ===== Revenue Breakdown =====
+  var breakdown = [
+    { name: 'AI Inference', detail: fmt(aiCalls) + ' calls/day', sats: aiRevenue, pct: dailySats > 0 ? aiRevenue / dailySats : 0 },
+    { name: 'Embeddings', detail: fmt(embedCalls) + ' calls/day', sats: embedRevenue, pct: dailySats > 0 ? embedRevenue / dailySats : 0 },
+    { name: 'Compute Jobs', detail: fmt(computeJobs) + ' jobs/day', sats: computeRevenue, pct: dailySats > 0 ? computeRevenue / dailySats : 0 },
+    { name: 'Storage Writes', detail: fmt(storageWrites) + ' writes/day', sats: storageRevenue, pct: dailySats > 0 ? storageRevenue / dailySats : 0 },
+    { name: 'Identity Signs', detail: fmt(signCalls) + ' signs/day', sats: signRevenue, pct: dailySats > 0 ? signRevenue / dailySats : 0 }
+  ];
+
+  var bHtml = '';
+  for (var i = 0; i < breakdown.length; i++) {
+    var b = breakdown[i];
+    bHtml += '<div class="breakdown-row"><div>' +
+      '<div class="breakdown-name">' + b.name + '</div>' +
+      '<div class="breakdown-detail">' + b.detail + '</div>' +
+      '</div><div style="text-align:right">' +
+      '<div class="breakdown-sats">' + formatSats(b.sats) + '</div>' +
+      '<div class="breakdown-usd">' + formatUsd(b.sats, btcPrice) + ' (' + (b.pct * 100).toFixed(0) + '%)</div>' +
+      '</div></div>' +
+      '<div class="breakdown-bar"><div class="breakdown-fill" style="width:' + (b.pct * 100) + '%"></div></div>';
+  }
+  document.getElementById('breakdownList').innerHTML = bHtml;
+  document.getElementById('breakdownTotal').textContent = formatSats(dailySats) + ' (' + formatUsd(dailySats, btcPrice) + ')';
+
+  // ===== P&L =====
+  document.getElementById('plServer').textContent = '-$' + costServer;
+  document.getElementById('plElectricity').textContent = '-$' + costElectricity;
+  document.getElementById('plBandwidth').textContent = '-$' + costBandwidth;
+  document.getElementById('plGpu').textContent = '-$' + costGpu;
+  document.getElementById('plTotalCost').textContent = '-$' + totalCostUsd.toLocaleString();
+  document.getElementById('plRevenue').textContent = formatUsd(monthlySats, btcPrice);
+  var profitUsd = (monthlyProfit / 100000000) * btcPrice;
+  document.getElementById('plProfit').textContent = (profitUsd >= 0 ? '+' : '') + '$' + profitUsd.toFixed(2);
+  document.getElementById('plProfit').style.color = profitUsd >= 0 ? 'var(--green)' : 'var(--red)';
+
+  if (totalCostUsd > 0) {
+    var monthlyRevenueUsd = (monthlySats / 100000000) * btcPrice;
+    var roi = ((monthlyRevenueUsd - totalCostUsd) / totalCostUsd * 100).toFixed(0);
+    document.getElementById('plRoi').textContent = 'ROI: ' + roi + '% | Breakeven: ' + (totalCostUsd <= monthlyRevenueUsd ? 'profitable' : 'need ' + Math.ceil(totalCostUsd / (monthlyRevenueUsd > 0 ? monthlyRevenueUsd : 1)) + ' months at this traffic');
+  } else {
+    document.getElementById('plRoi').textContent = 'ROI: infinite (zero costs)';
+  }
+
+  // ===== Annual =====
+  document.getElementById('yearlyRevenue').textContent = formatSats(yearlySats);
+  document.getElementById('yearlyRevenueUsd').textContent = formatUsd(yearlySats, btcPrice);
+  document.getElementById('yearlyCosts').textContent = '-$' + (totalCostUsd * 12).toLocaleString();
+  document.getElementById('yearlyProfit').textContent = formatUsd(yearlyProfit, btcPrice);
+  document.getElementById('yearlyProfitUsd').textContent = formatSats(yearlyProfit);
+  document.getElementById('yearlyBtc').textContent = (yearlySats / 100000000).toFixed(8) + ' BTC';
+}
+
+/* ===== Init ===== */
+recalculate();
+</script>
+</body>
+</html>

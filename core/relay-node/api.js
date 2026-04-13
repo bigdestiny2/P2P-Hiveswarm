@@ -137,6 +137,7 @@ export class RelayAPI extends EventEmitter {
     // SECURITY: API key authentication for state-modifying endpoints
     this._apiKey = opts.apiKey || process.env.HIVERELAY_API_KEY || null
     this._requireAuth = opts.requireAuth !== false // Default to requiring auth
+    this._trustProxy = opts.trustProxy || false // Only trust X-Forwarded-For when behind a known proxy
 
     // Per-IP request counts: ip -> { count, resetAt }
     this._rateLimits = new Map()
@@ -200,7 +201,14 @@ export class RelayAPI extends EventEmitter {
     if (!authHeader) return false
     const parts = authHeader.split(' ')
     if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return false
-    return parts[1] === this._apiKey
+    try {
+      const a = Buffer.from(parts[1])
+      const b = Buffer.from(this._apiKey)
+      if (a.length !== b.length) return false
+      return crypto.timingSafeEqual(a, b)
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -261,7 +269,7 @@ export class RelayAPI extends EventEmitter {
 
   async _handle (req, res) {
     // Use X-Forwarded-For from reverse proxy (Caddy/NGINX), fall back to socket address
-    const forwarded = req.headers['x-forwarded-for']
+    const forwarded = this._trustProxy ? req.headers['x-forwarded-for'] : null
     const ip = (forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress) || '127.0.0.1'
 
     // CORS headers on all responses
@@ -577,6 +585,17 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/calculator') {
+          if (!this._calculatorHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'calculator.html')
+            this._calculatorHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._calculatorHtml)
+          return
+        }
+
         if (path === '/api/health-detail') {
           const healthStatus = this.node.getHealthStatus()
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
@@ -787,6 +806,9 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, await ai.status())
         }
         if (req.method === 'POST' && path === '/api/v1/ai/infer') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const body = await this._readBody(req)
           if (!body.modelId || body.input === undefined) {
             return this._json(res, { error: 'modelId and input required' }, 400)
@@ -795,6 +817,9 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, result)
         }
         if (req.method === 'POST' && path === '/api/v1/ai/embed') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const body = await this._readBody(req)
           if (!body.modelId || !body.input) {
             return this._json(res, { error: 'modelId and input required' }, 400)
@@ -817,6 +842,9 @@ export class RelayAPI extends EventEmitter {
       if (path.startsWith('/api/v1/billing/')) {
         // GET /api/v1/billing/quota/:appKey — check quota for an app
         if (req.method === 'GET' && path.startsWith('/api/v1/billing/quota/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const appKey = path.split('/').pop()
           if (!this.node.serviceMeter || !this.node.freeTier) {
             return this._json(res, { error: 'Metering not enabled' }, 503)
@@ -826,6 +854,9 @@ export class RelayAPI extends EventEmitter {
 
         // GET /api/v1/billing/usage/:appKey — usage details for an app
         if (req.method === 'GET' && path.startsWith('/api/v1/billing/usage/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const appKey = path.split('/').pop()
           if (!this.node.serviceMeter) {
             return this._json(res, { error: 'Metering not enabled' }, 503)
@@ -900,6 +931,9 @@ export class RelayAPI extends EventEmitter {
 
         // GET /api/v1/credits/balance/:appKey — check credit balance
         if (req.method === 'GET' && path.startsWith('/api/v1/credits/balance/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const appKey = path.split('/').pop()
           const wallet = this.node.creditManager.getWallet(appKey)
           if (!wallet) return this._json(res, { balance: 0, wallet: null })
@@ -908,6 +942,9 @@ export class RelayAPI extends EventEmitter {
 
         // GET /api/v1/credits/transactions/:appKey — transaction history
         if (req.method === 'GET' && path.startsWith('/api/v1/credits/transactions/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           const appKey = path.split('/').pop()
           const url = new URL(req.url, 'http://localhost')
           const limit = parseInt(url.searchParams.get('limit') || '50', 10)
@@ -938,6 +975,9 @@ export class RelayAPI extends EventEmitter {
 
         // POST /api/v1/credits/invoice — create Lightning invoice to buy credits
         if (req.method === 'POST' && path === '/api/v1/credits/invoice') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!this.node.invoiceManager) {
             return this._json(res, { error: 'Invoice system not enabled' }, 503)
           }
@@ -959,6 +999,9 @@ export class RelayAPI extends EventEmitter {
 
         // GET /api/v1/credits/invoice/:invoiceId — check invoice status
         if (req.method === 'GET' && path.startsWith('/api/v1/credits/invoice/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!this.node.invoiceManager) {
             return this._json(res, { error: 'Invoice system not enabled' }, 503)
           }
@@ -1066,6 +1109,9 @@ export class RelayAPI extends EventEmitter {
 
         // GET /api/v1/credits/invoices/:appKey — list invoices for an app
         if (req.method === 'GET' && path.startsWith('/api/v1/credits/invoices/')) {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
           if (!this.node.invoiceManager) {
             return this._json(res, { error: 'Invoice system not enabled' }, 503)
           }
@@ -1272,6 +1318,9 @@ export class RelayAPI extends EventEmitter {
 
       // ─── Router Pub/Sub SSE Endpoint ───
       if (req.method === 'GET' && path === '/api/v1/subscribe') {
+        if (!this._verifyApiKey(req)) {
+          return this._json(res, { error: 'Authentication required' }, 401)
+        }
         if (!this.node.router) {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
