@@ -558,6 +558,33 @@ export class HiveRelayClient extends EventEmitter {
     return list
   }
 
+  /**
+   * Get all seeded apps across connected relays.
+   * Returns a deduplicated list of apps with which relays host them.
+   */
+  getAvailableApps () {
+    const appMap = new Map()
+    for (const [pubkey, relay] of this.relays) {
+      const apps = relay.seededApps || []
+      for (const app of apps) {
+        const existing = appMap.get(app.appKey)
+        if (existing) {
+          existing.relays.push(pubkey)
+        } else {
+          appMap.set(app.appKey, {
+            appKey: app.appKey,
+            appId: app.appId,
+            version: app.version,
+            discoveryKey: app.discoveryKey,
+            blind: app.blind,
+            relays: [pubkey]
+          })
+        }
+      }
+    }
+    return Array.from(appMap.values())
+  }
+
   getSeedStatus (appKey) {
     const keyHex = typeof appKey === 'string' ? appKey : b4a.toString(appKey, 'hex')
     const entry = this.seedRequests.get(keyHex)
@@ -918,6 +945,10 @@ export class HiveRelayClient extends EventEmitter {
       }
     } else if (msg.type === 0) { // MSG_CATALOG
       this.emit('service-catalog', { relay: relayPubkey, services: msg.services })
+    } else if (msg.type === 7) { // MSG_APP_CATALOG
+      const relay2 = this.relays.get(relayPubkey)
+      if (relay2) relay2.seededApps = msg.apps || []
+      this.emit('app-catalog', { relay: relayPubkey, apps: msg.apps || [] })
     }
   }
 

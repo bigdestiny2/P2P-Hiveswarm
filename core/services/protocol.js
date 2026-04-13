@@ -28,6 +28,7 @@ const MSG_ERROR = 3
 const MSG_SUBSCRIBE = 4
 const MSG_UNSUBSCRIBE = 5
 const MSG_EVENT = 6
+const MSG_APP_CATALOG = 7
 
 export class ServiceProtocol extends EventEmitter {
   constructor (registry) {
@@ -134,10 +135,40 @@ export class ServiceProtocol extends EventEmitter {
     })
   }
 
+  /**
+   * Send the list of seeded apps to a peer.
+   * Called on connect so clients know what apps are available.
+   */
+  sendAppCatalog (remotePubkey) {
+    const entry = this.channels.get(remotePubkey)
+    if (!entry || !this._getSeededApps) return
+
+    const apps = this._getSeededApps()
+    entry.msgHandler.send({
+      type: MSG_APP_CATALOG,
+      apps
+    })
+  }
+
+  /**
+   * Broadcast app catalog update to all connected peers.
+   * Called when apps are seeded or unseeded.
+   */
+  broadcastAppCatalog () {
+    if (!this._getSeededApps) return
+    const apps = this._getSeededApps()
+    const msg = { type: MSG_APP_CATALOG, apps }
+
+    for (const [remotePubkey, entry] of this.channels) {
+      try { entry.msgHandler.send(msg) } catch {}
+    }
+  }
+
   _onOpen (remotePubkey, channel) {
     this.emit('channel-open', { remotePubkey })
-    // Send our catalog on connect
+    // Send our service catalog and app catalog on connect
     this.sendCatalog(remotePubkey)
+    this.sendAppCatalog(remotePubkey)
   }
 
   _onClose (remotePubkey) {
@@ -192,6 +223,10 @@ export class ServiceProtocol extends EventEmitter {
 
       case MSG_EVENT:
         this.emit('event', { remotePubkey, topic: msg.topic, data: msg.data })
+        break
+
+      case MSG_APP_CATALOG:
+        this.emit('app-catalog', { remotePubkey, apps: msg.apps })
         break
     }
   }

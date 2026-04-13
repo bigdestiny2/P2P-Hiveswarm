@@ -683,10 +683,30 @@ export class RelayNode extends EventEmitter {
           // Wire router into service protocol for P2P dispatch
           this.serviceProtocol.router = this.router
 
+          // Wire app catalog into service protocol so clients discover seeded apps
+          this.serviceProtocol._getSeededApps = () => {
+            const apps = []
+            for (const [appKey, entry] of this.seededApps) {
+              apps.push({
+                appKey,
+                appId: entry.appId || null,
+                version: entry.version || null,
+                discoveryKey: entry.discoveryKey?.toString('hex') || null,
+                blind: entry.blind || false,
+                seededAt: entry.startedAt
+              })
+            }
+            return apps
+          }
+
           // Bridge relay events to pub/sub
           for (const evt of ['connection', 'connection-closed', 'seeding', 'unseeded', 'circuit-closed', 'seed-accepted', 'seed-rejected']) {
             this.on(evt, (data) => this.router.pubsub.publish(`events/${evt}`, data))
           }
+
+          // Broadcast app catalog to all clients when apps change
+          this.on('seeding', () => this.serviceProtocol.broadcastAppCatalog())
+          this.on('unseeded', () => this.serviceProtocol.broadcastAppCatalog())
 
           this.emit('router-started', { routes: this.router.routes().length })
         }
