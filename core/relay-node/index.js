@@ -772,7 +772,7 @@ export class RelayNode extends EventEmitter {
 
       this._startHealthChecks()
 
-      // Start seeding registry — distributed Autobase registry for seed requests
+      // Start seeding registry — distributed Hypercore-based registry for seed requests
       if (this.config.enableSeeding) {
         try {
           // Registry uses its own Corestore namespace to avoid conflicts
