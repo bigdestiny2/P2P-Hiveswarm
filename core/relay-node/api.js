@@ -25,6 +25,7 @@ import { readFile } from 'fs/promises'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
+import { execFile } from 'child_process'
 import crypto from 'crypto'
 import sodium from 'sodium-universal'
 import { DashboardFeed } from './ws-feed.js'
@@ -162,6 +163,10 @@ export class RelayAPI extends EventEmitter {
 
     // SECURITY: Pagination for catalog endpoints
     this._maxCatalogPageSize = opts.maxCatalogPageSize || 100
+
+    // Cached storage usage (refreshed at most every 30s)
+    this._storageUsedBytes = 0
+    this._storageUsedAt = 0
   }
 
   /**
@@ -190,6 +195,38 @@ export class RelayAPI extends EventEmitter {
     const valid = response === expected
     if (valid) this._registrationChallenges.delete(appId)
     return valid
+  }
+
+  /**
+   * Get actual storage bytes used by the relay's data directory.
+   * Cached for 30s to avoid hammering the filesystem on every request.
+   */
+  async _getStorageUsed () {
+    const now = Date.now()
+    if (now - this._storageUsedAt < 30_000 && this._storageUsedBytes > 0) {
+      return this._storageUsedBytes
+    }
+
+    const storagePath = this.node.config?.storage
+    if (!storagePath) return 0
+
+    try {
+      const bytes = await new Promise((resolve, reject) => {
+        execFile('du', ['-sb', storagePath], { timeout: 5000 }, (err, stdout) => {
+          if (err) return reject(err)
+          const num = parseInt(stdout.split('\t')[0], 10)
+          resolve(Number.isNaN(num) ? 0 : num)
+        })
+      })
+      this._storageUsedBytes = bytes
+      this._storageUsedAt = now
+      // Expose on node for ws-feed access
+      if (this.node) this.node._cachedStorageUsed = bytes
+      return bytes
+    } catch {
+      // Fallback: return last known value or 0
+      return this._storageUsedBytes
+    }
   }
 
   _cleanupChallenges () {
@@ -636,8 +673,8 @@ export class RelayAPI extends EventEmitter {
 
           const config = this.node.config || {}
           const maxStorage = config.maxStorageBytes || 5368709120
-          // Aggregate actual bytes from seeded apps + seeder P2P stats
-          let bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+          // Measure actual disk usage of the storage directory (cached 30s)
+          const bytesStored = await this._getStorageUsed()
           let totalAppBytesServed = 0
           if (this.node.seededApps) {
             for (const [, entry] of this.node.seededApps) {
@@ -661,7 +698,7 @@ export class RelayAPI extends EventEmitter {
               coresSeeded: stats.seeder ? stats.seeder.coresSeeded : 0,
               totalBytesStored: bytesStored,
               totalBytesServed: (stats.seeder ? stats.seeder.totalBytesServed : 0) + totalAppBytesServed,
-              capacityUsedPct: stats.seeder ? stats.seeder.capacityUsedPct : 0
+              capacityUsedPct: maxStorage > 0 ? Math.round(bytesStored / maxStorage * 10000) / 100 : 0
             },
             memory: { heapUsed: mem.heapUsed, rss: mem.rss },
             errors: this.node.metrics ? this.node.metrics._errorCount : 0,

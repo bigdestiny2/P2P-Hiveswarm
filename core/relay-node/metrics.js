@@ -80,9 +80,9 @@ export class Metrics extends EventEmitter {
       lines.push('# TYPE hiverelay_cores_seeded gauge')
       lines.push(`hiverelay_cores_seeded ${stats.seeder.coresSeeded}`)
 
-      lines.push('# HELP hiverelay_bytes_stored Total bytes stored')
+      lines.push('# HELP hiverelay_bytes_stored Total bytes stored on disk')
       lines.push('# TYPE hiverelay_bytes_stored gauge')
-      lines.push(`hiverelay_bytes_stored ${stats.seeder.totalBytesStored}`)
+      lines.push(`hiverelay_bytes_stored ${this.node._cachedStorageUsed || stats.seeder.totalBytesStored}`)
 
       lines.push('# HELP hiverelay_bytes_served Total bytes served to peers')
       lines.push('# TYPE hiverelay_bytes_served counter')

@@ -151,7 +151,8 @@ export class DashboardFeed {
 
     const config = node.config || {}
     const maxStorage = config.maxStorageBytes || 5368709120
-    const bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+    // Use cached disk measurement from API (updated every 30s), fall back to seeder counter
+    const bytesStored = node._cachedStorageUsed || (stats.seeder ? stats.seeder.totalBytesStored : 0)
 
     const payload = {
       type: 'update',
