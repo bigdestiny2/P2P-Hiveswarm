@@ -13,6 +13,7 @@ import { RelayAPI } from './api.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
 import { TorTransport } from '../../transports/tor/index.js'
 import { HolesailTransport } from '../../transports/holesail/index.js'
+import http from 'http'
 import { BootstrapCache } from '../bootstrap-cache.js'
 import { SeedProtocol } from '../protocol/seed-request.js'
 import { CircuitRelay } from '../protocol/relay-circuit.js'
@@ -326,6 +327,11 @@ export class RelayNode extends EventEmitter {
       this.healthMonitor.start()
 
       this.emit('started', { publicKey: this.swarm.keyPair.publicKey })
+
+      // Auto-enable holesail if API is not publicly reachable
+      if (!this.holesailTransport && this.config.enableAPI) {
+        this._autoEnableHolesail().catch(() => {})
+      }
     } catch (err) {
       // Rollback in reverse order
       this.bootstrapCache.stop()
@@ -631,6 +637,97 @@ export class RelayNode extends EventEmitter {
 
   getHealthStatus () {
     return this.healthMonitor ? this.healthMonitor.getStatus() : null
+  }
+
+  /**
+   * Auto-enable holesail if the API port is not publicly reachable.
+   * Waits for the first peer connection to learn our public IP, then
+   * probes our own API. If unreachable, starts the holesail transport.
+   */
+  async _autoEnableHolesail () {
+    // Wait a bit for connections and public IP discovery
+    await new Promise(resolve => setTimeout(resolve, 15000))
+
+    if (!this.running || this.holesailTransport) return
+
+    // Find our public IP from a connected peer's perspective
+    let publicIp = null
+    for (const conn of this.swarm.connections) {
+      if (conn.rawStream && conn.rawStream.remoteHost) {
+        // Our public IP is what the DHT sees — check via swarm
+        break
+      }
+    }
+
+    // Use the swarm's remoteAddress if available
+    if (this.swarm.keyPair) {
+      try {
+        const node = this.swarm.dht || this.swarm._discovery
+        if (node && node.host) publicIp = node.host
+      } catch {}
+    }
+
+    // Fallback: try a quick external IP check
+    if (!publicIp) {
+      try {
+        const data = await new Promise((resolve, reject) => {
+          const req = http.get('http://ifconfig.me/ip', { timeout: 5000 }, (res) => {
+            let body = ''
+            res.on('data', (c) => { body += c })
+            res.on('end', () => resolve(body.trim()))
+          })
+          req.on('error', reject)
+          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+        })
+        if (data && /^\d+\.\d+\.\d+\.\d+$/.test(data)) publicIp = data
+      } catch {}
+    }
+
+    if (!publicIp) return // can't determine, skip auto-detect
+
+    // Try to reach our own API from the public IP
+    const apiPort = this.config.apiPort || 9100
+    const reachable = await new Promise((resolve) => {
+      const req = http.get(`http://${publicIp}:${apiPort}/health`, { timeout: 5000 }, (res) => {
+        let body = ''
+        res.on('data', (c) => { body += c })
+        res.on('end', () => {
+          try {
+            const d = JSON.parse(body)
+            resolve(d.ok === true)
+          } catch { resolve(false) }
+        })
+      })
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => { req.destroy(); resolve(false) })
+    })
+
+    if (reachable) {
+      this.emit('nat-check', { publicIp, reachable: true })
+      return // API is publicly reachable, no need for holesail
+    }
+
+    // API is behind NAT — auto-enable holesail
+    this.emit('nat-check', { publicIp, reachable: false, action: 'enabling holesail' })
+
+    const holesailOpts = this.config.holesail || {}
+    const seedBuf = b4a.alloc(32)
+    sodium.crypto_generichash(seedBuf, b4a.concat([
+      this.swarm.keyPair.secretKey,
+      b4a.from('holesail-api-tunnel')
+    ]))
+    this.holesailTransport = new HolesailTransport({
+      apiPort: apiPort,
+      seed: b4a.toString(seedBuf, 'hex'),
+      host: holesailOpts.host || '127.0.0.1'
+    })
+    this.holesailTransport.on('started', ({ connectionKey }) => {
+      this.emit('holesail-ready', { connectionKey })
+      if (this.networkDiscovery) {
+        this.networkDiscovery.setLocalHolesailKey(connectionKey)
+      }
+    })
+    await this.holesailTransport.start()
   }
 
   async _loadOrCreateKeyPair () {

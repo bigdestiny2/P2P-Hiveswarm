@@ -212,6 +212,15 @@ async function start () {
     console.log(`  Holesail:   ${connectionKey}`)
   })
 
+  node.on('nat-check', ({ publicIp, reachable, action }) => {
+    if (reachable) {
+      log.info({ publicIp }, 'API publicly reachable — holesail not needed')
+    } else {
+      log.info({ publicIp, action }, 'API behind NAT — auto-enabling holesail')
+      console.log(`  NAT detected (${publicIp}) — enabling holesail tunnel...`)
+    }
+  })
+
   node.on('connection', ({ remotePubKey }) => {
     log.info({ peer: remotePubKey.slice(0, 12) }, 'peer connected')
   })
