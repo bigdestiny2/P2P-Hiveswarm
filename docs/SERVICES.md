@@ -186,3 +186,38 @@ const weather = await protocol.request(relayPubkey, 'weather', 'current', { loca
 ## Configuration
 
 Services are enabled automatically when the relay node starts. Individual services can be disabled via the config or by not registering them. The SLA service requires proof-of-relay to be active for automated enforcement.
+
+### Live Management
+
+Services can be managed at runtime via the management console or API:
+
+```bash
+hiverelay manage    # Interactive TUI — Services menu
+```
+
+Or programmatically via the HTTP management API:
+
+```bash
+# List all services with status
+curl http://localhost:9100/api/manage/services
+
+# Disable a service
+curl -X POST http://localhost:9100/api/manage/services \
+  -H "Content-Type: application/json" \
+  -d '{"action": "disable", "service": "ai"}'
+
+# Restart a service
+curl -X POST http://localhost:9100/api/manage/services \
+  -H "Content-Type: application/json" \
+  -d '{"action": "restart", "service": "compute"}'
+```
+
+### Service Selection During Setup
+
+The `hiverelay setup` wizard provides checkbox selection of services based on node profile:
+
+| Profile | Default Services |
+|---------|-----------------|
+| Light | identity, schema, sla |
+| Standard | identity, schema, sla, storage, compute, arbitration |
+| Heavy | All 8 services |

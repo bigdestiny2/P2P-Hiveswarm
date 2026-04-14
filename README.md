@@ -164,14 +164,56 @@ npm install p2p-hiverelay
 
 You have hardware — a VPS, a Mac Studio, a Raspberry Pi. HiveRelay turns it into income.
 
-### Install and Start
+### Interactive Setup
 
 ```bash
 npm install -g p2p-hiverelay
-p2p-hiverelay start --region NA --max-storage 50GB
+hiverelay setup
 ```
 
-**That's it.** The node discovers the network, starts accepting work, and begins earning.
+The setup wizard walks you through everything: node profile (light/standard/heavy), resource limits, services, transports, and payments. Saves to `~/.hiverelay/config.json` and optionally starts the node.
+
+Or skip the wizard and start directly:
+
+```bash
+hiverelay start --region NA --max-storage 50GB
+```
+
+### Live Management Console
+
+```bash
+hiverelay manage              # Connect to running node
+hiverelay manage --port 9200  # Custom port
+```
+
+Full interactive control of your running node — no restart needed:
+
+| Menu | What You Can Do |
+|------|----------------|
+| Dashboard | Live status, uptime, connections, storage, memory |
+| Services | Enable/disable/restart individual services |
+| Resources | Adjust storage, connections, bandwidth limits live |
+| Transports | Toggle Holesail, Tor, WebSocket on/off |
+| Seeding & Apps | Seed/unseed apps, view catalog, toggle auto-accept |
+| Operating Mode | Switch between 6 modes (see below) |
+| Network | Update regions, view peers with reputation |
+| Security | Approval mode, pending request management |
+| Relay Settings | Circuit limits, proof-of-relay config |
+| Update Software | Check npm for new versions |
+| Restart/Shutdown | Graceful node restart |
+
+### Operating Modes
+
+Switch modes live via `hiverelay manage` or the management API:
+
+| Mode | Description |
+|------|-------------|
+| **Standard** | Full relay + seeding + all services (256 conn, 100 Mbps) |
+| **HomeHive** | Home/personal relay — 32 connections, 25 Mbps, 10GB, LAN-priority |
+| **Seed Only** | App seeding only — relay disabled |
+| **Relay Only** | Circuit relay only — seeding disabled |
+| **Stealth** | Minimal footprint, designed for Tor-only operation |
+| **Gateway** | HTTP gateway focus — 512 connections, 500 Mbps, serve Hyperdrive content |
 
 ### What Your Node Does
 
@@ -295,7 +337,8 @@ console.log('Key:', drive.key.toString('hex'))
 
 ```bash
 npm install -g p2p-hiverelay
-p2p-hiverelay start --region NA --max-storage 50GB --port 9100
+hiverelay setup                                     # Interactive setup wizard
+# or: hiverelay start --region NA --max-storage 50GB  # Quick start
 ```
 
 ### Seeding Pear Apps
@@ -317,6 +360,25 @@ curl -X POST http://localhost:9100/seed \
 npx p2p-hiverelay testnet          # 3 relays + test client
 npx p2p-hiverelay testnet --nodes 5  # 5 relays
 ```
+
+---
+
+## Management API
+
+All management operations available programmatically (used by `hiverelay manage` TUI):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/manage/config` | GET | Current config + operating mode |
+| `/api/manage/config` | POST | Hot-update config values (persisted to disk) |
+| `/api/manage/services` | GET | All services with status, methods, stats |
+| `/api/manage/services` | POST | Enable/disable/restart individual services |
+| `/api/manage/transports` | GET | Transport status (holesail/tor/ws) |
+| `/api/manage/transport` | POST | Toggle transports on/off |
+| `/api/manage/modes` | GET | Available operating modes |
+| `/api/manage/mode` | POST | Switch operating mode |
+| `/api/manage/restart` | POST | Graceful node restart |
+| `/api/manage/shutdown` | POST | Graceful shutdown |
 
 ---
 

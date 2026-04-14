@@ -87,7 +87,7 @@ async function manage () {
 // ─── init ───────────────────────────────────────────────────────────
 
 async function init () {
-  console.log('HiveRelay v0.2.0 — Init')
+  console.log('HiveRelay v0.3.0 — Init')
   console.log()
 
   // 1. Create directories and config
@@ -200,7 +200,7 @@ async function start () {
 
   const config = loadConfig(cliOverrides)
 
-  console.log('HiveRelay v0.2.0')
+  console.log('HiveRelay v0.3.0')
   console.log('Starting relay node...')
   console.log()
 
@@ -602,7 +602,7 @@ async function status () {
 
 function help () {
   console.log(`
-HiveRelay v0.2.0 — Shared P2P Relay Backbone
+HiveRelay v0.3.0 — Shared P2P Relay Backbone
 
 Usage:
   hiverelay setup               Interactive setup wizard (first-time config)

@@ -1,6 +1,6 @@
 # HiveRelay Developer Documentation
 
-**Version:** 0.1.0
+**Version:** 0.3.0
 **License:** Apache 2.0
 **Runtime:** Node.js >= 20.0.0
 **Module System:** ESM (`"type": "module"`)
@@ -174,18 +174,21 @@ hiverelay/
 │   │   ├── proof-of-relay.js     # Cryptographic challenge-response verification
 │   │   ├── bandwidth-receipt.js  # Ed25519-signed bandwidth proofs + replay detection
 │   │   └── rate-limiter.js       # Token bucket rate limiter for P2P messages
+│   ├── app-registry.js            # Unified AppRegistry — single source of truth for all apps
 │   ├── relay-node/
 │   │   ├── index.js              # RelayNode class — lifecycle, start/stop/rollback
-│   │   ├── api.js                # RelayAPI — localhost HTTP API (:9100)
+│   │   ├── api.js                # RelayAPI — HTTP API + management endpoints (:9100)
 │   │   ├── metrics.js            # Metrics — Prometheus export, circular buffer
 │   │   ├── relay.js              # Relay — circuit forwarding with backpressure
 │   │   └── seeder.js             # Seeder — Hypercore download + re-announce
 │   └── registry/
 │       └── index.js              # SeedingRegistry — Autobase multi-writer
 ├── client/
-│   └── index.js                  # HiveRelayClient SDK (670 lines)
+│   └── index.js                  # HiveRelayClient SDK
 ├── cli/
-│   └── index.js                  # CLI tool: init, start, seed, status, help
+│   ├── index.js                  # CLI tool: setup, manage, init, start, seed, status
+│   ├── setup.js                  # Interactive setup wizard (TUI)
+│   └── manage.js                 # Live management console (TUI)
 ├── config/
 │   ├── default.js                # Default configuration values
 │   └── loader.js                 # Config precedence: CLI > file > defaults
@@ -1393,6 +1396,23 @@ curl -X POST http://localhost:9100/unseed \
 { "ok": true }
 ```
 
+### Management API
+
+Live management endpoints used by `hiverelay manage` TUI. All changes are hot-applied and persisted to disk.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/manage/config` | GET | Current config + operating mode |
+| `/api/manage/config` | POST | Update config values (maxStorageBytes, maxConnections, maxRelayBandwidthMbps, regions, etc.) |
+| `/api/manage/services` | GET | All services with running status, methods, and stats |
+| `/api/manage/services` | POST | `{ action: "disable"|"restart", service: "name" }` |
+| `/api/manage/transports` | GET | Transport status (holesail, tor, websocket) |
+| `/api/manage/transport` | POST | `{ transport: "holesail"|"tor"|"websocket", enabled: true|false }` |
+| `/api/manage/modes` | GET | Available operating modes with descriptions |
+| `/api/manage/mode` | POST | `{ mode: "standard"|"homehive"|"seed-only"|"relay-only"|"stealth"|"gateway" }` |
+| `/api/manage/restart` | POST | Graceful node restart |
+| `/api/manage/shutdown` | POST | Graceful shutdown |
+
 ### Error Responses
 
 | Status | Meaning |
@@ -1401,7 +1421,7 @@ curl -X POST http://localhost:9100/unseed \
 | 400 | Bad request (missing appKey, invalid hex) |
 | 404 | Unknown endpoint |
 | 500 | Internal error |
-| 503 | Metrics not enabled |
+| 503 | Metrics/services not enabled |
 
 ---
 
@@ -1460,12 +1480,64 @@ scrape_configs:
 
 ## 12. CLI Reference
 
-**File:** `cli/index.js` (323 lines)
-**Binary:** `hiverelay` (via package.json `bin` field)
+**File:** `cli/index.js`
+**Binary:** `hiverelay` or `p2p-hiverelay` (via package.json `bin` field)
+
+### `hiverelay setup`
+
+Interactive setup wizard (TUI). Guides new operators through full node configuration.
+
+```bash
+hiverelay setup
+```
+
+**What it configures:**
+1. **Node profile** — Light (Pi/laptop), Standard (VPS), Heavy (dedicated), or Custom
+2. **Storage path** and resource limits (storage, connections, bandwidth)
+3. **Services** — checkbox selection of all 8 services
+4. **Core features** — relay, seeding, auto-accept toggle
+5. **Network** — API port, region filters
+6. **Transports** — Holesail (NAT), Tor (hidden service), WebSocket
+7. **Lightning payments** — LND config and network selection
+8. **Advanced** — circuit limits, proof latency, bootstrap nodes, shutdown timeout
+
+Saves to `~/.hiverelay/config.json` and optionally starts the node immediately.
+
+### `hiverelay manage`
+
+Live management console (TUI). Connects to a running node's HTTP API for interactive control.
+
+```bash
+hiverelay manage [--host <ip>] [--port <n>]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--host <ip>` | Relay host address | `127.0.0.1` |
+| `--port <n>` | Relay API port | `9100` |
+
+**Management menus:**
+
+| Menu | What You Can Do |
+|------|----------------|
+| Dashboard | Live status — uptime, connections, storage, memory, peers, services |
+| Services | Enable/disable/restart individual services, view methods and stats |
+| Resources | Adjust storage, connections, bandwidth limits (hot-applied, persisted) |
+| Transports | Toggle Holesail/Tor/WebSocket on/off |
+| Seeding & Apps | Seed/unseed apps, view catalog, toggle auto-accept |
+| Operating Mode | Switch between Standard, HomeHive, Seed-Only, Relay-Only, Stealth, Gateway |
+| Network | Update regions, view peers with reputation scores |
+| Security | Toggle approval mode, approve/reject pending seed requests |
+| Payments | View bandwidth receipts, Lightning status |
+| Relay Settings | Circuit limits, proof-of-relay config |
+| Advanced | Shutdown timeout, announce interval, export config |
+| Update Software | Check npm for latest version, restart after update |
+
+All changes are applied immediately to the running node and persisted to `~/.hiverelay/config.json`.
 
 ### `hiverelay init`
 
-First-time setup. Creates config directory, generates defaults, and auto-installs agent skills.
+Lightweight first-time setup. Creates config directory, generates defaults, and auto-installs agent skills. For full interactive configuration, use `hiverelay setup` instead.
 
 ```bash
 hiverelay init [--region <code>] [--max-storage <size>]
@@ -1499,6 +1571,8 @@ hiverelay start [options]
 | `--no-seeding` | Disable app seeding | enabled |
 | `--no-api` | Disable HTTP API | enabled |
 | `--no-metrics` | Disable Prometheus metrics | enabled |
+| `--tor [password]` | Enable Tor hidden service | disabled |
+| `--holesail` | Enable Holesail NAT tunnel | disabled |
 | `--quiet` | Suppress periodic status output | — |
 
 **Config precedence:** CLI flags > `~/.hiverelay/config.json` > built-in defaults.
