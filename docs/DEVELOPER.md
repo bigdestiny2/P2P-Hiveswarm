@@ -456,6 +456,19 @@ appKey (32 bytes) + discoveryKeys (32 bytes each) + metadata (24 bytes)
   metadata: replicationFactor (1 byte) + maxStorageBytes (8 bytes) + ttlSeconds (8 bytes)
 ```
 
+#### `app.unseed(appKey)` → `Promise<{ relays: number }>`
+
+Remotely unseed your app from all connected relays (developer kill switch). Signs the request with your keypair to prove publisher ownership.
+
+```js
+const result = await app.unseed(driveKey)
+console.log(`Unseed broadcast to ${result.relays} relays`)
+```
+
+**Signature format:** `Ed25519(appKey + 'unseed' + uint64_be(timestamp))`
+
+Relays verify the signature against the `publisherPubkey` stored when the app was originally seeded. The unseed propagates across the network via P2P broadcast.
+
 #### `app.reserveRelay(relayPubKey)` → `Promise<boolean>`
 
 Reserve a circuit relay slot for NAT traversal.
@@ -1384,7 +1397,7 @@ curl -X POST http://localhost:9100/seed \
 
 ### `POST /unseed`
 
-Stop seeding an app.
+Stop seeding an app (operator endpoint, no auth required).
 
 ```bash
 curl -X POST http://localhost:9100/unseed \
@@ -1395,6 +1408,31 @@ curl -X POST http://localhost:9100/unseed \
 ```json
 { "ok": true }
 ```
+
+### `POST /api/v1/unseed`
+
+Developer kill switch — remotely unseed your app from this relay and broadcast to the network. Requires Ed25519 signature proving publisher ownership.
+
+```bash
+curl -X POST http://relay:9100/api/v1/unseed \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appKey": "a1b2c3d4e5f6...",
+    "publisherPubkey": "your-pubkey-hex...",
+    "signature": "ed25519-signature-hex...",
+    "timestamp": 1713100000000
+  }'
+```
+
+**Signature format:** Sign `(appKey + 'unseed' + uint64_be(timestamp))` with your Ed25519 secret key.
+
+**Security:** Timestamp must be within 5 minutes. Signature is verified against the `publisherPubkey` stored when the app was originally seeded. The unseed is propagated to all connected relays via P2P.
+
+```json
+{ "ok": true, "message": "App unseeded and unseed broadcast to network" }
+```
+
+**Errors:** `403 PUBLISHER_MISMATCH` (wrong key), `403 INVALID_SIGNATURE`, `403 STALE_TIMESTAMP`, `403 APP_NOT_FOUND`
 
 ### Management API
 

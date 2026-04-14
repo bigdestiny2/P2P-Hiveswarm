@@ -1,6 +1,6 @@
 # HiveRelay — Project Status
 
-**Version 0.3.0** | **Last verified: April 2026** | **Network: 3 relays, 2 regions (NA, APAC)**
+**Version 0.3.0** | **Last verified: April 2026** | **Network: 5 relays, 2 regions (NA, APAC)**
 
 ---
 
@@ -14,15 +14,17 @@ No blockchain. No token. Lightning micropayments when you want them, reputation-
 
 ## What's Live Right Now
 
-Three relay nodes running in production across two continents:
+Five relay nodes running in production across two continents, including one home relay behind NAT:
 
-| Node | Region | Storage | Status |
-|------|--------|---------|--------|
-| Utah | NA | 5.1 GB | Healthy |
-| Utah-US | NA | 3.3 GB | Healthy |
-| Singapore | APAC | 5.1 GB | Healthy |
+| Node | Region | Specs | Status |
+|------|--------|-------|--------|
+| Utah | NA | 0.5 GB RAM, 20 GB disk | Healthy |
+| Utah-US | NA | 2 GB RAM, 60 GB disk | Healthy |
+| Singapore | APAC | 1 GB RAM, 25 GB disk | Healthy |
+| Singapore-2 | APAC | 1 GB RAM, 65 GB disk | Healthy |
+| Mac Mini (HomeHive) | NA | 64 GB RAM, local | Healthy (via Holesail tunnel) |
 
-All nodes auto-discover each other via Hyperswarm DHT, sync their app catalogs, and share health state. Average inter-relay latency: 280ms (Singapore), 525ms (Utah nodes).
+All nodes auto-discover each other via Hyperswarm DHT, sync their app catalogs automatically, and share health state. The Mac Mini runs behind NAT and connects to the network via Holesail transport — VPS relays discover it through DHT, exchange metadata over Protomux, and probe its API through the Holesail tunnel.
 
 ---
 
@@ -46,13 +48,16 @@ Accepts a directory path — reads all files recursively, writes them to an encr
 **What works today:**
 
 - **Publish + Seed** — publish a directory or file set, relay nodes store and serve it within seconds
-- **Always-on availability** — close your laptop, your app is still live on 3 relays
+- **Always-on availability** — close your laptop, your app is still live on 5 relays
 - **Blind/encrypted mode** — relay stores ciphertext only, content readable only by peers with the encryption key
 - **Gateway serving** — any seeded app accessible via HTTP at `relay:9100/v1/hyper/{driveKey}/path`
 - **20 service routes** via unified dispatch — AI inference, compute, storage, identity, schemas, SLAs
 - **Real-time events** — SSE subscriptions for seeding, connections, health changes
 - **Cross-app interoperability** — schema registry for shared data formats
 - **NAT traversal** — circuit relay bridges NAT-blocked peers through encrypted tunnels
+- **Holesail transport** — home/NAT relays tunnel their API through Holesail so VPS relays can probe and display them on the network dashboard
+- **Developer unseed (kill switch)** — developers can remotely unseed their apps across all relays with a signed request (Ed25519 signature verification, 5-minute replay window)
+- **Cross-relay catalog sync** — new relays automatically pull all existing apps from the network within seconds of connecting
 - **Pear Runtime native** — runs in Pear terminal apps via bare-events/bare-fs/bare-path, 11/11 tests passing
 
 **Client SDK methods:**
@@ -66,6 +71,7 @@ Accepts a directory path — reads all files recursively, writes them to an encr
 | `put(key, path, content)` | Write a file to a drive |
 | `list(key, path)` | List directory contents |
 | `seed(key, opts)` | Request relay nodes to persist your data |
+| `unseed(key)` | Remotely kill/unseed your app from all relays (signed) |
 | `reserveRelay()` | Reserve a circuit relay slot for NAT traversal |
 | `connectViaRelay(peer)` | Connect to a peer through a relay |
 | `callService(svc, method, params)` | Call any service on a relay over P2P |
@@ -190,7 +196,7 @@ Honest accounting of gaps:
 
 ## Test Coverage
 
-179 integration tests against the live 3-server network, all passing:
+179 integration tests against the live 5-server network, all passing:
 
 | Suite | Tests | What It Covers |
 |-------|-------|----------------|
@@ -228,18 +234,25 @@ Developer App
     ├─ publish('./my-app')  ──→  Hyperdrive (encrypted or plain)
     │                                │
     │                         Hyperswarm DHT
-    │                          ╱     │     ╲
-    │                   Utah    Utah-US   Singapore
-    │                   Relay    Relay      Relay
-    │                     │        │         │
-    │                     └── Catalog Sync ──┘
+    │                    ╱     ╱     │     ╲     ╲
+    │              Utah  Utah-US  Singapore  Singapore-2
+    │              Relay  Relay    Relay       Relay
+    │                │      │        │          │
+    │                └───── Catalog Sync ───────┘
+    │                               │
+    │                    Mac Mini (HomeHive)
+    │                    behind NAT ── Holesail tunnel ──→ VPS relays
     │
     ├─ client.get(key, path) ←── P2P replication
+    │
+    ├─ client.unseed(key)   ──→  Signed kill switch → all relays
     │
     └─ HTTP gateway  ──→  relay:9100/v1/hyper/{key}/path
 ```
 
 Blind mode: same flow, but drives are encrypted. Gateway returns 403. Peers need the encryption key to read.
+
+Holesail transport: home relays behind NAT use Holesail to tunnel their API to the public network. VPS relays discover them via DHT, exchange holesail keys over Protomux, and probe through the tunnel.
 
 ---
 
