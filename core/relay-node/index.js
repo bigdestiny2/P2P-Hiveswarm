@@ -159,6 +159,7 @@ export class RelayNode extends EventEmitter {
         keyPair: this.swarm.keyPair
       })
       this._seedProtocol.on('seed-request', (msg) => this._onSeedRequest(msg))
+      this._seedProtocol.on('unseed-request', (msg) => this._onUnseedRequest(msg))
 
       if (this.relay) {
         this._circuitRelay = new CircuitRelay(this.swarm, this.relay, {
@@ -337,6 +338,27 @@ export class RelayNode extends EventEmitter {
           // Broadcast app catalog to clients when apps change
           this.on('seeding', () => this.serviceProtocol?.broadcastAppCatalog())
           this.on('unseeded', () => this.serviceProtocol?.broadcastAppCatalog())
+
+          // Handle incoming app catalogs from other relays — seed missing apps
+          this.serviceProtocol.on('app-catalog', ({ apps }) => {
+            if (!this.config.enableSeeding || !apps || !Array.isArray(apps)) return
+            for (const app of apps) {
+              const appKey = app.appKey || app.driveKey
+              if (!appKey || this.appRegistry.has(appKey)) continue
+              this.seedApp(appKey, {
+                appId: app.id || app.appId || null,
+                name: app.name || null,
+                version: app.version || null,
+                blind: app.blind || false,
+                author: app.author || null,
+                description: app.description || ''
+              }).then(() => {
+                this.emit('catalog-sync', { appKey, source: 'remote-catalog' })
+              }).catch((err) => {
+                this.emit('catalog-sync-error', { appKey, error: err.message })
+              })
+            }
+          })
 
           this.emit('router-started', { routes: this.router.routes().length })
         }
@@ -586,7 +608,8 @@ export class RelayNode extends EventEmitter {
         name: opts.name || opts.appId || null,
         description: opts.description || '',
         author: opts.author || null,
-        blind: opts.blind || false
+        blind: opts.blind || false,
+        publisherPubkey: opts.publisherPubkey || null
       })
 
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
@@ -662,6 +685,70 @@ export class RelayNode extends EventEmitter {
     this.appRegistry.delete(appKeyHex) // auto-cleans dedup index + persists
 
     this.emit('unseeded', { appKey: appKeyHex })
+  }
+
+  /**
+   * Authenticated unseed: verify the publisher signature before unseeding.
+   * The publisher must sign (appKey + 'unseed' + timestamp) with the key
+   * that originally published the app (stored in appRegistry.publisherPubkey).
+   *
+   * @param {string} appKeyHex - 64-char hex app key
+   * @param {string} publisherPubkeyHex - 64-char hex publisher public key
+   * @param {string} signatureHex - 128-char hex Ed25519 signature
+   * @param {number} timestamp - Unix timestamp (ms) included in the signed payload
+   * @returns {{ ok: boolean, error?: string }}
+   */
+  verifyUnseedRequest (appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
+    const entry = this.appRegistry.get(appKeyHex)
+    if (!entry) return { ok: false, error: 'APP_NOT_FOUND' }
+
+    // Verify the publisher key matches the one that seeded the app
+    if (entry.publisherPubkey && entry.publisherPubkey !== publisherPubkeyHex) {
+      return { ok: false, error: 'PUBLISHER_MISMATCH' }
+    }
+
+    // If no publisher was stored (legacy app), accept any valid signature
+    // but log a warning — operators can tighten this later
+    if (!entry.publisherPubkey) {
+      this.emit('unseed-warning', {
+        appKey: appKeyHex,
+        reason: 'No publisher pubkey on record — accepting any valid signature'
+      })
+    }
+
+    // Check timestamp freshness (reject if older than 5 minutes)
+    const age = Date.now() - timestamp
+    if (age > 5 * 60 * 1000 || age < -60_000) {
+      return { ok: false, error: 'STALE_TIMESTAMP' }
+    }
+
+    // Verify Ed25519 signature over (appKey + 'unseed' + timestamp)
+    const appKeyBuf = b4a.from(appKeyHex, 'hex')
+    const pubkeyBuf = b4a.from(publisherPubkeyHex, 'hex')
+    const sigBuf = b4a.from(signatureHex, 'hex')
+
+    const tsBuf = b4a.alloc(8)
+    const tsView = new DataView(tsBuf.buffer, tsBuf.byteOffset)
+    tsView.setBigUint64(0, BigInt(timestamp))
+
+    const payload = b4a.concat([appKeyBuf, b4a.from('unseed'), tsBuf])
+    const valid = sodium.crypto_sign_verify_detached(sigBuf, payload, pubkeyBuf)
+
+    if (!valid) return { ok: false, error: 'INVALID_SIGNATURE' }
+    return { ok: true }
+  }
+
+  /**
+   * Broadcast an unseed request to all connected peers via P2P.
+   */
+  broadcastUnseed (appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
+    if (!this._seedProtocol) return
+    this._seedProtocol.publishUnseedRequest(
+      b4a.from(appKeyHex, 'hex'),
+      b4a.from(publisherPubkeyHex, 'hex'),
+      b4a.from(signatureHex, 'hex'),
+      timestamp
+    )
   }
 
   getStats () {
@@ -920,7 +1007,8 @@ export class RelayNode extends EventEmitter {
       if (autoAccept) {
         // Auto-accept: seed immediately
         try {
-          await this.seedApp(req.appKey)
+          const publisherHex = req.publisherPubkey ? b4a.toString(req.publisherPubkey, 'hex') : null
+          await this.seedApp(req.appKey, { publisherPubkey: publisherHex })
           await this.seedingRegistry.recordAcceptance(
             req.appKey,
             myPubkey,
@@ -968,6 +1056,24 @@ export class RelayNode extends EventEmitter {
     this._pendingRequests.delete(appKeyHex)
   }
 
+  _onUnseedRequest (msg) {
+    const appKeyHex = b4a.toString(msg.appKey, 'hex')
+    const publisherHex = b4a.toString(msg.publisherPubkey, 'hex')
+    const sigHex = b4a.toString(msg.publisherSignature, 'hex')
+
+    const result = this.verifyUnseedRequest(appKeyHex, publisherHex, sigHex, msg.timestamp)
+    if (!result.ok) {
+      this.emit('unseed-rejected', { appKey: appKeyHex, reason: result.error })
+      return
+    }
+
+    this.unseedApp(appKeyHex).then(() => {
+      this.emit('unseed-accepted', { appKey: appKeyHex, publisher: publisherHex })
+    }).catch((err) => {
+      this.emit('unseed-error', { appKey: appKeyHex, error: err })
+    })
+  }
+
   _onSeedRequest (msg) {
     if (!this.seeder) return
 
@@ -988,18 +1094,21 @@ export class RelayNode extends EventEmitter {
       availableBytes
     )
 
-    // Actually seed the core(s)
-    for (const dk of (msg.discoveryKeys || [])) {
-      const keyHex = b4a.toString(dk, 'hex')
-      this.seeder.seedCore(keyHex).catch((err) => {
-        this.emit('seed-error', { appKey: appKeyHex, core: keyHex, error: err })
-      })
-    }
-
-    // Also seed the app key itself
-    this.seeder.seedCore(appKeyHex).catch((err) => {
+    // Seed the app via AppRegistry (creates Hyperdrive + registers properly)
+    const publisherHex = msg.publisherPubkey ? b4a.toString(msg.publisherPubkey, 'hex') : null
+    this.seedApp(appKeyHex, { publisherPubkey: publisherHex }).catch((err) => {
       this.emit('seed-error', { appKey: appKeyHex, error: err })
     })
+
+    // Also seed any additional discovery keys
+    for (const dk of (msg.discoveryKeys || [])) {
+      const keyHex = b4a.toString(dk, 'hex')
+      if (keyHex !== appKeyHex) {
+        this.seeder.seedCore(keyHex).catch((err) => {
+          this.emit('seed-error', { appKey: appKeyHex, core: keyHex, error: err })
+        })
+      }
+    }
 
     this.emit('seed-accepted', { appKey: appKeyHex })
   }

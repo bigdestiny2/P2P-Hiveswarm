@@ -42,6 +42,7 @@ import { BootstrapCache } from '../core/bootstrap-cache.js'
 import {
   seedRequestEncoding,
   seedAcceptEncoding,
+  unseedRequestEncoding,
   relayReserveEncoding
 } from '../core/protocol/messages.js'
 import { SeedingRegistry } from '../core/registry/index.js'
@@ -477,6 +478,62 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   /**
+   * Unseed an app from all connected relays (developer kill switch).
+   * Signs an unseed request with the client's keypair to prove publisher ownership.
+   * The relay verifies the signature matches the publisherPubkey stored at seed time.
+   *
+   * @param {Buffer|string} appKey - 32-byte key or 64-char hex string
+   * @returns {Promise<{ relays: number }>} Number of relays the unseed was broadcast to
+   */
+  async unseed (appKey) {
+    if (!this.keyPair || !this.keyPair.secretKey) {
+      throw new Error('Cannot unseed without a keypair (publisher identity required)')
+    }
+
+    const keyBuf = typeof appKey === 'string' ? b4a.from(appKey, 'hex') : appKey
+    const keyHex = b4a.toString(keyBuf, 'hex')
+    const timestamp = Date.now()
+
+    // Sign (appKey + 'unseed' + timestamp) with publisher's secret key
+    const tsBuf = b4a.alloc(8)
+    const tsView = new DataView(tsBuf.buffer, tsBuf.byteOffset)
+    tsView.setBigUint64(0, BigInt(timestamp))
+
+    const payload = b4a.concat([keyBuf, b4a.from('unseed'), tsBuf])
+    const signature = b4a.alloc(64)
+    sodium.crypto_sign_detached(signature, payload, this.keyPair.secretKey)
+
+    // Broadcast unseed via Protomux to all connected relays
+    let broadcastCount = 0
+    for (const relay of this.relays.values()) {
+      if (relay.channels.seed) {
+        // Use the seed protocol's unseed message
+        const channel = relay.channels.seed
+        if (channel.unseedMsg) {
+          channel.unseedMsg.send({
+            appKey: keyBuf,
+            timestamp,
+            publisherPubkey: this.keyPair.publicKey,
+            publisherSignature: signature
+          })
+          broadcastCount++
+        }
+      }
+    }
+
+    // Clean up local state
+    this.seedRequests.delete(keyHex)
+
+    this.emit('unseed-published', {
+      appKey: keyHex,
+      relays: broadcastCount,
+      timestamp
+    })
+
+    return { relays: broadcastCount }
+  }
+
+  /**
    * Reserve a circuit relay slot for NAT traversal.
    */
   async reserveRelay (relayPubKey) {
@@ -719,8 +776,13 @@ export class HiveRelayClient extends EventEmitter {
         onmessage: (msg) => this._onSeedAccept(pubkeyHex, msg)
       })
 
-      seedChannel._hiverelay = { requestMsg, acceptMsg }
-      channels.seed = { channel: seedChannel, requestMsg, acceptMsg }
+      const unseedMsg = seedChannel.addMessage({
+        encoding: unseedRequestEncoding,
+        onmessage: () => {} // Client doesn't handle incoming unseed requests
+      })
+
+      seedChannel._hiverelay = { requestMsg, acceptMsg, unseedMsg }
+      channels.seed = { channel: seedChannel, requestMsg, acceptMsg, unseedMsg }
       seedChannel.open(b4a.from(JSON.stringify({ major: 1, minor: 0 })))
     } catch (err) {
       this.emit('protocol-error', { relay: pubkeyHex, protocol: 'seed', error: err })

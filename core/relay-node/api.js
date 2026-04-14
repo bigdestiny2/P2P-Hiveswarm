@@ -533,6 +533,29 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { ok: true })
         }
 
+        // ─── Developer Authenticated Unseed (Kill Switch) ───────────
+        if (path === '/api/v1/unseed') {
+          if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
+          if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+          if (!body.publisherPubkey) return this._json(res, { error: 'publisherPubkey required' }, 400)
+          if (!isValidHexKey(body.publisherPubkey, 64)) return this._json(res, { error: 'publisherPubkey must be 64 hex characters' }, 400)
+          if (!body.signature) return this._json(res, { error: 'signature required' }, 400)
+          if (!isValidHexKey(body.signature, 128)) return this._json(res, { error: 'signature must be 128 hex characters' }, 400)
+          if (!body.timestamp || typeof body.timestamp !== 'number') return this._json(res, { error: 'timestamp required (unix ms)' }, 400)
+
+          const result = this.node.verifyUnseedRequest(body.appKey, body.publisherPubkey, body.signature, body.timestamp)
+          if (!result.ok) {
+            return this._json(res, { error: result.error }, 403)
+          }
+
+          await this.node.unseedApp(body.appKey)
+
+          // Propagate unseed to other relays via P2P
+          this.node.broadcastUnseed(body.appKey, body.publisherPubkey, body.signature, body.timestamp)
+
+          return this._json(res, { ok: true, message: 'App unseeded and unseed broadcast to network' })
+        }
+
         // ─── Live Management API ─────────────────────────────────────
 
         if (path === '/api/manage/config') {

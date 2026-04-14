@@ -19,6 +19,7 @@ export const MSG = {
   SEED_CANCEL: 0x04,
   SEED_HEARTBEAT: 0x05,
   SEED_STATUS: 0x06,
+  SEED_UNSEED: 0x07,
 
   // Circuit Relay (0x10 - 0x1F)
   RELAY_RESERVE: 0x10,
@@ -143,6 +144,34 @@ export const seedAcceptEncoding = {
       region: c.string.decode(state),
       availableStorageBytes: c.uint.decode(state),
       relaySignature: c.fixed64.decode(state)
+    }
+  }
+}
+
+/**
+ * Unseed request: developer requests relay to stop seeding their app.
+ * Signed by the publisher's key to prove ownership.
+ * { appKey: Buffer(32), timestamp: uint, publisherPubkey: Buffer(32), publisherSignature: Buffer(64) }
+ */
+export const unseedRequestEncoding = {
+  preencode (state, msg) {
+    c.fixed32.preencode(state, msg.appKey)
+    c.uint.preencode(state, msg.timestamp)
+    c.fixed32.preencode(state, msg.publisherPubkey)
+    c.fixed64.preencode(state, msg.publisherSignature)
+  },
+  encode (state, msg) {
+    c.fixed32.encode(state, msg.appKey)
+    c.uint.encode(state, msg.timestamp)
+    c.fixed32.encode(state, msg.publisherPubkey)
+    c.fixed64.encode(state, msg.publisherSignature)
+  },
+  decode (state) {
+    return {
+      appKey: c.fixed32.decode(state),
+      timestamp: c.uint.decode(state),
+      publisherPubkey: c.fixed32.decode(state),
+      publisherSignature: c.fixed64.decode(state)
     }
   }
 }

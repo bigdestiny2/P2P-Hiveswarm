@@ -13,7 +13,8 @@ import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
 import {
   seedRequestEncoding,
-  seedAcceptEncoding
+  seedAcceptEncoding,
+  unseedRequestEncoding
 } from './messages.js'
 import { TokenBucketRateLimiter } from './rate-limiter.js'
 
@@ -65,7 +66,12 @@ export class SeedProtocol extends EventEmitter {
       onmessage: (msg) => this._onSeedAccept(channel, msg)
     })
 
-    channel._hiverelay = { seedRequestMsg, seedAcceptMsg }
+    const unseedRequestMsg = channel.addMessage({
+      encoding: unseedRequestEncoding,
+      onmessage: (msg) => this._onUnseedRequest(channel, msg)
+    })
+
+    channel._hiverelay = { seedRequestMsg, seedAcceptMsg, unseedRequestMsg }
     channel.open(b4a.from(JSON.stringify(PROTOCOL_VERSION)))
 
     this.channels.add(channel)
@@ -131,6 +137,68 @@ export class SeedProtocol extends EventEmitter {
       appKey: b4a.toString(appKey, 'hex'),
       relay: b4a.toString(relayPubkey, 'hex')
     })
+  }
+
+  /**
+   * Publish an unseed request to connected relays (developer kill switch)
+   */
+  publishUnseedRequest (appKey, publisherPubkey, publisherSignature, timestamp) {
+    const request = {
+      appKey,
+      timestamp: timestamp || Date.now(),
+      publisherPubkey,
+      publisherSignature
+    }
+
+    for (const channel of this.channels) {
+      if (channel.opened && channel._hiverelay) {
+        channel._hiverelay.unseedRequestMsg.send(request)
+      }
+    }
+
+    this.emit('unseed-published', { appKey: b4a.toString(appKey, 'hex') })
+  }
+
+  _onUnseedRequest (channel, msg) {
+    const peerKey = channel.stream && channel.stream.remotePublicKey
+      ? b4a.toString(channel.stream.remotePublicKey, 'hex')
+      : 'unknown'
+
+    // Rate limit
+    const rateCheck = this.rateLimiter.check(peerKey)
+    if (!rateCheck.allowed) return
+
+    // Verify signature: publisher signs (appKey + 'unseed' + timestamp)
+    if (!this._verifyUnseedSignature(msg)) {
+      this.emit('invalid-unseed', { appKey: b4a.toString(msg.appKey, 'hex'), reason: 'bad signature' })
+      return
+    }
+
+    // Check timestamp freshness (reject if older than 5 minutes)
+    const age = Date.now() - msg.timestamp
+    if (age > 5 * 60 * 1000 || age < -60_000) {
+      this.emit('invalid-unseed', { appKey: b4a.toString(msg.appKey, 'hex'), reason: 'stale timestamp' })
+      return
+    }
+
+    this.emit('unseed-request', msg)
+  }
+
+  _verifyUnseedSignature (msg) {
+    if (!msg.publisherPubkey || !msg.publisherSignature) return false
+    const payload = b4a.concat([
+      msg.appKey,
+      b4a.from('unseed'),
+      this._uint64Buf(msg.timestamp)
+    ])
+    return sodium.crypto_sign_verify_detached(msg.publisherSignature, payload, msg.publisherPubkey)
+  }
+
+  _uint64Buf (n) {
+    const buf = b4a.alloc(8)
+    const view = new DataView(buf.buffer, buf.byteOffset)
+    view.setBigUint64(0, BigInt(n))
+    return buf
   }
 
   _onSeedRequest (channel, msg) {
@@ -230,7 +298,7 @@ export class SeedProtocol extends EventEmitter {
 
   _serializeForSigning (msg) {
     const parts = [msg.appKey]
-    
+
     // Hash discoveryKeys array to prevent tampering
     // This ensures the entire array is committed to, not just individual elements
     const discoveryKeysHash = b4a.alloc(32)
@@ -239,7 +307,7 @@ export class SeedProtocol extends EventEmitter {
       sodium.crypto_generichash(discoveryKeysHash, dkConcat)
     }
     parts.push(discoveryKeysHash)
-    
+
     const meta = b4a.alloc(28)
     const view = new DataView(meta.buffer, meta.byteOffset)
     view.setUint8(0, msg.replicationFactor)
