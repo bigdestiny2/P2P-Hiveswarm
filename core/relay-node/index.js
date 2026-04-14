@@ -30,6 +30,7 @@ import {
   AIService, SLAService, SchemaService, ArbitrationService, ZKService
 } from '../services/index.js'
 import { Router } from '../router/index.js'
+import { AppRegistry } from '../app-registry.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -79,8 +80,9 @@ export class RelayNode extends EventEmitter {
     this.torTransport = null
     this.paymentManager = null
     this.settlementInterval = null
-    this.seededApps = new Map() // appKey hex -> { drive, discoveryKey, startedAt, bytesServed, appId, version }
-    this.appIndex = new Map() // appId string -> appKey hex (deduplication index)
+    this.appRegistry = new AppRegistry(this.config.storage)
+    // Backwards compat: this.seededApps is the same Map instance
+    this.seededApps = this.appRegistry.apps
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -118,6 +120,8 @@ export class RelayNode extends EventEmitter {
       const bootstrap = this.bootstrapCache.merge(this.config.bootstrapNodes)
 
       const keyPair = await this._loadOrCreateKeyPair()
+      this.keyPair = keyPair
+      this.publicKey = keyPair.publicKey
 
       this.swarm = new Hyperswarm({
         bootstrap,
@@ -312,20 +316,7 @@ export class RelayNode extends EventEmitter {
         await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
 
         // Set up seeded apps callback for catalog broadcast
-        this.serviceProtocol._getSeededApps = () => {
-          const apps = []
-          for (const [appKey, entry] of this.seededApps) {
-            apps.push({
-              appKey,
-              appId: entry.appId || null,
-              version: entry.version || null,
-              discoveryKey: entry.discoveryKey?.toString('hex') || null,
-              blind: entry.blind || false,
-              seededAt: entry.startedAt
-            })
-          }
-          return apps
-        }
+        this.serviceProtocol._getSeededApps = () => this.appRegistry.catalogForBroadcast()
 
         this.emit('services-started', { count: this.serviceRegistry.services.size })
 
@@ -382,8 +373,8 @@ export class RelayNode extends EventEmitter {
         }
       }
 
-      // Re-seed apps from persistent log (survives restarts)
-      this._reseedFromLog().catch((err) => {
+      // Load app registry from disk and reseed all persisted apps
+      this._reseedFromRegistry().catch((err) => {
         this.emit('reseed-error', { error: err })
       })
 
@@ -431,53 +422,55 @@ export class RelayNode extends EventEmitter {
     return this
   }
 
-  async _loadSeededAppsLog () {
-    const logPath = join(this.config.storage, 'seeded-apps.json')
-    try {
-      const data = JSON.parse(await readFile(logPath, 'utf8'))
-      return Array.isArray(data) ? data : []
-    } catch (_) {
-      return []
+  async _reseedFromRegistry () {
+    // Load persisted entries — also migrates old seeded-apps.json format
+    const entries = await this.appRegistry.load()
+    if (!entries.length) {
+      // Try migrating from old seeded-apps.json if app-registry.json doesn't exist
+      await this._migrateOldSeededApps()
+      return
     }
-  }
 
-  async _saveSeededAppsLog () {
-    const logPath = join(this.config.storage, 'seeded-apps.json')
-    const entries = []
-    for (const [appKey, entry] of this.seededApps) {
-      entries.push({
-        appKey,
-        startedAt: entry.startedAt,
-        appId: entry.appId || null,
-        version: entry.version || null
-      })
-    }
-    try {
-      await writeFile(logPath, JSON.stringify(entries, null, 2))
-    } catch (err) {
-      this.emit('error', { context: 'seeded-apps-log', error: err })
-    }
-  }
-
-  async _reseedFromLog () {
-    const saved = await this._loadSeededAppsLog()
-    if (!saved.length) return
-
-    for (const entry of saved) {
-      if (this.seededApps.has(entry.appKey)) continue
+    for (const entry of entries) {
+      if (!entry.appKey) continue
       try {
         await this.seedApp(entry.appKey, {
           appId: entry.appId || null,
           version: entry.version || null
         })
-        // Rebuild appIndex from saved metadata
-        if (entry.appId) {
-          this.appIndex.set(entry.appId, entry.appKey)
-        }
         this.emit('reseeded', { appKey: entry.appKey })
       } catch (err) {
         this.emit('reseed-error', { appKey: entry.appKey, error: err })
       }
+    }
+  }
+
+  /**
+   * One-time migration from old seeded-apps.json → unified app-registry.json
+   */
+  async _migrateOldSeededApps () {
+    try {
+      const oldPath = join(this.config.storage, 'seeded-apps.json')
+      const data = JSON.parse(await readFile(oldPath, 'utf8'))
+      const entries = Array.isArray(data) ? data : []
+      if (!entries.length) return
+
+      for (const entry of entries) {
+        const appKey = entry.appKey
+        if (!appKey) continue
+        try {
+          await this.seedApp(appKey, {
+            appId: entry.appId || null,
+            version: entry.version || null
+          })
+          this.emit('reseeded', { appKey, source: 'migration' })
+        } catch (err) {
+          this.emit('reseed-error', { appKey, error: err })
+        }
+      }
+      // Migration done — registry is now saved in new format
+    } catch (_) {
+      // No old file — fresh install
     }
   }
 
@@ -567,17 +560,20 @@ export class RelayNode extends EventEmitter {
       }
       eagerReplicate().catch(() => {})
 
-      this.seededApps.set(appKeyHex, {
+      this.appRegistry.set(appKeyHex, {
         drive,
         discoveryKey,
         startedAt: Date.now(),
         bytesServed: 0,
         appId: opts.appId || null,
-        version: opts.version || null
+        version: opts.version || null,
+        name: opts.name || opts.appId || null,
+        description: opts.description || '',
+        author: opts.author || null,
+        blind: opts.blind || false
       })
 
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
-      this._saveSeededAppsLog().catch(() => {})
       return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
       try { await drive.close() } catch (_) {}
@@ -603,84 +599,52 @@ export class RelayNode extends EventEmitter {
 
       const version = manifest.version || '0.0.0'
 
-      // Update this entry's metadata
-      const entry = this.seededApps.get(appKeyHex)
-      if (entry) {
-        entry.appId = appId
-        entry.version = version
-      }
+      // Update this entry's metadata via the registry
+      this.appRegistry.update(appKeyHex, {
+        appId,
+        version,
+        name: manifest.name || appId,
+        description: manifest.description || '',
+        author: manifest.author || null,
+        categories: manifest.categories || null
+      })
 
-      // Check if we already have a different drive for the same appId
-      const existingKey = this.appIndex.get(appId)
-      if (existingKey && existingKey !== appKeyHex) {
-        const existingEntry = this.seededApps.get(existingKey)
-        const existingVersion = existingEntry?.version || '0.0.0'
-
-        // Only replace if new version is >= existing
-        if (this._compareVersions(version, existingVersion) >= 0) {
+      // Check for version conflicts with existing apps
+      const conflict = this.appRegistry.checkConflict(appId, appKeyHex, version)
+      if (conflict.conflict) {
+        if (conflict.shouldReplace) {
           this.emit('app-replaced', {
             appId,
-            oldKey: existingKey,
-            oldVersion: existingVersion,
+            oldKey: conflict.existingKey,
+            oldVersion: conflict.existingVersion,
             newKey: appKeyHex,
             newVersion: version
           })
-
-          // Unseed the old version
-          await this.unseedApp(existingKey)
+          await this.unseedApp(conflict.existingKey)
         } else {
-          // Old version is newer — unseed the one we just added
           this.emit('app-version-rejected', {
             appId,
             rejectedKey: appKeyHex,
             rejectedVersion: version,
-            currentKey: existingKey,
-            currentVersion: existingVersion
+            currentKey: conflict.existingKey,
+            currentVersion: conflict.existingVersion
           })
           await this.unseedApp(appKeyHex)
           return
         }
       }
-
-      // Update the appId → key index
-      this.appIndex.set(appId, appKeyHex)
-      this._saveSeededAppsLog().catch(() => {})
     } catch (_) {
       // No manifest or parse error — skip deduplication silently
     }
   }
 
-  /**
-   * Compare semver-like version strings. Returns:
-   *   1  if a > b
-   *   0  if a == b
-   *  -1  if a < b
-   */
-  _compareVersions (a, b) {
-    const pa = (a || '0.0.0').split('.').map(Number)
-    const pb = (b || '0.0.0').split('.').map(Number)
-    for (let i = 0; i < 3; i++) {
-      const na = pa[i] || 0
-      const nb = pb[i] || 0
-      if (na > nb) return 1
-      if (na < nb) return -1
-    }
-    return 0
-  }
-
   async unseedApp (appKeyHex) {
-    const entry = this.seededApps.get(appKeyHex)
+    const entry = this.appRegistry.get(appKeyHex)
     if (!entry) return
-
-    // Clean up the appId → key index
-    if (entry.appId && this.appIndex.get(entry.appId) === appKeyHex) {
-      this.appIndex.delete(entry.appId)
-    }
 
     try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
     try { await entry.drive.close() } catch (_) {}
-    this.seededApps.delete(appKeyHex)
-    this._saveSeededAppsLog().catch(() => {})
+    this.appRegistry.delete(appKeyHex) // auto-cleans dedup index + persists
 
     this.emit('unseeded', { appKey: appKeyHex })
   }
