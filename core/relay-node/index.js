@@ -24,6 +24,12 @@ import { NetworkDiscovery } from '../network-discovery.js'
 import { HealthMonitor } from './health-monitor.js'
 import { SelfHeal } from './self-heal.js'
 import { SeedingRegistry } from '../registry/index.js'
+import {
+  ServiceRegistry, ServiceProtocol,
+  StorageService, IdentityService, ComputeService,
+  AIService, SLAService, SchemaService, ArbitrationService, ZKService
+} from '../services/index.js'
+import { Router } from '../router/index.js'
 
 // Well-known discovery topic — clients join this to find relay nodes
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
@@ -91,6 +97,9 @@ export class RelayNode extends EventEmitter {
     this.selfHeal = null
     this.seedingRegistry = null
     this._registryScanInterval = null
+    this.serviceRegistry = null
+    this.serviceProtocol = null
+    this.router = null
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this.running = false
   }
@@ -275,9 +284,76 @@ export class RelayNode extends EventEmitter {
         }, interval)
       }
 
+      // ─── Services Layer ─────────────────────────────────────────────
+      if (this.config.enableServices !== false) {
+        this.serviceRegistry = new ServiceRegistry()
+        this.serviceProtocol = new ServiceProtocol(this.serviceRegistry)
+
+        // Register built-in services
+        const storageService = new StorageService({
+          policyGuard: this.policyGuard || null,
+          getAppTier: (keyHex) => this.seededApps.get(keyHex)?.privacyTier || null
+        })
+        const identityService = new IdentityService()
+        const computeService = new ComputeService()
+        const aiService = new AIService()
+        const zkService = new ZKService()
+
+        this.serviceRegistry.register(storageService)
+        this.serviceRegistry.register(identityService)
+        this.serviceRegistry.register(computeService)
+        this.serviceRegistry.register(aiService)
+        this.serviceRegistry.register(zkService)
+        this.serviceRegistry.register(new SLAService())
+        this.serviceRegistry.register(new SchemaService())
+        this.serviceRegistry.register(new ArbitrationService())
+
+        // Start all services (passes { node: this } as context)
+        await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
+
+        // Set up seeded apps callback for catalog broadcast
+        this.serviceProtocol._getSeededApps = () => {
+          const apps = []
+          for (const [appKey, entry] of this.seededApps) {
+            apps.push({
+              appKey,
+              appId: entry.appId || null,
+              version: entry.version || null,
+              discoveryKey: entry.discoveryKey?.toString('hex') || null,
+              blind: entry.blind || false,
+              seededAt: entry.startedAt
+            })
+          }
+          return apps
+        }
+
+        this.emit('services-started', { count: this.serviceRegistry.services.size })
+
+        // ─── Application-Layer Router ─────────────────────────────────
+        if (this.config.enableRouter !== false) {
+          this.router = new Router()
+          this.router.registerFromRegistry(this.serviceRegistry)
+          await this.router.start()
+
+          // Wire router into service protocol for P2P dispatch
+          this.serviceProtocol.router = this.router
+
+          // Bridge relay events to pub/sub
+          for (const evt of ['connection', 'connection-closed', 'seeding', 'unseeded', 'circuit-closed', 'seed-accepted']) {
+            this.on(evt, (data) => this.router?.pubsub?.publish(`events/${evt}`, data))
+          }
+
+          // Broadcast app catalog to clients when apps change
+          this.on('seeding', () => this.serviceProtocol?.broadcastAppCatalog())
+          this.on('unseeded', () => this.serviceProtocol?.broadcastAppCatalog())
+
+          this.emit('router-started', { routes: this.router.routes().length })
+        }
+      }
+
       this._startHealthChecks()
 
-      // Start seeding registry — distributed Autobase registry for seed requests
+      // Start seeding registry
       if (this.config.enableSeeding) {
         try {
           // Registry uses its own Corestore namespace to avoid conflicts
@@ -790,6 +866,18 @@ export class RelayNode extends EventEmitter {
         this.emit('protocol-error', { protocol: 'proof', error: err })
       }
     }
+    if (this.serviceProtocol) {
+      try {
+        const remotePubKeyHex = conn.remotePublicKey
+          ? b4a.toString(conn.remotePublicKey, 'hex')
+          : null
+        if (remotePubKeyHex) {
+          this.serviceProtocol.attach(conn, remotePubKeyHex)
+        }
+      } catch (err) {
+        this.emit('protocol-error', { protocol: 'services', error: err })
+      }
+    }
 
     const entry = { lastActivity: Date.now() }
     this.connections.set(conn, entry)
@@ -998,6 +1086,20 @@ export class RelayNode extends EventEmitter {
       this.api = null
     }
     if (this.metrics) { this.metrics.stop(); this.metrics = null }
+
+    // Stop services layer
+    if (this.router) {
+      try { await withTimeout(this.router.stop(), timeout, 'router.stop') } catch (_) {}
+      this.router = null
+    }
+    if (this.serviceProtocol) {
+      try { this.serviceProtocol.destroy() } catch (_) {}
+      this.serviceProtocol = null
+    }
+    if (this.serviceRegistry) {
+      try { await this.serviceRegistry.stopAll() } catch (_) {}
+      this.serviceRegistry = null
+    }
 
     // Destroy protocol handlers
     if (this._seedProtocol) { this._seedProtocol.destroy(); this._seedProtocol = null }

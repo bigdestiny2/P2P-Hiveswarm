@@ -429,6 +429,48 @@ export class RelayAPI extends EventEmitter {
         }
       }
 
+      // ─── Services & Router ───
+      if (req.method === 'GET' && path === '/api/v1/services') {
+        if (!this.node.serviceRegistry) {
+          return this._json(res, { error: 'Services not enabled' }, 503)
+        }
+        return this._json(res, {
+          services: this.node.serviceRegistry.catalog(),
+          count: this.node.serviceRegistry.services.size
+        })
+      }
+
+      if (req.method === 'GET' && path === '/api/v1/router') {
+        if (!this.node.router) {
+          return this._json(res, { error: 'Router not enabled' }, 503)
+        }
+        return this._json(res, {
+          routes: this.node.router.routes().length,
+          pubsub: this.node.router.pubsub ? {
+            topics: this.node.router.pubsub.topics?.() || []
+          } : null
+        })
+      }
+
+      if (req.method === 'POST' && path === '/api/v1/dispatch') {
+        if (!this.node.router) {
+          return this._json(res, { error: 'Router not enabled' }, 503)
+        }
+        const body = await this._readBody(req)
+        if (!body.route || typeof body.route !== 'string') {
+          return this._json(res, { error: 'route required (e.g. "ai.infer", "zk.commit")' }, 400)
+        }
+        try {
+          const result = await this.node.router.dispatch(body.route, body.params || {}, {
+            transport: 'http',
+            caller: 'api'
+          })
+          return this._json(res, { ok: true, result })
+        } catch (err) {
+          return this._json(res, { error: err.message }, 400)
+        }
+      }
+
       // POST routes
       if (req.method === 'POST') {
         const body = await this._readBody(req)
