@@ -36,6 +36,8 @@ import Protomux from 'protomux'
 import c from 'compact-encoding'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
+import { readdir, readFile, writeFile, stat, mkdir } from 'fs/promises'
+import { join, relative, resolve } from 'path'
 import { BootstrapCache } from '../core/bootstrap-cache.js'
 import {
   seedRequestEncoding,
@@ -198,8 +200,23 @@ export class HiveRelayClient extends EventEmitter {
    * @param {number} opts.timeout - Seed request timeout in ms
    * @returns {Promise<Hyperdrive>} The published drive
    */
-  async publish (files, opts = {}) {
+  async publish (filesOrDir, opts = {}) {
     this._ensureStarted()
+
+    // Support directory path: client.publish('./my-app') reads all files from disk
+    let files
+    if (typeof filesOrDir === 'string') {
+      const dirPath = resolve(filesOrDir)
+      files = await this._readDirectory(dirPath)
+      if (files.length === 0) throw new Error('No files found in ' + dirPath)
+      // Auto-derive appId from directory name if not set
+      if (!opts.appId) {
+        const dirName = dirPath.split('/').pop() || dirPath.split('\\').pop()
+        opts.appId = dirName
+      }
+    } else {
+      files = filesOrDir
+    }
 
     let drive
     let isUpdate = false
@@ -226,9 +243,11 @@ export class HiveRelayClient extends EventEmitter {
       }
     }
 
-    // No existing drive found — create new
+    // No existing drive found — create new with unique namespace
+    // (avoids Corestore contention under active replication in Pear/Bare runtime)
     if (!drive) {
-      drive = new Hyperdrive(this.store, null, driveOpts)
+      const ns = this.store.namespace('drive-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+      drive = new Hyperdrive(ns, null, driveOpts)
     }
 
     await drive.ready()
@@ -1046,13 +1065,33 @@ export class HiveRelayClient extends EventEmitter {
     if (!this.store) throw new Error('No store available — pass a storage path or { store } option')
   }
 
+  // ─── Directory Reading (for publish('./my-app') sugar) ──────────
+
+  async _readDirectory (dirPath, rootDir) {
+    if (!rootDir) rootDir = resolve(dirPath)
+    const files = []
+    const entries = await readdir(dirPath, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        // Skip node_modules, .git, hidden dirs
+        if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.')) continue
+        const subFiles = await this._readDirectory(fullPath, rootDir)
+        files.push(...subFiles)
+      } else if (entry.isFile()) {
+        const relPath = '/' + relative(rootDir, fullPath)
+        const content = await readFile(fullPath)
+        files.push({ path: relPath, content })
+      }
+    }
+    return files
+  }
+
   // ─── App→Drive Mapping Persistence ──────────────────────────────
 
   async _loadAppDriveMapping (appId) {
     if (!this._storagePath) return null
     try {
-      const { readFile } = await import('fs/promises')
-      const { join } = await import('path')
       const mapPath = join(this._storagePath, 'app-drives.json')
       const data = JSON.parse(await readFile(mapPath, 'utf8'))
       return data[appId] || null
@@ -1064,8 +1103,6 @@ export class HiveRelayClient extends EventEmitter {
   async _saveAppDriveMapping (appId, keyHex) {
     if (!this._storagePath) return
     try {
-      const { readFile, writeFile, mkdir } = await import('fs/promises')
-      const { join } = await import('path')
       await mkdir(this._storagePath, { recursive: true })
       const mapPath = join(this._storagePath, 'app-drives.json')
       let data = {}

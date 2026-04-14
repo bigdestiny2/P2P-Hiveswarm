@@ -506,13 +506,20 @@ client<span class="punct">.</span><span class="fn">on</span><span class="punct">
 
 <h3 id="sdk-publish">Publish Files to a Hyperdrive</h3>
 
+<p>Publish an entire directory (reads all files recursively, skips node_modules/.git):</p>
+
+<div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="cmt">// Publish a directory — the simple way</span>
+<span class="kw">const</span> drive <span class="punct">=</span> <span class="kw">await</span> client<span class="punct">.</span><span class="fn">publish</span><span class="punct">(</span><span class="str">'./my-app'</span><span class="punct">)</span>
+console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Your app is live! Key:'</span><span class="punct">,</span> drive<span class="punct">.</span>key<span class="punct">.</span><span class="fn">toString</span><span class="punct">(</span><span class="str">'hex'</span><span class="punct">))</span></code></pre></div>
+
+<p>Or publish individual files with explicit content:</p>
+
 <div class="code-wrap"><div class="code-header"><span class="code-lang">javascript</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
 <pre><code><span class="kw">const</span> drive <span class="punct">=</span> <span class="kw">await</span> client<span class="punct">.</span><span class="fn">publish</span><span class="punct">([</span>
   <span class="punct">{</span> <span class="prop">path</span><span class="punct">:</span> <span class="str">'/index.html'</span><span class="punct">,</span> <span class="prop">content</span><span class="punct">:</span> <span class="str">'&lt;h1&gt;Hello World&lt;/h1&gt;'</span> <span class="punct">},</span>
   <span class="punct">{</span> <span class="prop">path</span><span class="punct">:</span> <span class="str">'/app.js'</span><span class="punct">,</span> <span class="prop">content</span><span class="punct">:</span> <span class="str">'console.log("running")'</span> <span class="punct">}</span>
-<span class="punct">])</span>
-
-console<span class="punct">.</span><span class="fn">log</span><span class="punct">(</span><span class="str">'Drive key:'</span><span class="punct">,</span> drive<span class="punct">.</span>key<span class="punct">.</span><span class="fn">toString</span><span class="punct">(</span><span class="str">'hex'</span><span class="punct">))</span></code></pre></div>
+<span class="punct">])</span></code></pre></div>
 
 <h3 id="sdk-read">Read Back</h3>
 
