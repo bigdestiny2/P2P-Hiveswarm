@@ -1409,29 +1409,28 @@ export class RelayAPI extends EventEmitter {
           if (!reinstated) return this._json(res, { error: 'App not suspended' }, 404)
           return this._json(res, { ok: true, reinstated: body.appKey })
         }
-      }
 
-      // ─── Router Dispatch Endpoint ───
-      if (req.method === 'POST' && path === '/api/v1/dispatch') {
-        if (!this._verifyApiKey(req)) {
-          return this._json(res, { error: 'Authentication required' }, 401)
+        // ─── Router Dispatch Endpoint ───
+        if (path === '/api/v1/dispatch') {
+          if (!this._verifyApiKey(req)) {
+            return this._json(res, { error: 'Authentication required' }, 401)
+          }
+          if (!this.node.router) {
+            return this._json(res, { error: 'Router not enabled' }, 503)
+          }
+          if (!body.route || typeof body.route !== 'string') {
+            return this._json(res, { error: 'route required' }, 400)
+          }
+          if (body.route.length > 128) {
+            return this._json(res, { error: 'route too long' }, 400)
+          }
+          const result = await this.node.router.dispatch(body.route, body.params || {}, {
+            transport: 'http',
+            ip,
+            caller: 'http'
+          })
+          return this._json(res, { result })
         }
-        if (!this.node.router) {
-          return this._json(res, { error: 'Router not enabled' }, 503)
-        }
-        const body = await this._readBody(req)
-        if (!body.route || typeof body.route !== 'string') {
-          return this._json(res, { error: 'route required' }, 400)
-        }
-        if (body.route.length > 128) {
-          return this._json(res, { error: 'route too long' }, 400)
-        }
-        const result = await this.node.router.dispatch(body.route, body.params || {}, {
-          transport: 'http',
-          ip,
-          caller: 'http'
-        })
-        return this._json(res, { result })
       }
 
       // ─── Router Pub/Sub SSE Endpoint ───
@@ -1707,6 +1706,9 @@ export class RelayAPI extends EventEmitter {
   }
 
   _readBody (req) {
+    // Return cached body if already parsed (prevents double-read hangs)
+    if (req._parsedBody !== undefined) return Promise.resolve(req._parsedBody)
+
     return new Promise((resolve, reject) => {
       let data = ''
       let size = 0
@@ -1723,7 +1725,9 @@ export class RelayAPI extends EventEmitter {
       })
       req.on('end', () => {
         try {
-          resolve(data ? JSON.parse(data) : {})
+          const parsed = data ? JSON.parse(data) : {}
+          req._parsedBody = parsed
+          resolve(parsed)
         } catch {
           reject(new Error('Invalid JSON body'))
         }
