@@ -1,0 +1,16 @@
+{
+  "name": "hiverelay-pear-example",
+  "version": "1.0.0",
+  "description": "Minimal Pear app using HiveRelay for always-on content persistence",
+  "type": "module",
+  "main": "index.js",
+  "pear": {
+    "name": "hiverelay-example",
+    "bin": "hiverelay-example"
+  },
+  "dependencies": {
+    "p2p-hiverelay": "file:../../",
+    "hyperswarm": "^4.7.0",
+    "corestore": "^6.18.0"
+  }
+}

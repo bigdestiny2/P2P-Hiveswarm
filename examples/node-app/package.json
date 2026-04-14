@@ -1,0 +1,10 @@
+{
+  "name": "hiverelay-node-example",
+  "version": "1.0.0",
+  "description": "Minimal Node.js app using HiveRelay for always-on content persistence",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "p2p-hiverelay": "file:../../"
+  }
+}

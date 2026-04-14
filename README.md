@@ -282,22 +282,40 @@ open http://localhost:9100/docs
 npm install p2p-hiverelay
 ```
 
+**Node.js:**
 ```js
 import { HiveRelayClient } from 'p2p-hiverelay/client'
 
-// Create a client (auto-creates Hyperswarm + Corestore)
 const app = new HiveRelayClient('./my-app-storage')
 await app.start()
 
-// Publish content — returns a Hyperdrive
+// Publish a directory or individual files
+const drive = await app.publish('./my-app')
+// OR
 const drive = await app.publish([
   { path: '/index.html', content: '<h1>My P2P App</h1>' },
   { path: '/data.json', content: JSON.stringify({ version: 1 }) }
 ])
 
 console.log('Share this key:', drive.key.toString('hex'))
-// Your app is now seeded on relay nodes and available to anyone with the key
 ```
+
+**Pear / Bare Runtime:**
+```js
+import Hyperswarm from 'hyperswarm'
+import Corestore from 'corestore'
+import { HiveRelayClient } from 'p2p-hiverelay/client'
+
+const store = new Corestore(Pear.config.storage)
+const app = new HiveRelayClient({ swarm: new Hyperswarm(), store })
+await app.start()
+
+const drive = await app.publish([
+  { path: '/index.html', content: '<h1>My Pear App</h1>' }
+])
+```
+
+> See **[Pear Integration Guide](docs/PEAR-INTEGRATION.md)** for full Pear/Bare usage, service RPC, LNURL-auth, and architecture details.
 
 ```js
 // On another device — open and read
