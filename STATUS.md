@@ -1,6 +1,6 @@
 # HiveRelay — Project Status
 
-**Version 0.1.0** | **Last verified: April 2026** | **Network: 3 relays, 3 regions**
+**Version 0.3.0** | **Last verified: April 2026** | **Network: 3 relays, 2 regions (NA, APAC)**
 
 ---
 
@@ -28,7 +28,7 @@ All nodes auto-discover each other via Hyperswarm DHT, sync their app catalogs, 
 
 ## Verified Capabilities
 
-Everything below has been tested end-to-end against the live network (153 integration tests, all passing).
+Everything below has been tested end-to-end against the live network (179 integration tests, all passing).
 
 ### For Developers
 
@@ -73,24 +73,34 @@ Accepts a directory path — reads all files recursively, writes them to an encr
 
 ### For Operators
 
-**Start earning in 2 commands:**
+**Start with the interactive setup wizard:**
 
 ```bash
-npx p2p-hiverelay init
-npx p2p-hiverelay start
+npx p2p-hiverelay setup     # Interactive TUI — profiles, services, transports
+npx p2p-hiverelay start     # Or quick start with defaults
 ```
 
 Node auto-discovers the network, starts seeding apps, and begins serving traffic.
 
+**Live management console** — adjust everything at runtime without restarts:
+
+```bash
+hiverelay manage             # Full interactive TUI
+```
+
+**6 operating modes:** Standard, HomeHive (home/personal), Seed-Only, Relay-Only, Stealth (Tor-only), Gateway (HTTP focus). Switch live via TUI or API.
+
 **What operators get:**
 
 - **Automatic app seeding** — catalog sync pulls apps from other relays
+- **Unified AppRegistry** — single source of truth for all app types (P2P, blind, HTTP)
 - **Credit system** — 1,000 welcome sats per new app, volume bonuses at 10K/50K/100K thresholds
 - **Metering** — every dispatch call tracked, billed per route at published rates
 - **Health monitoring** — 5 checks (memory, connections, swarm, errors, disk) every 30 seconds
 - **Self-healing** — GC on memory pressure, stale connection cleanup, cache clearing, auto-restart (max 3/hour)
 - **Prometheus metrics** — `relay:9100/metrics` for Grafana/alerting
 - **Dashboard** — real-time web UI at `relay:9100/dashboard` with network map, earnings calculator, payment history
+- **Management API** — 10 endpoints for programmatic config, service, transport, and mode control
 
 **Operator economics (current rate card):**
 
@@ -203,8 +213,9 @@ Honest accounting of gaps:
 npm install p2p-hiverelay
 
 # Operators — run a relay node
-npx p2p-hiverelay init
-npx p2p-hiverelay start
+hiverelay setup     # Interactive setup wizard
+hiverelay start     # Start the node
+hiverelay manage    # Live management console
 ```
 
 ---

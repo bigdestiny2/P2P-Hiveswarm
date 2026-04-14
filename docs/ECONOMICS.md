@@ -1,6 +1,6 @@
 # HiveRelay: Token Economics and Incentive Design
 
-**Version:** 0.1.0-draft
+**Version:** 0.3.0-draft
 **Date:** April 2026
 **Status:** Request for Comments
 

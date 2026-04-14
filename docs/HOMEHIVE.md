@@ -14,54 +14,51 @@ Use it for: home NAS, family photo sharing, personal app hosting, private Pear a
 ## Quick Start
 
 ```bash
-# Start a private node
-hiverelay start --mode private
+# Option 1: Interactive setup — select HomeHive mode in the wizard
+hiverelay setup
 
-# Start with pre-approved devices
-hiverelay start --mode private --allowlist <pubkey1>,<pubkey2>
+# Option 2: Start normally, then switch mode via management console
+hiverelay start
+hiverelay manage    # Select "Operating Mode" → "HomeHive"
 
-# Private node with WebSocket for browser access
-hiverelay start --mode private --websocket --allowlist <pubkey>
+# Option 3: Switch mode via API
+curl -X POST http://localhost:9100/api/manage/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "homehive"}'
 ```
 
-The `--allowlist` flag implies `--mode private` if no mode is specified.
+HomeHive mode automatically configures low resource limits (32 connections, 25 Mbps, 10GB), LAN-priority discovery, and auto-accept for seed requests.
 
-## Mode Comparison
+## Operating Modes
 
-| Feature | Public | Private | Hybrid |
-|---------|--------|---------|--------|
-| Join public DHT | Yes | No | Yes |
-| Announce on DHT | Yes | No | No |
-| mDNS LAN broadcast | No | Yes | Yes |
-| Accept any connection | Yes | No | No |
-| Device allowlist | No | Yes | Yes |
-| Pairing protocol | No | Yes | Yes |
-| Circuit relay | Yes | No | No |
-| HTTP API | Yes | No | Yes |
-| Metrics | Yes | No | Configurable |
+HiveRelay v0.3.0 has 6 operating modes, switchable live via `hiverelay manage` or the management API:
 
-**Private mode** is fully isolated -- LAN only, no external reachability.
-**Hybrid mode** joins the DHT (for connectivity) but doesn't announce, and still requires allowlist. Use hybrid when you want remote access without a relay tunnel.
+| Mode | Relay | Seeding | Connections | Bandwidth | Use Case |
+|------|-------|---------|-------------|-----------|----------|
+| **Standard** | Yes | Yes | 256 | 100 Mbps | Public VPS/server |
+| **HomeHive** | Yes | Yes | 32 | 25 Mbps | Home/personal, LAN-priority |
+| **Seed Only** | No | Yes | 256 | 100 Mbps | App hosting without relay |
+| **Relay Only** | Yes | No | 256 | 100 Mbps | Pure circuit relay |
+| **Stealth** | Yes | Yes | 32 | 25 Mbps | Tor-only, minimal footprint |
+| **Gateway** | No | Yes | 512 | 500 Mbps | HTTP gateway focus |
+
+**HomeHive mode** is designed for residential deployments -- low resource usage, LAN-priority mDNS discovery, auto-accept for local seed requests. Combine with the device allowlist and pairing protocol for family/small-business use.
 
 ## Device Pairing
 
 ### Adding Devices via Allowlist
 
-The simplest approach -- specify device public keys at startup:
+The simplest approach -- specify device public keys in `config.json`:
 
-```bash
-hiverelay start --mode private --allowlist abc123...,def456...
-```
-
-Or in `config.json`:
 ```json
 {
-  "mode": "private",
   "access": {
     "allowlist": ["abc123...", "def456..."]
   }
 }
 ```
+
+Or configure via the setup wizard (`hiverelay setup`) which writes the config for you.
 
 ### Interactive Pairing
 
@@ -81,7 +78,7 @@ Pairing tokens are single-use and cryptographically random (`crypto.randomBytes`
 
 ### Connection Gating
 
-In private/hybrid mode, every incoming connection is checked against the allowlist at the transport level -- before any protocol negotiation, RPC, or replication happens. Unknown devices are silently dropped with zero information leakage.
+In HomeHive mode with an allowlist, every incoming connection is checked at the transport level -- before any protocol negotiation, RPC, or replication happens. Unknown devices are silently dropped with zero information leakage.
 
 ## Relay Tunnel (Remote Access)
 
@@ -108,7 +105,6 @@ A private node can be reached from outside the LAN by tunneling through a truste
 
 ```json
 {
-  "mode": "private",
   "relayTunnel": {
     "relayPubkey": "abc123..."
   }
@@ -144,16 +140,12 @@ Additional security properties:
 - **Silent rejection** of unknown devices (no error messages, no information leakage)
 - **Pairing tokens** are cryptographically random, single-use, time-limited
 
-## Hybrid Mode
+## Remote Access Without a Relay Tunnel
 
-Use hybrid when you want:
-- LAN discovery (mDNS) for local devices
-- Remote access via DHT (without a relay tunnel)
-- Device allowlist enforcement
-- HTTP API access (disabled in pure private mode)
+If you want remote access without tunneling through a public relay:
+- Start your node normally with `hiverelay start`
+- Enable Holesail transport via `hiverelay manage` (Transports menu) for NAT traversal
+- Use the device allowlist to restrict who can connect
+- Your node joins the DHT for connectivity but the allowlist enforces access control
 
-Hybrid joins the public DHT for connectivity but does NOT announce -- your node won't appear in relay discovery. Only devices that already know your pubkey can connect, and they must be on the allowlist.
-
-```bash
-hiverelay start --mode hybrid --allowlist <pubkey1>,<pubkey2>
-```
+This gives you the convenience of remote access while maintaining a restricted device list.
