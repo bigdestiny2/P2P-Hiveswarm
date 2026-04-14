@@ -1,6 +1,6 @@
 {
   "name": "p2p-hiverelay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared P2P relay backbone for the Holepunch/Pear ecosystem",
   "type": "module",
   "main": "core/index.js",

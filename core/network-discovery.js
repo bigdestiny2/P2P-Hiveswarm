@@ -14,6 +14,9 @@ import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
 import http from 'http'
+import Protomux from 'protomux'
+import c from 'compact-encoding'
+import { createRequire } from 'module'
 
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
 sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
@@ -21,6 +24,9 @@ sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v
 const POLL_INTERVAL = 30_000 // poll each relay every 30s
 const STALE_THRESHOLD = 5 * 60_000 // remove relays not seen for 5 min
 const API_TIMEOUT = 8000
+const HOLESAIL_CLIENT_MAX = 20
+const HOLESAIL_CLIENT_TTL = 5 * 60_000 // destroy clients unused for 5 min
+const META_PROTOCOL = 'hiverelay-meta'
 
 export class NetworkDiscovery extends EventEmitter {
   constructor (opts = {}) {
@@ -28,11 +34,18 @@ export class NetworkDiscovery extends EventEmitter {
     this.swarm = opts.swarm || null // can share the relay node's swarm
     this._ownSwarm = false
     this._bootstrap = opts.bootstrap || undefined
-    this._relays = new Map() // pubkey hex -> { host, port, apiPort, lastSeen, data }
+    this._relays = new Map() // pubkey hex -> { host, port, apiPort, holesailKey, holesailConnected, lastSeen, data }
     this._connections = new Map() // pubkey hex -> conn
     this._pollInterval = null
     this._cleanupInterval = null
+    this._localHolesailKey = null
+    this._holesailClients = new Map() // holesailKey -> { client, localPort, lastUsed }
+    this._holesailCleanupInterval = null
     this.running = false
+  }
+
+  setLocalHolesailKey (key) {
+    this._localHolesailKey = key
   }
 
   async start () {
@@ -55,9 +68,7 @@ export class NetworkDiscovery extends EventEmitter {
 
     // Poll known relays for stats
     this._pollInterval = setInterval(() => {
-      this._pollAll().catch(err => {
-        this.emit('poll-error', { error: err.message })
-      })
+      this._pollAll().catch(() => {})
     }, POLL_INTERVAL)
     if (this._pollInterval.unref) this._pollInterval.unref()
 
@@ -66,6 +77,12 @@ export class NetworkDiscovery extends EventEmitter {
       this._cleanup()
     }, STALE_THRESHOLD)
     if (this._cleanupInterval.unref) this._cleanupInterval.unref()
+
+    // Clean up idle holesail clients
+    this._holesailCleanupInterval = setInterval(() => {
+      this._cleanupHolesailClients()
+    }, HOLESAIL_CLIENT_TTL)
+    if (this._holesailCleanupInterval.unref) this._holesailCleanupInterval.unref()
 
     this.running = true
     this.emit('started')
@@ -107,11 +124,12 @@ export class NetworkDiscovery extends EventEmitter {
 
     this._connections.set(pubkey, conn)
 
+    // Exchange holesail metadata via Protomux channel
+    this._exchangeMetadata(conn, pubkey)
+
     // Try to discover the API port by probing common ports
     if (remoteHost) {
-      this._probeApiPort(pubkey, remoteHost).catch(err => {
-        this.emit('probe-error', { pubkey: pubkey.slice(0, 16), host: remoteHost, error: err.message })
-      })
+      this._probeApiPort(pubkey, remoteHost).catch(() => {})
     }
 
     conn.on('close', () => {
@@ -121,6 +139,46 @@ export class NetworkDiscovery extends EventEmitter {
     conn.on('error', () => {
       this._connections.delete(pubkey)
     })
+  }
+
+  /**
+   * Exchange holesail keys (and future metadata) over a Protomux channel
+   */
+  _exchangeMetadata (conn, pubkey) {
+    try {
+      const mux = Protomux.from(conn)
+
+      const channel = mux.createChannel({
+        protocol: META_PROTOCOL,
+        id: null,
+        handshake: c.raw,
+        onopen: () => {
+          // Send our holesail key if we have one
+          if (this._localHolesailKey) {
+            metaMsg.send(b4a.from(JSON.stringify({ holesailKey: this._localHolesailKey })))
+          }
+        },
+        onclose: () => {}
+      })
+
+      const metaMsg = channel.addMessage({
+        encoding: c.raw,
+        onmessage: (buf) => {
+          try {
+            const meta = JSON.parse(b4a.toString(buf))
+            if (meta.holesailKey) {
+              const relay = this._relays.get(pubkey)
+              if (relay) {
+                relay.holesailKey = meta.holesailKey
+                this.emit('relay-holesail-key', { publicKey: pubkey, holesailKey: meta.holesailKey })
+              }
+            }
+          } catch {}
+        }
+      })
+
+      channel.open(b4a.alloc(0))
+    } catch {}
   }
 
   /**
@@ -173,6 +231,24 @@ export class NetworkDiscovery extends EventEmitter {
         continue
       }
     }
+
+    // If direct probe failed, try holesail tunnel as fallback
+    if (!relay.apiPort && relay.holesailKey) {
+      try {
+        const data = await this._fetchViaHolesail(relay.holesailKey)
+        if (data && data.publicKey) {
+          relay.data = data
+          relay.apiPort = 'holesail'
+          relay.holesailConnected = true
+          relay.lastSeen = Date.now()
+          // Capture holesail key from overview if not already set
+          if (data.holesailKey && !relay.holesailKey) {
+            relay.holesailKey = data.holesailKey
+          }
+          this.emit('relay-api-found', { publicKey: pubkey, holesailKey: relay.holesailKey })
+        }
+      } catch {}
+    }
   }
 
   /**
@@ -206,22 +282,96 @@ export class NetworkDiscovery extends EventEmitter {
   }
 
   /**
+   * Fetch /api/overview via holesail tunnel
+   * Creates a local proxy client if one doesn't exist for this key
+   */
+  async _fetchViaHolesail (holesailKey) {
+    let entry = this._holesailClients.get(holesailKey)
+
+    if (!entry || !entry.client || entry.client.state === 'destroyed') {
+      // Evict oldest client if at capacity
+      if (this._holesailClients.size >= HOLESAIL_CLIENT_MAX) {
+        let oldestKey = null
+        let oldestTime = Infinity
+        for (const [k, v] of this._holesailClients) {
+          if (v.lastUsed < oldestTime) {
+            oldestTime = v.lastUsed
+            oldestKey = k
+          }
+        }
+        if (oldestKey) {
+          const old = this._holesailClients.get(oldestKey)
+          try { await old.client.destroy() } catch {}
+          this._holesailClients.delete(oldestKey)
+        }
+      }
+
+      const require = createRequire(import.meta.url)
+      const HolesailClient = require('holesail-client')
+      const localPort = 30000 + Math.floor(Math.random() * 30000)
+      const client = new HolesailClient({ key: holesailKey })
+
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('holesail connect timeout')), 15000)
+        client.connect({ port: localPort, host: '127.0.0.1' }, () => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+
+      entry = { client, localPort, lastUsed: Date.now() }
+      this._holesailClients.set(holesailKey, entry)
+    }
+
+    entry.lastUsed = Date.now()
+    return this._fetchApi('127.0.0.1', entry.localPort)
+  }
+
+  /**
+   * Destroy holesail clients that haven't been used recently
+   */
+  _cleanupHolesailClients () {
+    const now = Date.now()
+    for (const [key, entry] of this._holesailClients) {
+      if (now - entry.lastUsed > HOLESAIL_CLIENT_TTL) {
+        try { entry.client.destroy() } catch {}
+        this._holesailClients.delete(key)
+      }
+    }
+  }
+
+  /**
    * Poll all known relays for fresh stats
    */
   async _pollAll () {
     const polls = []
 
     for (const [pubkey, relay] of this._relays) {
-      if (!relay.host || !relay.apiPort) continue
+      let pollPromise
 
-      const poll = this._fetchApi(relay.host, relay.apiPort)
+      if (relay.holesailConnected && relay.holesailKey) {
+        // Use holesail tunnel for relays without direct access
+        pollPromise = this._fetchViaHolesail(relay.holesailKey)
+      } else if (relay.host && relay.apiPort && relay.apiPort !== 'holesail') {
+        pollPromise = this._fetchApi(relay.host, relay.apiPort)
+      } else if (relay.holesailKey) {
+        // No direct apiPort yet, try holesail
+        pollPromise = this._fetchViaHolesail(relay.holesailKey)
+      } else {
+        continue
+      }
+
+      const poll = pollPromise
         .then((data) => {
           relay.data = data
           relay.lastSeen = Date.now()
           relay.online = true
+          // Pick up holesail key from overview response
+          if (data.holesailKey && !relay.holesailKey) {
+            relay.holesailKey = data.holesailKey
+          }
         })
         .catch(() => {
-          // Mark offline if we can't reach the API
           const age = Date.now() - relay.lastSeen
           if (age > STALE_THRESHOLD) {
             relay.online = false
@@ -276,6 +426,8 @@ export class NetworkDiscovery extends EventEmitter {
         seeder: d.seeder || null,
         memory: d.memory || null,
         tor: d.tor || null,
+        holesailKey: relay.holesailKey || null,
+        holesailConnected: relay.holesailConnected || false,
         errors: d.errors || 0
       }
 
@@ -322,6 +474,16 @@ export class NetworkDiscovery extends EventEmitter {
       clearInterval(this._cleanupInterval)
       this._cleanupInterval = null
     }
+    if (this._holesailCleanupInterval) {
+      clearInterval(this._holesailCleanupInterval)
+      this._holesailCleanupInterval = null
+    }
+
+    // Destroy holesail clients
+    for (const entry of this._holesailClients.values()) {
+      try { entry.client.destroy() } catch {}
+    }
+    this._holesailClients.clear()
 
     // Close connections we're tracking
     for (const conn of this._connections.values()) {

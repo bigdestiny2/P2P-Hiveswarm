@@ -65,7 +65,7 @@ async function main () {
 // ─── init ───────────────────────────────────────────────────────────
 
 async function init () {
-  console.log('HiveRelay v0.1.0 — Init')
+  console.log('HiveRelay v0.2.0 — Init')
   console.log()
 
   // 1. Create directories and config
@@ -171,74 +171,14 @@ async function start () {
     if (!cliOverrides.tor) cliOverrides.tor = {}
     cliOverrides.tor.controlPort = parseInt(args['tor-control-port'])
   }
-
-  // ─── Mode ───
-  if (args.mode) {
-    if (!['public', 'private', 'hybrid'].includes(args.mode)) {
-      console.error('Error: --mode must be public, private, or hybrid')
-      process.exit(1)
-    }
-    cliOverrides.mode = args.mode
-  }
-
-  // ─── WebSocket transport ───
-  if (args.websocket) {
-    if (!cliOverrides.transports) cliOverrides.transports = {}
-    cliOverrides.transports.websocket = true
-  }
-  if (args['ws-port']) cliOverrides.wsPort = parseInt(args['ws-port'])
-
-  // ─── Private mode allowlist ───
-  if (args.allowlist) {
-    const keys = [].concat(args.allowlist).flatMap(a => a.split(','))
-    if (!cliOverrides.access) cliOverrides.access = {}
-    cliOverrides.access.allowlist = keys
-    if (!args.mode) cliOverrides.mode = 'private'
-  }
-
-  // ─── Payment / Lightning ───
-  if (args.payment) {
-    cliOverrides.payment = { enabled: true }
-    cliOverrides.lightning = {
-      enabled: true,
-      rpcUrl: args['lightning-rpc'] || 'localhost:10009',
-      macaroonPath: args['lightning-macaroon'] || null,
-      certPath: args['lightning-cert'] || null
-    }
-  }
-
-  // ─── Holesail transport ───
   if (args.holesail) {
     if (!cliOverrides.transports) cliOverrides.transports = {}
     cliOverrides.transports.holesail = true
-    if (!cliOverrides.holesail) cliOverrides.holesail = {}
-    if (args['holesail-port']) cliOverrides.holesail.port = parseInt(args['holesail-port'])
-    if (args['holesail-seed']) cliOverrides.holesail.seed = args['holesail-seed']
-    if (args['holesail-secure']) cliOverrides.holesail.secure = true
-    if (args['holesail-connector']) cliOverrides.holesail.connectorMode = true
-  }
-
-  // ─── Router (enables credit deduction + metering middleware) ───
-  if (args.router) {
-    cliOverrides.enableRouter = true
-  }
-
-  // ─── AI / Ollama ───
-  if (args.ai) {
-    const models = args['ai-model']
-      ? [].concat(args['ai-model']).flatMap(m => m.split(','))
-      : []
-    cliOverrides.ai = {
-      enabled: true,
-      ollamaUrl: args['ai-endpoint'] || 'http://localhost:11434',
-      models,
-      timeout: args['ai-timeout'] ? parseInt(args['ai-timeout']) : 120_000
-    }
   }
 
   const config = loadConfig(cliOverrides)
 
-  console.log('HiveRelay v0.1.0')
+  console.log('HiveRelay v0.2.0')
   console.log('Starting relay node...')
   console.log()
 
@@ -253,24 +193,9 @@ async function start () {
     console.log(`  Relay:      ${config.enableRelay ? 'enabled' : 'disabled'}`)
     console.log(`  Seeding:    ${config.enableSeeding ? 'enabled' : 'disabled'}`)
     console.log(`  API:        ${config.enableAPI ? 'http://127.0.0.1:' + config.apiPort : 'disabled'}`)
-    console.log(`  Mode:       ${config.mode || 'public'}`)
     console.log(`  Regions:    ${config.regions && config.regions.length ? config.regions.join(', ') : 'all'}`)
-    if (config.transports && config.transports.websocket) {
-      console.log(`  WebSocket:  enabled (port ${config.wsPort || 8765})`)
-    }
     if (config.transports && config.transports.tor) {
       console.log(`  Tor:        enabled (SOCKS ${config.tor ? config.tor.socksPort || 9050 : 9050})`)
-    }
-    if (config.payment && config.payment.enabled) {
-      console.log(`  Payment:    Lightning (${config.lightning ? config.lightning.rpcUrl || 'localhost:10009' : 'localhost:10009'})`)
-    }
-    if (config.ai && config.ai.enabled) {
-      const modelList = config.ai.models?.length ? config.ai.models.join(', ') : 'none (register via API)'
-      console.log(`  AI:         enabled (${config.ai.ollamaUrl || 'localhost:11434'})`)
-      console.log(`  Models:     ${modelList}`)
-    }
-    if (config.access && config.access.allowlist && config.access.allowlist.length) {
-      console.log(`  Allowlist:  ${config.access.allowlist.length} device(s)`)
     }
     console.log()
     console.log('  Node is running. Press Ctrl+C to stop.')
@@ -282,11 +207,18 @@ async function start () {
     console.log(`  Onion:      ${onionAddress}`)
   })
 
-  node.on('holesail-ready', (info) => {
-    log.info({ connectionKey: info.connectionKey, mode: info.mode }, 'holesail transport active')
-    console.log(`  Holesail:   ${info.connectionUrl}`)
-    console.log(`  Mode:       ${info.mode} (${info.secure ? 'secure' : 'public'})`)
-    console.log()
+  node.on('holesail-ready', ({ connectionKey }) => {
+    log.info({ connectionKey }, 'holesail tunnel active')
+    console.log(`  Holesail:   ${connectionKey}`)
+  })
+
+  node.on('nat-check', ({ publicIp, reachable, action }) => {
+    if (reachable) {
+      log.info({ publicIp }, 'API publicly reachable — holesail not needed')
+    } else {
+      log.info({ publicIp, action }, 'API behind NAT — auto-enabling holesail')
+      console.log(`  NAT detected (${publicIp}) — enabling holesail tunnel...`)
+    }
   })
 
   node.on('connection', ({ remotePubKey }) => {
@@ -297,21 +229,8 @@ async function start () {
     log.debug('peer disconnected')
   })
 
-  // Rate-limit connection error logging — suppress noisy "Duplicate connection" errors
-  const _connErrCounts = new Map() // msg -> { count, lastLogged }
-  const CONN_ERR_LOG_INTERVAL = 60_000 // Only log same error type once per minute
   node.on('connection-error', ({ error }) => {
-    const msg = error.message || 'unknown'
-    const now = Date.now()
-    const entry = _connErrCounts.get(msg) || { count: 0, lastLogged: 0 }
-    entry.count++
-    if (now - entry.lastLogged > CONN_ERR_LOG_INTERVAL) {
-      const suffix = entry.count > 1 ? ` (x${entry.count} in last ${Math.round((now - entry.lastLogged) / 1000)}s)` : ''
-      log.warn({ err: error }, 'connection error' + suffix)
-      entry.count = 0
-      entry.lastLogged = now
-    }
-    _connErrCounts.set(msg, entry)
+    log.warn({ err: error }, 'connection error')
   })
 
   node.on('seeding', ({ appKey, discoveryKey }) => {
@@ -661,7 +580,7 @@ async function status () {
 
 function help () {
   console.log(`
-HiveRelay v0.1.0 — Shared P2P Relay Backbone
+HiveRelay v0.2.0 — Shared P2P Relay Backbone
 
 Usage:
   hiverelay init [options]      Initialize config + install agent skills
@@ -686,26 +605,10 @@ Start Options:
   --no-relay                    Disable circuit relay
   --no-seeding                  Disable app seeding
   --no-api                      Disable HTTP API
-  --mode <mode>                  Node mode: public, private, hybrid (default: public)
-  --websocket                    Enable WebSocket transport for browser peers
-  --ws-port <n>                  WebSocket port (default: 8765)
-  --allowlist <key,...>          Device pubkeys for private mode (implies --mode private)
-  --payment                      Enable Lightning payment settlement
-  --lightning-rpc <url>          LND gRPC endpoint (default: localhost:10009)
-  --lightning-macaroon <path>    Path to admin.macaroon
-  --lightning-cert <path>        Path to tls.cert
-  --ai                           Enable AI inference service (Ollama)
-  --ai-model <name,...>          Ollama model(s) to register (e.g., gemma4:latest)
-  --ai-endpoint <url>            Ollama API URL (default: http://localhost:11434)
-  --ai-timeout <ms>              Inference timeout in ms (default: 120000)
   --tor [password]               Enable Tor hidden service transport
   --tor-socks-port <n>           Tor SOCKS5 port (default: 9050)
   --tor-control-port <n>         Tor control port (default: 9051)
-  --holesail                     Enable Holesail tunnel transport
-  --holesail-port <n>            Local port to tunnel (default: API port)
-  --holesail-seed <hex>          Deterministic seed for stable connection key
-  --holesail-secure              Enable secure (private) mode
-  --holesail-connector           Connector mode (raw streams for P2P protocols)
+  --holesail                     Enable Holesail API tunnel (NAT traversal)
   --quiet                       Suppress periodic status output
 
 Testnet Options:
@@ -717,7 +620,7 @@ Environment:
   HIVERELAY_LOG_LEVEL           Log level: fatal, error, warn, info, debug, trace
 
 Examples:
-  npx p2p-hiverelay init                           # One-line setup
+  npx hiverelay init                              # One-line setup
   hiverelay start --region NA --max-storage 100GB  # Start relay
   hiverelay testnet                                # Local testnet (3 relays + client)
   hiverelay testnet --nodes 5                      # 5-node local testnet
