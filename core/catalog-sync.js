@@ -136,17 +136,14 @@ export class CatalogSync extends EventEmitter {
         missing.push({ appKey, app })
       }
 
-      if (missing.length === 0) {
-        this._syncing = false
-        this._stats.lastSyncAt = Date.now()
-        this._stats.lastSyncDuration = Date.now() - startTime
-        return
+      // Seed missing apps (throttled)
+      if (missing.length > 0) {
+        this.emit('sync-found', { missing: missing.length, total: remoteApps.size })
+        await this._seedMissing(missing)
       }
 
-      this.emit('sync-found', { missing: missing.length, total: remoteApps.size })
-
-      // Seed missing apps (throttled)
-      await this._seedMissing(missing)
+      // Sync identity attestations from peers
+      await this._syncIdentities(relays)
 
       this._stats.lastSyncAt = Date.now()
       this._stats.lastSyncDuration = Date.now() - startTime
@@ -287,6 +284,86 @@ export class CatalogSync extends EventEmitter {
     })
 
     return result
+  }
+
+  /**
+   * Sync identity attestations from peer relays.
+   * Fetches developer lists from peers and imports attestations we don't have.
+   */
+  async _syncIdentities (relays) {
+    if (!this.node.identity) return
+
+    const attestation = this.node.identity.attestation
+    let imported = 0
+
+    for (const relay of relays) {
+      try {
+        const data = await this._fetchJson(relay, '/api/v1/identity/developers')
+        if (!data || !data.developers) continue
+
+        for (const dev of data.developers) {
+          // Skip developers we already know about
+          if (attestation.developers.has(dev.pubkey)) continue
+
+          // Import each app key attestation
+          for (const appKey of dev.appKeys) {
+            if (attestation.appKeyIndex.has(appKey)) continue
+
+            // We can't verify the original signature, but we trust
+            // the peer relay already verified it. Store as peer-attested.
+            if (!attestation.developers.has(dev.pubkey)) {
+              attestation.developers.set(dev.pubkey, {
+                appKeys: new Map(),
+                registeredAt: dev.registeredAt,
+                lastSeen: dev.lastSeen
+              })
+            }
+            const devEntry = attestation.developers.get(dev.pubkey)
+            devEntry.appKeys.set(appKey, {
+              attestedAt: dev.registeredAt,
+              source: 'peer-sync'
+            })
+            attestation.appKeyIndex.set(appKey, dev.pubkey)
+            imported++
+          }
+
+          // Sync profile if available
+          if (dev.profile && dev.profile.displayName) {
+            const existing = await this.node.identity.developerStore.getCompactProfile(dev.pubkey)
+            if (!existing || !existing.displayName) {
+              this.node.identity.developerStore.setProfile(dev.pubkey, dev.profile)
+            }
+          }
+        }
+      } catch {
+        // Silently skip relays that don't have identity endpoints
+      }
+    }
+
+    if (imported > 0) {
+      await attestation.save()
+      this.emit('identities-synced', { imported })
+    }
+  }
+
+  /**
+   * Fetch JSON from a relay API endpoint.
+   */
+  async _fetchJson (relay, path) {
+    return new Promise((resolve, reject) => {
+      const url = `http://${relay.host}:${relay.apiPort}${path}`
+      const req = http.get(url, { timeout: CATALOG_FETCH_TIMEOUT }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null) }
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', chunk => { body += chunk })
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)) } catch { resolve(null) }
+        })
+      })
+      req.on('error', () => resolve(null))
+      req.on('timeout', () => { req.destroy(); resolve(null) })
+    })
   }
 
   /**

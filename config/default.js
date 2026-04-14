@@ -114,7 +114,7 @@ export default {
 
   // Services
   enableServices: true,
-  enableRouter: false,
+  enableRouter: true,
   routerWorkers: 0, // 0 = auto (based on CPU cores)
 
   // AI inference

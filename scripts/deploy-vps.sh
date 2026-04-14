@@ -2,23 +2,15 @@
 # Deploy HiveRelay to VPS servers
 # Usage: ./scripts/deploy-vps.sh [utah|utah-us|singapore|all]
 #
-# Prerequisites:
-#   - SSH key auth configured (ssh-copy-id -i ~/.ssh/cloudzy_hiverelay.pub root@<ip>)
-#   - HIVERELAY_API_KEY env var set
-#
-# The script:
-#   1. Pushes code to GitHub
-#   2. SSHs into each server via key auth
-#   3. Pulls latest code
-#   4. Installs dependencies
-#   5. Restarts the relay in public mode
+# Creates a systemd service with auto-restart, memory limits, and proper region tagging.
+# Kills any old processes from /opt/hiverelay or nohup before enabling the systemd service.
 
 set -e
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/cloudzy_hiverelay}"
 API_KEY="${HIVERELAY_API_KEY:?Set HIVERELAY_API_KEY environment variable}"
 
-# Server IPs — set via env vars or use defaults
+# Server IPs
 UTAH_IP="${UTAH_IP:-144.172.101.215}"
 UTAH_US_IP="${UTAH_US_IP:-144.172.91.26}"
 SINGAPORE_IP="${SINGAPORE_IP:-104.194.153.179}"
@@ -26,16 +18,19 @@ SINGAPORE_IP="${SINGAPORE_IP:-104.194.153.179}"
 deploy_server() {
     local IP=$1
     local NAME=$2
+    local REGION=$3
+    local MAX_MEM=$4  # systemd MemoryMax (e.g., 384M, 1G)
+    local HEAP=$5     # Node --max-old-space-size in MB
 
     echo "═══════════════════════════════════════════════════"
-    echo "  Deploying to $NAME ($IP)"
+    echo "  Deploying to $NAME ($IP) [region=$REGION, mem=$MAX_MEM, heap=${HEAP}M]"
     echo "═══════════════════════════════════════════════════"
 
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new root@"$IP" << REMOTE_SCRIPT
         set -e
         cd /root
 
-        # Clone or pull
+        # ─── 1. Pull latest code ───
         if [ -d hiverelay ]; then
             cd hiverelay
             git fetch origin main
@@ -45,23 +40,71 @@ deploy_server() {
             cd hiverelay
         fi
 
-        # Install/update dependencies
-        npm install --production
+        npm install --production 2>&1 | tail -3
 
-        # Restart the relay process (using pm2 if available, otherwise direct)
-        if command -v pm2 &> /dev/null; then
-            pm2 stop hiverelay 2>/dev/null || true
-            HIVERELAY_API_KEY="${API_KEY}" pm2 start cli/index.js --name hiverelay -- start --mode public
-            pm2 save
+        # ─── 2. Kill ALL old relay processes (nohup, /opt instances, old systemd) ───
+        systemctl stop hiverelay hiverelay-2 hiverelay-3 2>/dev/null || true
+        systemctl disable hiverelay-2 hiverelay-3 2>/dev/null || true
+        pkill -9 -f "node.*cli/index.js" 2>/dev/null || true
+        pkill -9 -f "node.*/opt/hiverelay" 2>/dev/null || true
+        sleep 2
+
+        # ─── 3. Clear stale lock files ───
+        find /root/.hiverelay -name "*.lock" -delete 2>/dev/null || true
+
+        # ─── 4. Create systemd service ───
+        cat > /etc/systemd/system/hiverelay.service << 'SYSTEMD_UNIT'
+[Unit]
+Description=HiveRelay P2P Relay Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/hiverelay
+ExecStart=/usr/bin/node --max-old-space-size=HEAP_PLACEHOLDER cli/index.js start --mode public --region REGION_PLACEHOLDER
+Restart=always
+RestartSec=10
+Environment=HIVERELAY_API_KEY=API_KEY_PLACEHOLDER
+Environment=NODE_ENV=production
+MemoryMax=MEM_PLACEHOLDER
+MemoryHigh=MEMHIGH_PLACEHOLDER
+StandardOutput=append:/var/log/hiverelay.log
+StandardError=append:/var/log/hiverelay.log
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/hiverelay /root/.hiverelay /var/log/hiverelay.log /tmp
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD_UNIT
+
+        # Replace placeholders
+        sed -i "s/HEAP_PLACEHOLDER/${HEAP}/" /etc/systemd/system/hiverelay.service
+        sed -i "s/REGION_PLACEHOLDER/${REGION}/" /etc/systemd/system/hiverelay.service
+        sed -i "s/API_KEY_PLACEHOLDER/${API_KEY}/" /etc/systemd/system/hiverelay.service
+        sed -i "s/MEM_PLACEHOLDER/${MAX_MEM}/" /etc/systemd/system/hiverelay.service
+        sed -i "s/MEMHIGH_PLACEHOLDER/${MAX_MEM%M}/" /etc/systemd/system/hiverelay.service
+
+        # Calculate MemoryHigh as 80% of MemoryMax
+        MEM_NUM=\$(echo "${MAX_MEM}" | grep -oP '[0-9]+')
+        MEM_HIGH=\$(( MEM_NUM * 80 / 100 ))
+        sed -i "s|MemoryHigh=.*|MemoryHigh=\${MEM_HIGH}M|" /etc/systemd/system/hiverelay.service
+
+        # ─── 5. Enable and start ───
+        systemctl daemon-reload
+        systemctl enable hiverelay
+        systemctl restart hiverelay
+        sleep 3
+
+        # ─── 6. Verify ───
+        if systemctl is-active hiverelay > /dev/null 2>&1; then
+            echo "  ✓ hiverelay.service is ACTIVE"
         else
-            # Kill existing process
-            pkill -f "node.*cli/index.js" 2>/dev/null || true
-            pkill -f "node.*start-relay" 2>/dev/null || true
-            sleep 2
-
-            # Start in background with API key
-            HIVERELAY_API_KEY="${API_KEY}" nohup node cli/index.js start --mode public > /var/log/hiverelay.log 2>&1 &
-            echo "Started with PID \\\$!"
+            echo "  ✗ hiverelay.service FAILED — checking logs:"
+            journalctl -u hiverelay --no-pager -n 10
         fi
 
         echo "Deployment complete on \\\$(hostname)"
@@ -80,18 +123,18 @@ echo
 
 case $TARGET in
     utah)
-        deploy_server "$UTAH_IP" "Utah"
+        deploy_server "$UTAH_IP" "Utah" "NA" "384M" 256
         ;;
     utah-us)
-        deploy_server "$UTAH_US_IP" "Utah-US (relay-us domain)"
+        deploy_server "$UTAH_US_IP" "Utah-US" "NA" "1G" 512
         ;;
     singapore)
-        deploy_server "$SINGAPORE_IP" "Singapore"
+        deploy_server "$SINGAPORE_IP" "Singapore" "AS" "512M" 384
         ;;
     all)
-        deploy_server "$UTAH_IP" "Utah"
-        deploy_server "$UTAH_US_IP" "Utah-US (relay-us domain)"
-        deploy_server "$SINGAPORE_IP" "Singapore"
+        deploy_server "$UTAH_IP" "Utah" "NA" "384M" 256
+        deploy_server "$UTAH_US_IP" "Utah-US" "NA" "1G" 512
+        deploy_server "$SINGAPORE_IP" "Singapore" "AS" "512M" 384
         ;;
     *)
         echo "Usage: $0 [utah|utah-us|singapore|all]"

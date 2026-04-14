@@ -268,6 +268,47 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="loading"><div class="spinner"></div><br>Discovering relays...</div>
   </div>
 
+  <!-- Catalog Sync Status -->
+  <div class="section-header" style="margin-top:2rem">
+    <h2>Catalog Sync</h2>
+    <div class="badge" id="syncBadge">--</div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:2rem" id="syncCards">
+    <div class="summary-card">
+      <div class="summary-label">Apps Synced</div>
+      <div class="summary-value green" id="syncTotal">--</div>
+      <div class="summary-sub" id="syncSub">&nbsp;</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Peers Polled</div>
+      <div class="summary-value cyan" id="syncPeers">--</div>
+      <div class="summary-sub" id="syncPeersSub">&nbsp;</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Last Sync</div>
+      <div class="summary-value" id="syncLast">--</div>
+      <div class="summary-sub" id="syncLastSub">&nbsp;</div>
+    </div>
+  </div>
+
+  <!-- App Replication -->
+  <div class="section-header">
+    <h2>App Replication</h2>
+    <div class="badge" id="replicationBadge">--</div>
+  </div>
+  <div id="replicationTable" style="margin-bottom:2rem">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:1px solid var(--card-border)">
+        <th style="text-align:left;padding:.5rem;font-size:.75rem;color:var(--text-dim)">App</th>
+        <th style="text-align:center;padding:.5rem;font-size:.75rem;color:var(--text-dim)">Relay Count</th>
+        <th style="text-align:left;padding:.5rem;font-size:.75rem;color:var(--text-dim)">Health</th>
+      </tr></thead>
+      <tbody id="replicationBody">
+        <tr><td colspan="3" style="padding:.8rem;color:var(--text-dim);font-style:italic;text-align:center">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
 </div>
 
 <!-- Connect Modal -->
@@ -618,7 +659,53 @@ function renderNetwork(network) {
     String(now.getHours()).padStart(2, '0') + ':' +
     String(now.getMinutes()).padStart(2, '0') + ':' +
     String(now.getSeconds()).padStart(2, '0');
+
+  // Catalog Sync
+  var sync = network.sync;
+  if (sync) {
+    document.getElementById('syncBadge').textContent = sync.running ? 'ACTIVE' : 'STOPPED';
+    document.getElementById('syncBadge').style.color = sync.running ? 'var(--green)' : 'var(--red)';
+    document.getElementById('syncTotal').textContent = sync.stats.totalSynced;
+    document.getElementById('syncSub').textContent = sync.stats.totalFailed > 0 ? sync.stats.totalFailed + ' failed' : 'no failures';
+    document.getElementById('syncPeers').textContent = sync.knownPeers;
+    document.getElementById('syncPeersSub').textContent = sync.stats.appsDiscovered + ' apps discovered';
+    if (sync.stats.lastSyncAt) {
+      var ago = Math.round((Date.now() - sync.stats.lastSyncAt) / 1000);
+      document.getElementById('syncLast').textContent = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
+      document.getElementById('syncLastSub').textContent = sync.stats.lastSyncDuration + 'ms duration';
+    }
+  }
+
+  // Replication factor
+  var replication = network.replication || {};
+  var repKeys = Object.keys(replication);
+  document.getElementById('replicationBadge').textContent = repKeys.length + ' apps tracked';
+  var tbody = document.getElementById('replicationBody');
+  if (repKeys.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="padding:.8rem;color:var(--text-dim);font-style:italic;text-align:center">No apps in catalog</td></tr>';
+  } else {
+    // Try to get names from catalog
+    tbody.innerHTML = repKeys.map(function(key) {
+      var count = replication[key];
+      var name = _catalogNames[key] || key.slice(0, 12) + '...';
+      var color = count >= 3 ? 'var(--green)' : count >= 2 ? 'var(--orange)' : 'var(--red)';
+      var label = count >= 3 ? 'Robust' : count >= 2 ? 'Redundant' : 'At Risk';
+      return '<tr style="border-bottom:1px solid rgba(33,38,45,.5)">' +
+        '<td style="padding:.5rem;font-family:var(--mono);font-size:.8rem;color:var(--text-bright)">' + name + '</td>' +
+        '<td style="padding:.5rem;text-align:center;font-family:var(--mono);font-weight:600;color:' + color + '">' + count + ' relay' + (count !== 1 ? 's' : '') + '</td>' +
+        '<td style="padding:.5rem"><span style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.05);color:' + color + '">' + label + '</span></td>' +
+        '</tr>';
+    }).join('');
+  }
 }
+
+// Catalog name lookup for replication table
+var _catalogNames = {};
+fetch('/catalog.json').then(function(r) { return r.json(); }).then(function(data) {
+  if (data.apps) data.apps.forEach(function(a) {
+    if (a.driveKey && a.name) _catalogNames[a.driveKey] = a.name;
+  });
+}).catch(function() {});
 
 // Initial load + start polling + try WS
 refresh();

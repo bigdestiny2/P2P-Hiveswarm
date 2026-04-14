@@ -297,8 +297,21 @@ async function start () {
     log.debug('peer disconnected')
   })
 
+  // Rate-limit connection error logging — suppress noisy "Duplicate connection" errors
+  const _connErrCounts = new Map() // msg -> { count, lastLogged }
+  const CONN_ERR_LOG_INTERVAL = 60_000 // Only log same error type once per minute
   node.on('connection-error', ({ error }) => {
-    log.warn({ err: error }, 'connection error')
+    const msg = error.message || 'unknown'
+    const now = Date.now()
+    const entry = _connErrCounts.get(msg) || { count: 0, lastLogged: 0 }
+    entry.count++
+    if (now - entry.lastLogged > CONN_ERR_LOG_INTERVAL) {
+      const suffix = entry.count > 1 ? ` (x${entry.count} in last ${Math.round((now - entry.lastLogged) / 1000)}s)` : ''
+      log.warn({ err: error }, 'connection error' + suffix)
+      entry.count = 0
+      entry.lastLogged = now
+    }
+    _connErrCounts.set(msg, entry)
   })
 
   node.on('seeding', ({ appKey, discoveryKey }) => {

@@ -148,6 +148,14 @@ export class RelayAPI extends EventEmitter {
     this._dashboardFeed = null
     this._gateway = new HyperGateway(relayNode)
 
+    // Wire gateway file serves to seededApps bytesServed tracking
+    this._gateway.on('served', ({ keyHex, bytes }) => {
+      const entry = this.node.seededApps.get(keyHex)
+      if (entry) {
+        entry.bytesServed = (entry.bytesServed || 0) + bytes
+      }
+    })
+
     // SECURITY: App registration challenges (prevents squatting)
     this._registrationChallenges = new Map() // appId -> { challenge, expiresAt }
     this._challengeCleanup = setInterval(() => this._cleanupChallenges(), 300_000) // 5 min
@@ -628,7 +636,14 @@ export class RelayAPI extends EventEmitter {
 
           const config = this.node.config || {}
           const maxStorage = config.maxStorageBytes || 5368709120
-          const bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+          // Aggregate actual bytes from seeded apps + seeder P2P stats
+          let bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+          let totalAppBytesServed = 0
+          if (this.node.seededApps) {
+            for (const [, entry] of this.node.seededApps) {
+              totalAppBytesServed += entry.bytesServed || 0
+            }
+          }
 
           return this._json(res, {
             uptime: { ms: uptimeMs, hours, human: parts.join(' ') },
@@ -642,7 +657,12 @@ export class RelayAPI extends EventEmitter {
               pct: maxStorage > 0 ? Math.round(bytesStored / maxStorage * 10000) / 10000 : 0
             },
             relay: stats.relay || { activeCircuits: 0, totalCircuitsServed: 0, totalBytesRelayed: 0 },
-            seeder: stats.seeder || { coresSeeded: 0, totalBytesStored: 0, totalBytesServed: 0 },
+            seeder: {
+              coresSeeded: stats.seeder ? stats.seeder.coresSeeded : 0,
+              totalBytesStored: bytesStored,
+              totalBytesServed: (stats.seeder ? stats.seeder.totalBytesServed : 0) + totalAppBytesServed,
+              capacityUsedPct: stats.seeder ? stats.seeder.capacityUsedPct : 0
+            },
             memory: { heapUsed: mem.heapUsed, rss: mem.rss },
             errors: this.node.metrics ? this.node.metrics._errorCount : 0,
             reputation: this.node.reputation
@@ -740,7 +760,41 @@ export class RelayAPI extends EventEmitter {
           if (!this.node.networkDiscovery) {
             return this._json(res, { error: 'Network discovery not running' }, 503)
           }
-          return this._json(res, this.node.networkDiscovery.getNetworkState())
+          const networkState = this.node.networkDiscovery.getNetworkState()
+
+          // Enrich with this relay's own data (it doesn't discover itself)
+          const selfStats = this.node.getStats()
+          const selfMem = process.memoryUsage()
+          const config = this.node.config
+          networkState.self = {
+            publicKey: selfStats.publicKey,
+            region: (config.regions && config.regions[0]) || null,
+            seededApps: selfStats.seededApps,
+            connections: selfStats.connections
+          }
+
+          // Enrich with catalog sync stats
+          if (this.node.catalogSync) {
+            networkState.sync = this.node.catalogSync.getStats()
+          }
+
+          // Add replication factor per app (how many relays have each app)
+          const replicationMap = {}
+          if (this.node.seededApps) {
+            for (const [appKey] of this.node.seededApps) {
+              replicationMap[appKey] = 1 // this relay has it
+            }
+          }
+          for (const relay of networkState.relays) {
+            if (relay.catalog) {
+              for (const app of relay.catalog) {
+                replicationMap[app.driveKey] = (replicationMap[app.driveKey] || 0) + 1
+              }
+            }
+          }
+          networkState.replication = replicationMap
+
+          return this._json(res, networkState)
         }
 
         if (path === '/api/registry/pending') {
