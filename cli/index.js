@@ -4,6 +4,7 @@
  * HiveRelay CLI
  *
  * Usage:
+ *   hiverelay setup               Interactive setup wizard (TUI)
  *   hiverelay init                Initialize HiveRelay + install agent skills
  *   hiverelay start [options]     Start a relay node
  *   hiverelay seed <key>          Request seeding for a Pear app
@@ -45,6 +46,8 @@ process.on('unhandledRejection', (reason) => {
 // ─── Commands ──────────────────────────────────────────────────────
 
 const COMMANDS = {
+  setup,
+  manage,
   init,
   start,
   testnet: startTestnet,
@@ -60,6 +63,25 @@ async function main () {
     process.exit(command ? 1 : 0)
   }
   await handler()
+}
+
+// ─── setup (interactive TUI) ────────────────────────────────────────
+
+async function setup () {
+  const { runSetup } = await import('./setup.js')
+  const result = await runSetup()
+  if (result && result.startNow) {
+    await start()
+  }
+}
+
+// ─── manage (live management console) ──────────────────────────────
+
+async function manage () {
+  const { runManage } = await import('./manage.js')
+  const host = args.host || '127.0.0.1'
+  const port = args.port ? parseInt(args.port) : 9100
+  await runManage(host, port)
 }
 
 // ─── init ───────────────────────────────────────────────────────────
@@ -583,6 +605,8 @@ function help () {
 HiveRelay v0.2.0 — Shared P2P Relay Backbone
 
 Usage:
+  hiverelay setup               Interactive setup wizard (first-time config)
+  hiverelay manage [options]    Live management console (connect to running node)
   hiverelay init [options]      Initialize config + install agent skills
   hiverelay start [options]     Start a relay node
   hiverelay testnet [options]   Spin up a local testnet (DHT + relays + client)
@@ -611,6 +635,10 @@ Start Options:
   --holesail                     Enable Holesail API tunnel (NAT traversal)
   --quiet                       Suppress periodic status output
 
+Manage Options:
+  --host <ip>                   Relay host (default: 127.0.0.1)
+  --port <n>                    Relay API port (default: 9100)
+
 Testnet Options:
   --nodes <n>                   Number of relay nodes (default: 3)
   --port <n>                    Base API port (default: 19100)
@@ -620,12 +648,12 @@ Environment:
   HIVERELAY_LOG_LEVEL           Log level: fatal, error, warn, info, debug, trace
 
 Examples:
-  npx hiverelay init                              # One-line setup
-  hiverelay start --region NA --max-storage 100GB  # Start relay
-  hiverelay testnet                                # Local testnet (3 relays + client)
-  hiverelay testnet --nodes 5                      # 5-node local testnet
-  hiverelay status                                 # Check running node
-  curl localhost:9100/health                       # API health check
+  npx hiverelay setup                              # Interactive setup wizard
+  hiverelay start --region NA --max-storage 100GB   # Start relay
+  hiverelay manage                                  # Live management console
+  hiverelay manage --port 9200                      # Manage node on custom port
+  hiverelay testnet                                 # Local testnet (3 relays + client)
+  hiverelay status                                  # Check running node
 `)
 }
 

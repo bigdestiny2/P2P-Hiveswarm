@@ -146,54 +146,30 @@ export class RelayAPI extends EventEmitter {
       // PearBrowser can use this as a catalog source
       // Deduplicated by appId — only shows the latest version of each app
       if (req.method === 'GET' && path === '/catalog.json') {
-        const appMap = new Map() // appId → catalog entry (deduplication)
-
-        for (const [appKey, entry] of this.node.seededApps) {
-          try {
-            // Use a timeout — skip drives that haven't synced yet
-            const driveResult = await Promise.race([
-              this._gateway._getDrive(appKey),
-              new Promise(resolve => setTimeout(() => resolve(null), 3000))
-            ])
-            if (!driveResult) continue
-
-            const manifestBuf = await Promise.race([
-              driveResult.get('/manifest.json'),
-              new Promise(resolve => setTimeout(() => resolve(null), 2000))
-            ])
-            if (!manifestBuf) continue
-
-            const manifest = JSON.parse(manifestBuf.toString())
-            const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : appKey.slice(0, 12))
-            const version = manifest.version || '1.0.0'
-
-            const catalogEntry = {
-              id: appId,
-              name: manifest.name || 'Unknown App',
-              description: manifest.description || '',
-              author: manifest.author || 'anonymous',
-              version,
-              driveKey: appKey,
-              categories: manifest.categories || ['uncategorized'],
-              publishedAt: manifest.publishedAt || null,
-              seededAt: entry.startedAt
-            }
-
-            // Deduplicate: keep only the latest version per appId
-            const existing = appMap.get(appId)
-            if (!existing || this._compareVersions(version, existing.version) > 0) {
-              appMap.set(appId, catalogEntry)
-            }
-          } catch {}
-        }
+        const page = parseInt(url.searchParams.get('page')) || 1
+        const pageSize = Math.min(parseInt(url.searchParams.get('pageSize')) || 50, 500)
+        const apps = this.node.appRegistry.catalog()
+        const total = apps.length
+        const start = (page - 1) * pageSize
+        const paged = apps.slice(start, start + pageSize)
 
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Access-Control-Allow-Origin', '*')
         return this._json(res, {
           version: 1,
           name: 'HiveRelay App Catalog',
-          relayKey: this.node.swarm ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex') : null,
-          apps: Array.from(appMap.values())
+          relayKey: this.node.swarm
+            ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex')
+            : null,
+          pagination: {
+            page,
+            pageSize,
+            total,
+            totalPages: Math.ceil(total / pageSize),
+            hasNext: start + pageSize < total,
+            hasPrev: page > 1
+          },
+          apps: paged
         })
       }
 
@@ -347,7 +323,7 @@ export class RelayAPI extends EventEmitter {
               appKey,
               appId: entry.appId || null,
               version: entry.version || null,
-              discoveryKey: entry.discoveryKey ? Buffer.from(entry.discoveryKey).toString('hex') : null,
+              discoveryKey: entry.discoveryKey ? (typeof entry.discoveryKey === 'string' ? entry.discoveryKey : Buffer.from(entry.discoveryKey).toString('hex')) : null,
               startedAt: entry.startedAt,
               bytesServed: entry.bytesServed || 0,
               uptimeMinutes: Math.round((now - entry.startedAt) / 60_000)
@@ -556,6 +532,146 @@ export class RelayAPI extends EventEmitter {
           await this.node.unseedApp(body.appKey)
           return this._json(res, { ok: true })
         }
+
+        // ─── Live Management API ─────────────────────────────────────
+
+        if (path === '/api/manage/config') {
+          return this._handleConfigUpdate(res, body)
+        }
+
+        if (path === '/api/manage/services') {
+          return this._handleServiceManagement(res, body)
+        }
+
+        if (path === '/api/manage/mode') {
+          return this._handleModeSwitch(res, body)
+        }
+
+        if (path === '/api/manage/transport') {
+          return this._handleTransportToggle(res, body)
+        }
+
+        if (path === '/api/manage/restart') {
+          this._json(res, { ok: true, message: 'Restarting node...' })
+          setTimeout(async () => {
+            try {
+              await this.node.stop()
+              await this.node.start()
+            } catch (err) {
+              this.emit('error', { context: 'restart', error: err })
+            }
+          }, 500)
+          return
+        }
+
+        if (path === '/api/manage/shutdown') {
+          this._json(res, { ok: true, message: 'Shutting down...' })
+          setTimeout(async () => {
+            try {
+              await this.node.stop()
+              process.exit(0)
+            } catch (_) {
+              process.exit(1)
+            }
+          }, 500)
+          return
+        }
+      }
+
+      // GET — Management info endpoints
+      if (req.method === 'GET') {
+        if (path === '/api/manage/config') {
+          return this._json(res, {
+            config: this._getSafeConfig(),
+            mode: this.node._operatingMode || 'standard'
+          })
+        }
+
+        if (path === '/api/manage/services') {
+          if (!this.node.serviceRegistry) {
+            return this._json(res, { services: [], count: 0 })
+          }
+          const services = []
+          for (const [name, provider] of this.node.serviceRegistry.services) {
+            services.push({
+              name,
+              running: provider.running || false,
+              methods: provider.methods
+                ? Object.keys(provider.methods)
+                : [],
+              stats: provider.stats
+                ? provider.stats()
+                : null
+            })
+          }
+          return this._json(res, { services, count: services.length })
+        }
+
+        if (path === '/api/manage/transports') {
+          return this._json(res, {
+            udp: true,
+            holesail: {
+              enabled: !!this.node.holesailTransport,
+              connectionKey: this.node.holesailTransport
+                ? this.node.holesailTransport.connectionKey
+                : null,
+              running: this.node.holesailTransport
+                ? this.node.holesailTransport.running
+                : false
+            },
+            tor: {
+              enabled: !!this.node.torTransport,
+              onionAddress: this.node.torTransport
+                ? this.node.torTransport.onionAddress
+                : null,
+              running: this.node.torTransport
+                ? this.node.torTransport.running
+                : false
+            },
+            websocket: {
+              enabled: !!(this.node.config.transports && this.node.config.transports.websocket),
+              port: this.node.config.wsPort || 8765
+            }
+          })
+        }
+
+        if (path === '/api/manage/modes') {
+          return this._json(res, {
+            current: this.node._operatingMode || 'standard',
+            available: [
+              {
+                id: 'standard',
+                name: 'Standard Relay',
+                description: 'Full relay + seeding + all services'
+              },
+              {
+                id: 'homehive',
+                name: 'HomeHive',
+                description: 'Home/personal relay — LAN priority, low resources, family-friendly'
+              },
+              {
+                id: 'seed-only',
+                name: 'Seed Only',
+                description: 'App seeding only — no circuit relay'
+              },
+              {
+                id: 'relay-only',
+                name: 'Relay Only',
+                description: 'Circuit relay only — no app seeding'
+              },
+              {
+                id: 'stealth',
+                name: 'Stealth',
+                description: 'Tor-only, minimal footprint, no HTTP API on clearnet'
+              },
+              {
+                id: 'gateway',
+                name: 'Gateway',
+                description: 'HTTP gateway focus — serve Hyperdrive content over HTTPS'
+              }
+            ]
+          })
+        }
       }
 
       // 404
@@ -620,6 +736,234 @@ export class RelayAPI extends EventEmitter {
       })
       req.on('error', reject)
     })
+  }
+
+  // ─── Management Handlers ──────────────────────────────────────────
+
+  _handleConfigUpdate (res, body) {
+    const applied = []
+    const config = this.node.config
+
+    if (body.maxStorageBytes !== undefined) {
+      config.maxStorageBytes = parseInt(body.maxStorageBytes)
+      applied.push('maxStorageBytes')
+    }
+    if (body.maxConnections !== undefined) {
+      config.maxConnections = parseInt(body.maxConnections)
+      applied.push('maxConnections')
+    }
+    if (body.maxRelayBandwidthMbps !== undefined) {
+      config.maxRelayBandwidthMbps = parseInt(body.maxRelayBandwidthMbps)
+      applied.push('maxRelayBandwidthMbps')
+    }
+    if (body.maxCircuitsPerPeer !== undefined) {
+      config.maxCircuitsPerPeer = parseInt(body.maxCircuitsPerPeer)
+      applied.push('maxCircuitsPerPeer')
+    }
+    if (body.maxCircuitDuration !== undefined) {
+      config.maxCircuitDuration = parseInt(body.maxCircuitDuration)
+      applied.push('maxCircuitDuration')
+    }
+    if (body.maxCircuitBytes !== undefined) {
+      config.maxCircuitBytes = parseInt(body.maxCircuitBytes)
+      applied.push('maxCircuitBytes')
+    }
+    if (body.registryAutoAccept !== undefined) {
+      config.registryAutoAccept = body.registryAutoAccept !== false
+      applied.push('registryAutoAccept')
+    }
+    if (body.regions !== undefined) {
+      config.regions = Array.isArray(body.regions) ? body.regions : []
+      applied.push('regions')
+    }
+    if (body.announceInterval !== undefined) {
+      config.announceInterval = parseInt(body.announceInterval)
+      applied.push('announceInterval')
+    }
+    if (body.shutdownTimeoutMs !== undefined) {
+      config.shutdownTimeoutMs = parseInt(body.shutdownTimeoutMs)
+      applied.push('shutdownTimeoutMs')
+    }
+
+    // Persist config changes to disk
+    this._persistConfig().catch(() => {})
+
+    return this._json(res, {
+      ok: true,
+      applied,
+      config: this._getSafeConfig()
+    })
+  }
+
+  _handleServiceManagement (res, body) {
+    if (!this.node.serviceRegistry) {
+      return this._json(res, { error: 'Services not enabled' }, 503)
+    }
+
+    const { action, service } = body
+    if (!action || !service) {
+      return this._json(res, {
+        error: 'action and service required (action: enable|disable|restart)'
+      }, 400)
+    }
+
+    const registry = this.node.serviceRegistry
+
+    if (action === 'disable') {
+      if (!registry.services.has(service)) {
+        return this._json(res, { error: `Service '${service}' not found` }, 404)
+      }
+      registry.unregister(service).then(() => {
+        this._json(res, { ok: true, action: 'disabled', service })
+      }).catch(err => {
+        this._json(res, { error: err.message }, 500)
+      })
+      return
+    }
+
+    if (action === 'restart') {
+      const provider = registry.services.get(service)
+      if (!provider) {
+        return this._json(res, { error: `Service '${service}' not found` }, 404)
+      }
+      const ctx = { node: this.node, store: this.node.store, config: this.node.config }
+      provider.stop().then(() => provider.start(ctx)).then(() => {
+        this._json(res, { ok: true, action: 'restarted', service })
+      }).catch(err => {
+        this._json(res, { error: err.message }, 500)
+      })
+      return
+    }
+
+    return this._json(res, {
+      error: 'Unknown action: ' + action + ' (use: disable, restart)'
+    }, 400)
+  }
+
+  _handleModeSwitch (res, body) {
+    const { mode } = body
+    if (!mode) {
+      return this._json(res, { error: 'mode required' }, 400)
+    }
+
+    const config = this.node.config
+    const modeConfigs = {
+      standard: {
+        enableRelay: true,
+        enableSeeding: true,
+        maxConnections: 256,
+        maxRelayBandwidthMbps: 100
+      },
+      homehive: {
+        enableRelay: true,
+        enableSeeding: true,
+        maxConnections: 32,
+        maxRelayBandwidthMbps: 25,
+        maxStorageBytes: 10 * 1024 * 1024 * 1024,
+        registryAutoAccept: true
+      },
+      'seed-only': {
+        enableRelay: false,
+        enableSeeding: true
+      },
+      'relay-only': {
+        enableRelay: true,
+        enableSeeding: false
+      },
+      stealth: {
+        enableRelay: true,
+        enableSeeding: true,
+        maxConnections: 32,
+        maxRelayBandwidthMbps: 25
+      },
+      gateway: {
+        enableRelay: false,
+        enableSeeding: true,
+        maxConnections: 512,
+        maxRelayBandwidthMbps: 500
+      }
+    }
+
+    const modeConfig = modeConfigs[mode]
+    if (!modeConfig) {
+      return this._json(res, {
+        error: 'Unknown mode: ' + mode,
+        available: Object.keys(modeConfigs)
+      }, 400)
+    }
+
+    // Apply mode config
+    Object.assign(config, modeConfig)
+    this.node._operatingMode = mode
+
+    // Persist
+    this._persistConfig().catch(() => {})
+
+    return this._json(res, {
+      ok: true,
+      mode,
+      applied: Object.keys(modeConfig),
+      note: mode === 'stealth'
+        ? 'Enable Tor transport for full stealth mode'
+        : mode === 'homehive'
+          ? 'HomeHive mode active — low resource, LAN-priority'
+          : null
+    })
+  }
+
+  _handleTransportToggle (res, body) {
+    const { transport, enabled } = body
+    if (!transport) {
+      return this._json(res, { error: 'transport required' }, 400)
+    }
+
+    if (!this.node.config.transports) {
+      this.node.config.transports = { udp: true }
+    }
+
+    this.node.config.transports[transport] = enabled !== false
+
+    this._persistConfig().catch(() => {})
+
+    return this._json(res, {
+      ok: true,
+      transport,
+      enabled: this.node.config.transports[transport],
+      note: 'Transport changes may require a node restart to take full effect'
+    })
+  }
+
+  _getSafeConfig () {
+    const c = this.node.config
+    return {
+      storage: c.storage,
+      maxStorageBytes: c.maxStorageBytes,
+      maxConnections: c.maxConnections,
+      maxRelayBandwidthMbps: c.maxRelayBandwidthMbps,
+      enableRelay: c.enableRelay,
+      enableSeeding: c.enableSeeding,
+      enableMetrics: c.enableMetrics,
+      enableAPI: c.enableAPI,
+      apiPort: c.apiPort,
+      regions: c.regions || [],
+      transports: c.transports || { udp: true },
+      registryAutoAccept: c.registryAutoAccept,
+      maxCircuitsPerPeer: c.maxCircuitsPerPeer,
+      maxCircuitDuration: c.maxCircuitDuration,
+      maxCircuitBytes: c.maxCircuitBytes,
+      announceInterval: c.announceInterval,
+      shutdownTimeoutMs: c.shutdownTimeoutMs,
+      mode: this.node._operatingMode || 'standard'
+    }
+  }
+
+  async _persistConfig () {
+    try {
+      const { saveConfig } = await import('../../config/loader.js')
+      saveConfig(this._getSafeConfig())
+    } catch (_) {
+      // Config persistence is best-effort
+    }
   }
 
   async stop () {

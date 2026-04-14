@@ -528,21 +528,34 @@ export class RelayNode extends EventEmitter {
         const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          // Bail out if the drive was closed (e.g. by unseedApp)
+          if (drive.closed || drive.closing) return
+
           try {
             this.swarm.join(discoveryKey, { server: true, client: true })
             await this.swarm.flush()
 
+            if (drive.closed || drive.closing) return
+
             await Promise.race([
               drive.update({ wait: true }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
+              new Promise((_resolve, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
             ])
 
-            if (drive.version > 0) {
-              const dl = drive.download('/')
+            if (drive.version > 0 && !drive.closed && !drive.closing) {
+              let dl
+              try {
+                dl = drive.download('/')
+              } catch (_dlErr) {
+                // Drive closed between check and download call
+                return
+              }
               await Promise.race([
                 dl.done(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
-              ])
+                new Promise((_resolve, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
+              ]).catch(() => {}) // Swallow download errors (drive may close mid-download)
+
+              if (drive.closed || drive.closing) return
 
               // After content is downloaded, read manifest and deduplicate
               await this._indexAppManifest(appKeyHex, drive)
@@ -550,7 +563,10 @@ export class RelayNode extends EventEmitter {
               this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
               return
             }
-          } catch (_) {}
+          } catch (_) {
+            // SESSION_CLOSED, timeout, or drive closed during replication
+            if (drive.closed || drive.closing) return
+          }
 
           if (attempt < MAX_RETRIES - 1) {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
@@ -589,7 +605,7 @@ export class RelayNode extends EventEmitter {
     try {
       const manifestBuf = await Promise.race([
         drive.get('/manifest.json'),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('manifest timeout')), 5000))
+        new Promise((_resolve, reject) => setTimeout(() => reject(new Error('manifest timeout')), 5000))
       ])
       if (!manifestBuf) return
 
@@ -630,7 +646,6 @@ export class RelayNode extends EventEmitter {
             currentVersion: conflict.existingVersion
           })
           await this.unseedApp(appKeyHex)
-          return
         }
       }
     } catch (_) {
@@ -757,7 +772,7 @@ export class RelayNode extends EventEmitter {
       b4a.from('holesail-api-tunnel')
     ]))
     this.holesailTransport = new HolesailTransport({
-      apiPort: apiPort,
+      apiPort,
       seed: b4a.toString(seedBuf, 'hex'),
       host: holesailOpts.host || '127.0.0.1'
     })
