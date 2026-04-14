@@ -57,10 +57,16 @@ export default {
   transports: {
     udp: true, // Always on (HyperDHT default)
     tor: false,
+    i2p: false,
     websocket: false,
     holesail: false
   },
   wsPort: 8765,
+
+  // Holesail API tunnel (for relays behind NAT)
+  holesail: {
+    host: '127.0.0.1'
+  },
 
   // Tor hidden service
   tor: {
@@ -81,13 +87,6 @@ export default {
     network: 'mainnet'
   },
 
-  // Credits — everything starts free
-  credits: {
-    welcomeCredits: 1000, // 1k free credits for every new wallet
-    minTopUp: 100,
-    maxBalance: 100_000_000
-  },
-
   // Payment settlement
   payment: {
     enabled: false,
@@ -95,59 +94,6 @@ export default {
     minSettlementSats: 1000
   },
 
-  // Discovery
-  discovery: {
-    dht: true,
-    announce: true,
-    mdns: true
-  },
-
-  // Catalog Sync — auto-replicate apps from peer relays
-  catalogSync: {
-    enabled: true,              // Sync apps from discovered peer relays
-    syncInterval: 60_000,       // Check peer catalogs every 60s
-    maxStoragePercent: 90,       // Stop syncing if storage exceeds 90%
-    allowlist: null,             // null = sync all apps; array of appKeys to restrict
-    blocklist: [],               // appKeys to never sync
-    blindApps: true              // Also replicate blind/encrypted apps
-  },
-
-  // Services
-  enableServices: true,
-  enableRouter: true,
-  routerWorkers: 0, // 0 = auto (based on CPU cores)
-
-  // AI inference
-  ai: {
-    enabled: false,
-    maxConcurrent: 2,
-    maxQueue: 10,
-    ollamaUrl: 'http://127.0.0.1:11434',
-    models: [],
-    timeout: 30000
-  },
-
-  // Holesail transport
-  holesail: {
-    enabled: false,
-    seed: null,
-    connectorMode: false,
-    secure: false
-  },
-
-  // Proxy trust (set true when behind a reverse proxy like Caddy/NGINX)
-  trustProxy: false,
-
   // Shutdown
-  shutdownTimeoutMs: 10_000,
-
-  // Timeouts (all in milliseconds)
-  timeouts: {
-    driveReady: 15_000,
-    driveUpdate: 30_000,
-    driveDownload: 120_000,
-    manifestRead: 5_000,
-    eagerReplicationRetry: 5_000, // Initial retry delay
-    eagerReplicationMaxRetry: 120_000 // Max retry delay
-  }
+  shutdownTimeoutMs: 10_000
 }
