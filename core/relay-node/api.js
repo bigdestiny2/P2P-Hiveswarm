@@ -338,6 +338,39 @@ export class RelayAPI extends EventEmitter {
           return
         }
 
+        if (path === '/payments') {
+          if (!this._paymentsHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'payments.html')
+            this._paymentsHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._paymentsHtml)
+          return
+        }
+
+        if (path === '/calculator') {
+          if (!this._calculatorHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'calculator.html')
+            this._calculatorHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._calculatorHtml)
+          return
+        }
+
+        if (path === '/leaderboard') {
+          if (!this._leaderboardHtml) {
+            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'leaderboard.html')
+            this._leaderboardHtml = await readFile(htmlPath, 'utf-8')
+          }
+          res.setHeader('Content-Type', 'text/html')
+          res.writeHead(200)
+          res.end(this._leaderboardHtml)
+          return
+        }
+
         if (path === '/api/health-detail') {
           const healthStatus = this.node.getHealthStatus()
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
