@@ -47,6 +47,7 @@ export default {
   apiHost: '0.0.0.0',
   corsOrigins: [],
   strictSeedingPrivacy: true,
+  enableDistributedDriveBridge: false,
 
   // Seeding registry
   registryKey: null, // null = create new autobase

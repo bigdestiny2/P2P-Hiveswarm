@@ -1036,6 +1036,10 @@ export class RelayAPI extends EventEmitter {
       config.strictSeedingPrivacy = body.strictSeedingPrivacy !== false
       applied.push('strictSeedingPrivacy')
     }
+    if (body.enableDistributedDriveBridge !== undefined) {
+      config.enableDistributedDriveBridge = body.enableDistributedDriveBridge !== false
+      applied.push('enableDistributedDriveBridge')
+    }
     if (body.requireSignedCatalog !== undefined) {
       config.requireSignedCatalog = body.requireSignedCatalog === true
       applied.push('requireSignedCatalog')
@@ -1286,6 +1290,7 @@ export class RelayAPI extends EventEmitter {
       catalogSignatureMaxAgeMs: c.catalogSignatureMaxAgeMs,
       catalogMaxAppAgeMs: c.catalogMaxAppAgeMs,
       strictSeedingPrivacy: c.strictSeedingPrivacy,
+      enableDistributedDriveBridge: c.enableDistributedDriveBridge,
       gatewayPublicOnlyPrivacyTier: c.gatewayPublicOnlyPrivacyTier,
       replicationCheckInterval: c.replicationCheckInterval,
       replicationRepairEnabled: c.replicationRepairEnabled,

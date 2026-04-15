@@ -10,6 +10,7 @@ import { Seeder } from './seeder.js'
 import { Relay } from './relay.js'
 import { Metrics } from './metrics.js'
 import { RelayAPI } from './api.js'
+import { DistributedDriveBridge } from './distributed-drive-bridge.js'
 import { WebSocketTransport } from '../../transports/websocket/index.js'
 import { TorTransport } from '../../transports/tor/index.js'
 import { HolesailTransport } from '../../transports/holesail/index.js'
@@ -51,6 +52,7 @@ const DEFAULT_CONFIG = {
   apiHost: '0.0.0.0',
   corsOrigins: [],
   strictSeedingPrivacy: true,
+  enableDistributedDriveBridge: false,
   gatewayPublicOnlyPrivacyTier: true,
   requireSignedCatalog: false,
   catalogSignatureMaxAgeMs: 5 * 60 * 1000,
@@ -197,6 +199,7 @@ export class RelayNode extends EventEmitter {
     this.healthMonitor = null
     this.selfHeal = null
     this.seedingRegistry = null
+    this.distributedDriveBridge = null
     this._registryScanInterval = null
     this.serviceRegistry = null
     this.serviceProtocol = null
@@ -328,6 +331,12 @@ export class RelayNode extends EventEmitter {
           announceInterval: this.config.announceInterval
         })
         startups.push(this.seeder.start())
+
+        if (this.config.enableDistributedDriveBridge !== false) {
+          this.distributedDriveBridge = new DistributedDriveBridge({ enabled: true })
+          this.distributedDriveBridge.on('warning', (details) => this.emit('distributed-drive-warning', details))
+          startups.push(this.distributedDriveBridge.start())
+        }
       }
 
       if (this.config.enableRelay) {
@@ -466,6 +475,13 @@ export class RelayNode extends EventEmitter {
           }
         })
         await this.holesailTransport.start()
+      }
+
+      if (this.distributedDriveBridge && !this.distributedDriveBridge.running) {
+        this.emit('distributed-drive-warning', {
+          code: 'DISTRIBUTED_DRIVE_BRIDGE_DISABLED',
+          message: 'distributed-drive bridge is configured but not active'
+        })
       }
 
       if (this.config.payment && this.config.payment.enabled && this.config.paymentManager) {
@@ -723,6 +739,7 @@ export class RelayNode extends EventEmitter {
       if (this.wsTransport) { try { await this.wsTransport.stop() } catch (_) {} this.wsTransport = null }
       if (this.api) { try { await this.api.stop() } catch (_) {} this.api = null }
       if (this.metrics) { this.metrics.stop(); this.metrics = null }
+      if (this.distributedDriveBridge) { try { await this.distributedDriveBridge.stop() } catch (_) {} this.distributedDriveBridge = null }
       if (this.relay) { try { await this.relay.stop() } catch (_) {} this.relay = null }
       if (this.seeder) { try { await this.seeder.stop() } catch (_) {} this.seeder = null }
       if (this.swarm) { try { await this.swarm.destroy() } catch (_) {} this.swarm = null }
@@ -923,6 +940,10 @@ export class RelayNode extends EventEmitter {
         publisherPubkey
       })
 
+      if (this.distributedDriveBridge) {
+        this.distributedDriveBridge.registerDrive(appKeyHex, drive)
+      }
+
       this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
       return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
     } catch (err) {
@@ -991,6 +1012,10 @@ export class RelayNode extends EventEmitter {
   async unseedApp (appKeyHex) {
     const entry = this.appRegistry.get(appKeyHex)
     if (!entry) return
+
+    if (this.distributedDriveBridge) {
+      this.distributedDriveBridge.unregisterDrive(appKeyHex)
+    }
 
     try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
     try { await entry.drive.close() } catch (_) {}
@@ -1100,7 +1125,17 @@ export class RelayNode extends EventEmitter {
         experimental: true,
         settlementIntervalMs: this.config.payment?.settlementInterval || null
       },
-      accessControl: accessControlStats
+      accessControl: accessControlStats,
+      distributedDrive: this.distributedDriveBridge
+        ? this.distributedDriveBridge.getStats()
+        : {
+            enabled: this.config.enableDistributedDriveBridge !== false,
+            running: false,
+            moduleAvailable: false,
+            registeredDrives: 0,
+            peers: 0,
+            lastError: null
+          }
     }
   }
 
@@ -1301,6 +1336,11 @@ export class RelayNode extends EventEmitter {
 
     // Replicate all cores in our store over this connection
     this.store.replicate(conn)
+
+    // Optional Ghost Drive-compatible drive RPC bridge
+    if (this.distributedDriveBridge) {
+      this.distributedDriveBridge.addPeer(conn, { remotePubKey: remotePubKeyHex })
+    }
 
     // Attach protocol handlers so clients can negotiate seed/circuit channels
     if (this._seedProtocol) {
@@ -1766,6 +1806,11 @@ export class RelayNode extends EventEmitter {
       try {
         await withTimeout(this.unseedApp(appKeyHex), timeout, `unseedApp(${appKeyHex.slice(0, 8)})`)
       } catch (_) {}
+    }
+
+    if (this.distributedDriveBridge) {
+      try { await this.distributedDriveBridge.stop() } catch (_) {}
+      this.distributedDriveBridge = null
     }
 
     if (this.relay) {

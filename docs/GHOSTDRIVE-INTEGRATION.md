@@ -16,6 +16,12 @@ All write operations require API auth when the relay is configured with `HIVEREL
 export HIVERELAY_API_KEY=your-relay-api-key
 ```
 
+Enable the Ghost Drive peer bridge when starting your relay:
+
+```bash
+hiverelay start --distributed-drive
+```
+
 ### 1) Pin a Ghost Drive key on a relay
 
 ```bash
@@ -88,4 +94,3 @@ hiverelay seed <64-hex-key> \
 - Add a **Pin to Relay** action that calls `POST /seed`.
 - Add a **Publish to Network** action that also calls `POST /registry/publish`.
 - Add a **Browse Network** tab that aggregates `/catalog.json` from known relays.
-

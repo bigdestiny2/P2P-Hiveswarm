@@ -179,6 +179,8 @@ async function start () {
   if (args.seeding === false) cliOverrides.enableSeeding = false
   if (args.metrics === false) cliOverrides.enableMetrics = false
   if (args.api === false) cliOverrides.enableAPI = false
+  if (args['distributed-drive'] === true) cliOverrides.enableDistributedDriveBridge = true
+  if (args['distributed-drive'] === false) cliOverrides.enableDistributedDriveBridge = false
   if (args.port) cliOverrides.apiPort = parseInt(args.port)
   if (args.region) cliOverrides.regions = [].concat(args.region)
   if (args.tor) {
@@ -218,6 +220,7 @@ async function start () {
     console.log(`  Max Store:  ${formatBytes(config.maxStorageBytes)}`)
     console.log(`  Relay:      ${config.enableRelay ? 'enabled' : 'disabled'}`)
     console.log(`  Seeding:    ${config.enableSeeding ? 'enabled' : 'disabled'}`)
+    console.log(`  DistDrive:  ${config.enableDistributedDriveBridge ? 'enabled' : 'disabled'}`)
     console.log(`  API:        ${config.enableAPI ? 'http://127.0.0.1:' + config.apiPort : 'disabled'}`)
     console.log(`  Regions:    ${config.regions && config.regions.length ? config.regions.join(', ') : 'all'}`)
     if (config.transports && config.transports.tor) {
@@ -963,6 +966,8 @@ Start Options:
   --region <code>               Region code
   --port <n>                    API port (default: 9100)
   --seed <key>                  Seed a Pear app key on startup
+  --distributed-drive           Enable distributed-drive peer bridge (Ghost Drive mode)
+  --no-distributed-drive        Disable distributed-drive bridge
   --no-relay                    Disable circuit relay
   --no-seeding                  Disable app seeding
   --no-api                      Disable HTTP API

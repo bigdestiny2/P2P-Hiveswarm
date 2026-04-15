@@ -3,6 +3,7 @@ import { RelayNode } from '../../core/relay-node/index.js'
 import path from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
+import { EventEmitter } from 'events'
 
 function tmpStorage () {
   return path.join(tmpdir(), 'hiverelay-test-' + randomBytes(8).toString('hex'))
@@ -36,8 +37,39 @@ test('RelayNode - getStats returns expected shape', async (t) => {
   t.ok(stats.relay !== null)
   t.ok(stats.seeder !== null)
   t.ok(stats.payment && stats.payment.experimental === true)
+  t.ok(stats.distributedDrive && typeof stats.distributedDrive.enabled === 'boolean')
 
   await node.stop()
+})
+
+test('RelayNode - _onConnection attaches distributed-drive peer bridge', async (t) => {
+  const node = new RelayNode({ storage: tmpStorage(), enableAPI: false })
+  const remotePub = randomBytes(32)
+  const fakeConn = new EventEmitter()
+  fakeConn.remotePublicKey = remotePub
+  fakeConn.destroy = () => {}
+
+  const calls = []
+  node.distributedDriveBridge = {
+    addPeer (conn, meta) {
+      calls.push({ conn, meta })
+      return {}
+    }
+  }
+
+  const origReplicate = node.store.replicate
+  node.store.replicate = () => {}
+
+  node._onConnection(fakeConn, { publicKey: remotePub })
+
+  t.is(calls.length, 1, 'bridge addPeer called once')
+  t.is(calls[0].meta.remotePubKey, remotePub.toString('hex'), 'remote key forwarded')
+  t.is(node.connections.size, 1, 'connection tracked')
+
+  fakeConn.emit('close')
+  t.is(node.connections.size, 0, 'connection removed on close')
+
+  node.store.replicate = origReplicate
 })
 
 test('RelayNode - emits started event with publicKey', async (t) => {
