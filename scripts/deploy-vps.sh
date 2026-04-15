@@ -49,6 +49,19 @@ deploy_server() {
         pkill -9 -f "node.*/opt/hiverelay" 2>/dev/null || true
         sleep 2
 
+        # ─── 2b. Create swap if < 1GB RAM and no swap exists ───
+        TOTAL_RAM_MB=\$(free -m | awk '/Mem:/{print \$2}')
+        SWAP_EXISTS=\$(swapon --show --noheadings | wc -l)
+        if [ "\$TOTAL_RAM_MB" -lt 1024 ] && [ "\$SWAP_EXISTS" -eq 0 ]; then
+            echo "  Low RAM (\${TOTAL_RAM_MB}MB) — creating 512MB swap..."
+            fallocate -l 512M /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            echo "  ✓ Swap enabled"
+        fi
+
         # ─── 3. Clear stale lock files ───
         find /root/.hiverelay -name "*.lock" -delete 2>/dev/null || true
 
@@ -64,7 +77,9 @@ Type=simple
 WorkingDirectory=/root/hiverelay
 ExecStart=/usr/bin/node --max-old-space-size=HEAP_PLACEHOLDER cli/index.js start --mode public --region REGION_PLACEHOLDER
 Restart=always
-RestartSec=10
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=10
 Environment=HIVERELAY_API_KEY=API_KEY_PLACEHOLDER
 Environment=NODE_ENV=production
 MemoryMax=MEM_PLACEHOLDER

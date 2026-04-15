@@ -127,7 +127,7 @@ export class HealthMonitor extends EventEmitter {
         const totalConns = this.node.connections.size
         const stalePct = totalConns > 0 ? (staleCount / totalConns) * 100 : 0
 
-        if (stalePct > 50) {
+        if (stalePct > 80) {
           healthy = false
           this._status.checks.connections = { ok: false, staleCount, totalConns, stalePct: Math.round(stalePct) }
           this.emit('health-warning', { check: 'stale-connections', staleCount, totalConns, stalePct: Math.round(stalePct) })

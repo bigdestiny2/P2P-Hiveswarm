@@ -292,7 +292,7 @@ async function start () {
   })
 
   node.on('reseed-error', ({ appKey, error }) => {
-    log.warn({ appKey: appKey ? appKey.slice(0, 12) : 'unknown', err: error }, 'failed to reseed app')
+    log.debug({ appKey: appKey ? appKey.slice(0, 12) : 'unknown', err: error }, 'reseed attempt failed (normal for catalog-synced apps without peers)')
   })
 
   let statusInterval = null

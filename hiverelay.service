@@ -17,11 +17,16 @@ WorkingDirectory=/opt/hiverelay
 Environment=NODE_ENV=production
 Environment=HIVERELAY_LOG_LEVEL=info
 
-# Restart policy
+# Restart policy — RestartSec=15 prevents ELOCKED crash loops
+# (random-access-file needs time to release primary-key lock)
 Restart=always
-RestartSec=5
-StartLimitIntervalSec=60
+RestartSec=15
+StartLimitIntervalSec=300
 StartLimitBurst=5
+
+# Shutdown — give graceful-goodbye time to close Hypercores/release locks
+KillSignal=SIGTERM
+TimeoutStopSec=10
 
 # Security hardening
 NoNewPrivileges=yes
