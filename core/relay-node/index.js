@@ -918,6 +918,7 @@ export class RelayNode extends EventEmitter {
         name: opts.name || opts.appId || null,
         description: opts.description || '',
         author: opts.author || null,
+        categories: Array.isArray(opts.categories) ? opts.categories : null,
         blind: opts.blind || false,
         publisherPubkey
       })

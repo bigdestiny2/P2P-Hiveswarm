@@ -7,7 +7,7 @@ const API_KEY = 'test-secret-key-12345'
  * Create a minimal mock RelayNode that satisfies RelayAPI's needs.
  */
 function mockRelayNode () {
-  return {
+  const node = {
     running: true,
     config: { storage: null, registryAutoAccept: false },
     metrics: { getSummary () { return { uptime: 100 } } },
@@ -22,7 +22,11 @@ function mockRelayNode () {
     getStats () { return { running: true, seededApps: 0, connections: 0 } },
     getHealthStatus () { return { healthy: true } },
     async stop () {},
-    async seedApp () { return { ok: true } },
+    _seedCalls: [],
+    async seedApp (appKey, opts) {
+      node._seedCalls.push({ appKey, opts })
+      return { ok: true }
+    },
     async unseedApp () {},
     verifyUnseedRequest () { return { ok: true } },
     broadcastUnseed () {},
@@ -41,6 +45,7 @@ function mockRelayNode () {
     on () {},
     emit () {}
   }
+  return node
 }
 
 /**
@@ -75,10 +80,11 @@ function request (port, method, path, body, headers = {}) {
 
 let api = null
 let port = 0
+let node = null
 
 test('api-auth: setup server', async (t) => {
   const { RelayAPI } = await import('../../core/relay-node/api.js')
-  const node = mockRelayNode()
+  node = mockRelayNode()
   // Use port 0 so the OS picks a free port
   api = new RelayAPI(node, { apiPort: 0, apiKey: API_KEY, apiHost: '127.0.0.1' })
 
@@ -108,6 +114,33 @@ test('api-auth: POST /seed without auth returns 401', async (t) => {
   })
   t.is(res.statusCode, 401, 'status is 401')
   t.ok(res.body.error, 'error message present')
+})
+
+test('api-auth: POST /seed forwards metadata fields with auth', async (t) => {
+  const res = await request(port, 'POST', '/seed', {
+    appKey: 'c'.repeat(64),
+    appId: 'ghost-drive-demo',
+    version: '0.1.0',
+    name: 'Ghost Drive Demo',
+    description: 'Pinned drive for catalog testing',
+    author: 'integration-test',
+    categories: ['ghost-drive', 'files'],
+    privacyTier: 'public'
+  }, {
+    Authorization: 'Bearer ' + API_KEY
+  })
+
+  t.is(res.statusCode, 200, 'status is 200')
+  t.ok(node._seedCalls.length > 0, 'seedApp invoked')
+
+  const lastCall = node._seedCalls[node._seedCalls.length - 1]
+  t.is(lastCall.appKey, 'c'.repeat(64), 'app key forwarded')
+  t.is(lastCall.opts.appId, 'ghost-drive-demo', 'appId forwarded')
+  t.is(lastCall.opts.version, '0.1.0', 'version forwarded')
+  t.is(lastCall.opts.name, 'Ghost Drive Demo', 'name forwarded')
+  t.is(lastCall.opts.author, 'integration-test', 'author forwarded')
+  t.alike(lastCall.opts.categories, ['ghost-drive', 'files'], 'categories forwarded')
+  t.is(lastCall.opts.privacyTier, 'public', 'privacy tier forwarded')
 })
 
 test('api-auth: POST /unseed without auth returns 401', async (t) => {

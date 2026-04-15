@@ -8,6 +8,7 @@
  *   hiverelay init                Initialize HiveRelay + install agent skills
  *   hiverelay start [options]     Start a relay node
  *   hiverelay seed <key>          Request seeding for a Pear app
+ *   hiverelay ghostdrive ...      Ghost Drive relay workflows
  *   hiverelay status              Show node status
  *   hiverelay help                Show this help
  */
@@ -54,6 +55,7 @@ const COMMANDS = {
   start,
   testnet: startTestnet,
   seed,
+  ghostdrive,
   status,
   help
 }
@@ -436,7 +438,7 @@ async function startTestnet () {
     let found = false
     for (let i = 0; i < 30; i++) {
       if (client.relays.size > 0) { found = true; break }
-      await new Promise(r => setTimeout(r, 500))
+      await new Promise(resolve => setTimeout(resolve, 500))
       await clientSwarm.flush()
     }
 
@@ -467,7 +469,7 @@ async function startTestnet () {
       }
 
       // Wait briefly for seed accepts
-      await new Promise(r => setTimeout(r, 3000))
+      await new Promise(resolve => setTimeout(resolve, 3000))
 
       // Read back
       const hello = await client.get(driveKey, '/hello.txt')
@@ -549,26 +551,358 @@ async function startTestnet () {
 
 // ─── seed ───────────────────────────────────────────────────────────
 
+const VALID_PRIVACY_TIERS = new Set(['public', 'local-first', 'p2p-only'])
+const GHOSTDRIVE_DEFAULT_CATEGORIES = ['ghost-drive', 'files']
+
 async function seed () {
   const appKey = args._[1]
-  if (!appKey) {
-    console.error('Usage: hiverelay seed <pear-app-key> [options]')
-    console.error()
-    console.error('Options:')
-    console.error('  --replicas <n>     Desired replication factor (default: 3)')
-    console.error('  --geo <region>     Geographic preference (NA, EU, AS, etc.)')
-    console.error('  --max-storage <n>  Max storage for this app (e.g., 500MB)')
-    console.error('  --ttl <days>       Seed request TTL in days (default: 30)')
+  if (!isValidHexKey(appKey, 64)) {
+    console.error('Usage: hiverelay seed <app-key> [options]')
+    console.error('  app-key must be 64 hex characters')
     process.exit(1)
   }
 
-  console.log(`Publishing seed request for: ${appKey.slice(0, 16)}...`)
-  console.log(`  Replicas:    ${args.replicas || 3}`)
-  console.log(`  Geo:         ${args.geo || 'any'}`)
-  console.log(`  Max Storage: ${args['max-storage'] || '500MB'}`)
-  console.log(`  TTL:         ${args.ttl || 30} days`)
+  const seedMetadata = collectSeedMetadata(args)
+  const relay = getRelayBaseUrl(args)
+  const apiKey = getApiKey(args)
+
+  try {
+    console.log(`Seeding app on relay ${relay}...`)
+    const seedResult = await seedAppViaApi({
+      relay,
+      apiKey,
+      appKey,
+      metadata: seedMetadata
+    })
+
+    console.log(`  Seeded: ${appKey.slice(0, 16)}...`)
+    if (seedResult.alreadySeeded) console.log('  Note: already seeded on this relay.')
+    if (seedResult.discoveryKey) console.log(`  Discovery key: ${seedResult.discoveryKey}`)
+
+    if (shouldPublishRegistry(args)) {
+      const publishBody = collectRegistryOptions(args, appKey, seedMetadata.privacyTier || 'public')
+      const publishResult = await publishSeedRequestViaApi({ relay, apiKey, body: publishBody })
+      console.log(`  Registry publish: replicas=${publishResult.replicationFactor || publishBody.replicas}`)
+      if (publishResult.requestId) console.log(`  Request ID: ${publishResult.requestId}`)
+    }
+  } catch (err) {
+    console.error('Seeding failed: ' + err.message)
+    process.exit(1)
+  }
+}
+
+// ─── ghostdrive ─────────────────────────────────────────────────────
+
+async function ghostdrive () {
+  const action = args._[1]
+
+  if (!action || action === 'help') {
+    printGhostDriveHelp()
+    return
+  }
+
+  if (action === 'discover') {
+    await ghostDriveDiscover()
+    return
+  }
+
+  const driveKey = args._[2]
+  if (!isValidHexKey(driveKey, 64)) {
+    console.error('Usage: hiverelay ghostdrive <pin|publish> <drive-key> [options]')
+    console.error('  drive-key must be 64 hex characters')
+    process.exit(1)
+  }
+
+  const relay = getRelayBaseUrl(args)
+  const apiKey = getApiKey(args)
+  const metadata = collectGhostDriveMetadata(args, driveKey)
+
+  try {
+    console.log(`Ghost Drive ${action} via relay ${relay}...`)
+    const seedResult = await seedAppViaApi({
+      relay,
+      apiKey,
+      appKey: driveKey,
+      metadata
+    })
+
+    console.log(`  Pinned drive: ${driveKey.slice(0, 16)}...`)
+    if (seedResult.alreadySeeded) console.log('  Note: already pinned on this relay.')
+    if (seedResult.discoveryKey) console.log(`  Discovery key: ${seedResult.discoveryKey}`)
+    console.log(`  Catalog tags: ${(metadata.categories || []).join(', ') || 'none'}`)
+
+    if (action === 'publish') {
+      const publishBody = collectRegistryOptions(args, driveKey, metadata.privacyTier || 'public')
+      const publishResult = await publishSeedRequestViaApi({ relay, apiKey, body: publishBody })
+      console.log(`  Published to registry (replicas=${publishResult.replicationFactor || publishBody.replicas})`)
+    }
+  } catch (err) {
+    console.error(`Ghost Drive ${action} failed: ` + err.message)
+    process.exit(1)
+  }
+}
+
+async function ghostDriveDiscover () {
+  const relays = parseRelayList(args)
+  const discovered = []
+
+  try {
+    for (const relay of relays) {
+      const catalog = await relayRequestJson(relay, '/catalog.json?page=1&pageSize=500')
+      const apps = Array.isArray(catalog.apps) ? catalog.apps : []
+      const ghostApps = apps.filter(isGhostDriveCatalogEntry)
+      for (const app of ghostApps) {
+        discovered.push({ relay, app })
+      }
+      console.log(`  ${relay} → ${ghostApps.length} Ghost Drive entries`)
+    }
+  } catch (err) {
+    console.error('Discovery failed: ' + err.message)
+    process.exit(1)
+  }
+
   console.log()
-  console.log('Seed request published. Relay nodes will begin seeding shortly.')
+  if (discovered.length === 0) {
+    console.log('No Ghost Drive entries found in the queried catalogs.')
+    return
+  }
+
+  console.log(`Discovered ${discovered.length} Ghost Drive entries:`)
+  for (const { relay, app } of discovered) {
+    const label = app.name || app.id || app.appKey
+    const author = app.author || 'unknown'
+    const key = app.appKey || app.driveKey || 'n/a'
+    console.log(`  - ${label} (${author})`)
+    console.log(`    key: ${key}`)
+    console.log(`    relay: ${relay}`)
+    if (app.description) console.log(`    ${app.description}`)
+  }
+}
+
+function printGhostDriveHelp () {
+  console.log(`
+Ghost Drive Workflow
+
+Usage:
+  hiverelay ghostdrive pin <drive-key> [options]
+  hiverelay ghostdrive publish <drive-key> [options]
+  hiverelay ghostdrive discover [options]
+
+Subcommands:
+  pin       Seed/pin a Ghost Drive key on a relay and add discovery metadata
+  publish   Pin + publish replication request to the distributed registry
+  discover  Query relay catalog(s) for Ghost Drive entries
+
+Options:
+  --relay <url>                Relay URL (repeat for discover; default: http://127.0.0.1:9100)
+  --host <ip> --port <n>       Alternative to --relay
+  --api-key <key>              API key (or use HIVERELAY_API_KEY env)
+  --name <text>                Catalog name
+  --description <text>         Catalog description
+  --author <text>              Catalog author
+  --categories <a,b,c>         Catalog categories (default: ghost-drive,files)
+  --privacy-tier <tier>        public | local-first | p2p-only (default: public)
+  --replicas <n>               Publish target replication factor (default: 3)
+  --geo <region>               Publish geo preference (e.g. NA,EU,AS)
+  --ttl <days>                 Publish TTL days (default: 30)
+  --max-storage <size>         Publish max bytes for storage matching
+`)
+}
+
+async function seedAppViaApi ({ relay, apiKey, appKey, metadata }) {
+  const body = { appKey }
+  if (metadata.appId) body.appId = metadata.appId
+  if (metadata.version) body.version = metadata.version
+  if (metadata.name) body.name = metadata.name
+  if (metadata.description !== undefined) body.description = metadata.description
+  if (metadata.author) body.author = metadata.author
+  if (metadata.categories && metadata.categories.length > 0) body.categories = metadata.categories
+  if (metadata.privacyTier) body.privacyTier = metadata.privacyTier
+  return relayRequestJson(relay, '/seed', {
+    method: 'POST',
+    body,
+    apiKey
+  })
+}
+
+async function publishSeedRequestViaApi ({ relay, apiKey, body }) {
+  return relayRequestJson(relay, '/registry/publish', {
+    method: 'POST',
+    body,
+    apiKey
+  })
+}
+
+async function relayRequestJson (relay, path, opts = {}) {
+  const method = opts.method || 'GET'
+  const headers = { Accept: 'application/json' }
+  if (opts.apiKey) headers.Authorization = 'Bearer ' + opts.apiKey
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
+
+  let res
+  try {
+    res = await fetch(relay + path, {
+      method,
+      headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+    })
+  } catch (err) {
+    throw new Error(`cannot reach relay ${relay}: ${err.message}`)
+  }
+
+  const payload = await parseResponseBody(res)
+  if (!res.ok) {
+    const reason = payload && payload.error ? payload.error : `${res.status} ${res.statusText}`
+    throw new Error(reason)
+  }
+  return payload
+}
+
+async function parseResponseBody (res) {
+  const text = await res.text()
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch (_) {
+    return { raw: text }
+  }
+}
+
+function collectSeedMetadata (argv) {
+  const metadata = {}
+  if (typeof argv['app-id'] === 'string' && argv['app-id'].trim()) metadata.appId = argv['app-id'].trim()
+  if (typeof argv.version === 'string' && argv.version.trim()) metadata.version = argv.version.trim()
+  if (typeof argv.name === 'string' && argv.name.trim()) metadata.name = argv.name.trim()
+  if (typeof argv.description === 'string') metadata.description = argv.description
+  if (typeof argv.author === 'string' && argv.author.trim()) metadata.author = argv.author.trim()
+  const categories = parseCategories(argv.categories, null)
+  if (categories) metadata.categories = categories
+  if (argv['privacy-tier'] !== undefined) {
+    metadata.privacyTier = parsePrivacyTierOrExit(argv['privacy-tier'])
+  }
+  return metadata
+}
+
+function collectGhostDriveMetadata (argv, driveKey) {
+  const metadata = collectSeedMetadata(argv)
+  if (!metadata.appId) metadata.appId = `ghost-drive-${driveKey.slice(0, 16)}`
+  if (!metadata.name) metadata.name = `Ghost Drive ${driveKey.slice(0, 8)}`
+  if (metadata.description === undefined) {
+    metadata.description = 'Ghost Drive content pinned on HiveRelay for always-on availability and discovery.'
+  }
+  if (!metadata.author) metadata.author = 'ghost-drive-user'
+  metadata.categories = parseCategories(argv.categories, GHOSTDRIVE_DEFAULT_CATEGORIES)
+  if (!metadata.privacyTier) metadata.privacyTier = 'public'
+  return metadata
+}
+
+function collectRegistryOptions (argv, appKey, defaultPrivacyTier = 'public') {
+  const body = {
+    appKey,
+    replicas: argv.replicas ? parseInt(argv.replicas) : 3,
+    ttlDays: argv.ttl ? parseInt(argv.ttl) : 30,
+    privacyTier: argv['privacy-tier'] !== undefined
+      ? parsePrivacyTierOrExit(argv['privacy-tier'])
+      : defaultPrivacyTier
+  }
+
+  if (argv.geo !== undefined) {
+    const geo = parseCsvValues(argv.geo)
+    body.geo = geo.length > 1 ? geo : geo[0]
+  }
+  if (argv['max-storage'] !== undefined) body.maxStorageBytes = parseBytes(String(argv['max-storage']))
+  if (argv['discovery-key'] !== undefined) {
+    const discoveryKeys = parseCsvValues(argv['discovery-key']).map(v => v.toLowerCase())
+    for (const key of discoveryKeys) {
+      if (!isValidHexKey(key, 64)) {
+        throw new Error('discovery-key entries must be 64 hex characters')
+      }
+    }
+    body.discoveryKeys = discoveryKeys
+  }
+  return body
+}
+
+function shouldPublishRegistry (argv) {
+  return argv.publish === true ||
+    argv.registry === true ||
+    argv.replicas !== undefined ||
+    argv.geo !== undefined ||
+    argv.ttl !== undefined ||
+    argv['max-storage'] !== undefined ||
+    argv['discovery-key'] !== undefined
+}
+
+function getApiKey (argv) {
+  const key = typeof argv['api-key'] === 'string' ? argv['api-key'].trim() : ''
+  return key || process.env.HIVERELAY_API_KEY || null
+}
+
+function getRelayBaseUrl (argv) {
+  if (typeof argv.relay === 'string' && argv.relay.trim()) {
+    return normalizeRelayUrl(argv.relay)
+  }
+  const host = argv.host || '127.0.0.1'
+  const port = argv.port ? parseInt(argv.port) : 9100
+  return `http://${host}:${port}`
+}
+
+function parseRelayList (argv) {
+  if (argv.relay === undefined) return [getRelayBaseUrl(argv)]
+  const values = [].concat(argv.relay)
+    .map(v => normalizeRelayUrl(v))
+    .filter(Boolean)
+  return [...new Set(values)]
+}
+
+function normalizeRelayUrl (value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw.replace(/\/+$/, '')
+  }
+  return `http://${raw.replace(/\/+$/, '')}`
+}
+
+function isGhostDriveCatalogEntry (app) {
+  if (!app || typeof app !== 'object') return false
+  const categories = Array.isArray(app.categories)
+    ? app.categories.map(c => String(c).toLowerCase())
+    : []
+  if (categories.includes('ghost-drive')) return true
+  const id = String(app.id || '').toLowerCase()
+  if (id.startsWith('ghost-drive')) return true
+  const name = String(app.name || '').toLowerCase()
+  return name.includes('ghost drive')
+}
+
+function parseCategories (input, fallback = null) {
+  const values = parseCsvValues(input)
+  if (values.length === 0) return fallback
+  return [...new Set(values)]
+}
+
+function parseCsvValues (input) {
+  if (input === undefined || input === null) return []
+  return []
+    .concat(input)
+    .flatMap(v => String(v).split(','))
+    .map(v => v.trim())
+    .filter(Boolean)
+}
+
+function parsePrivacyTierOrExit (value) {
+  const tier = String(value || '').trim().toLowerCase()
+  if (!VALID_PRIVACY_TIERS.has(tier)) {
+    console.error('Invalid privacy tier: ' + value)
+    console.error('Valid tiers: public, local-first, p2p-only')
+    process.exit(1)
+  }
+  return tier
+}
+
+function isValidHexKey (value, length = 64) {
+  return typeof value === 'string' && new RegExp(`^[0-9a-fA-F]{${length}}$`).test(value)
 }
 
 // ─── status ─────────────────────────────────────────────────────────
@@ -612,7 +946,8 @@ Usage:
   hiverelay init [options]      Initialize config + install agent skills
   hiverelay start [options]     Start a relay node
   hiverelay testnet [options]   Spin up a local testnet (DHT + relays + client)
-  hiverelay seed <key>          Request seeding for a Pear app
+  hiverelay seed <key>          Seed a key on a relay (optional registry publish)
+  hiverelay ghostdrive ...      Ghost Drive pin/publish/discover workflows
   hiverelay status              Show node status (queries running node)
   hiverelay help                Show this help
 
@@ -641,6 +976,21 @@ Manage Options:
   --host <ip>                   Relay host (default: 127.0.0.1)
   --port <n>                    Relay API port (default: 9100)
 
+Seed / Ghost Drive Options:
+  --relay <url>                 Relay URL (default: http://127.0.0.1:9100)
+  --api-key <key>               API key (or use HIVERELAY_API_KEY env)
+  --app-id <id>                 Optional app id for catalog dedup
+  --name <text>                 Catalog name
+  --description <text>          Catalog description
+  --author <text>               Catalog author
+  --categories <a,b,c>          Catalog categories
+  --privacy-tier <tier>         public | local-first | p2p-only
+  --publish                     Also publish /registry/publish request
+  --replicas <n>                Replication target (default: 3)
+  --geo <region>                Geo preference (e.g. NA,EU,AS)
+  --ttl <days>                  Registry TTL days (default: 30)
+  --discovery-key <hex>         Extra discovery keys for registry publish (repeatable)
+
 Testnet Options:
   --nodes <n>                   Number of relay nodes (default: 3)
   --port <n>                    Base API port (default: 19100)
@@ -655,6 +1005,10 @@ Examples:
   hiverelay manage                                  # Live management console
   hiverelay manage --port 9200                      # Manage node on custom port
   hiverelay testnet                                 # Local testnet (3 relays + client)
+  hiverelay seed <key> --publish --replicas 3       # Seed + publish registry request
+  hiverelay ghostdrive pin <driveKey>               # Pin Ghost Drive key on relay
+  hiverelay ghostdrive publish <driveKey>           # Pin + registry publish
+  hiverelay ghostdrive discover --relay http://...  # Query catalog for Ghost Drive entries
   hiverelay status                                  # Check running node
 `)
 }

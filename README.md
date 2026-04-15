@@ -37,6 +37,7 @@ await app.start()
 ```
 
 > See **[Pear Integration Guide](docs/PEAR-INTEGRATION.md)** for full Pear/Bare usage, service RPC, and architecture details.
+> See **[Ghost Drive Integration](docs/GHOSTDRIVE-INTEGRATION.md)** for always-on file availability + discovery workflow.
 > See **[examples/pear-app/](examples/pear-app/)** and **[examples/node-app/](examples/node-app/)** for working starter projects.
 
 ---

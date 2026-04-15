@@ -551,6 +551,29 @@ export class RelayAPI extends EventEmitter {
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
           if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          if (body.name !== undefined) {
+            if (typeof body.name !== 'string') return this._json(res, { error: 'name must be a string' }, 400)
+            seedOpts.name = body.name.trim().slice(0, 120)
+          }
+          if (body.description !== undefined) {
+            if (typeof body.description !== 'string') return this._json(res, { error: 'description must be a string' }, 400)
+            seedOpts.description = body.description.slice(0, 2000)
+          }
+          if (body.author !== undefined) {
+            if (typeof body.author !== 'string') return this._json(res, { error: 'author must be a string' }, 400)
+            seedOpts.author = body.author.trim().slice(0, 120)
+          }
+          if (body.categories !== undefined) {
+            if (!Array.isArray(body.categories)) return this._json(res, { error: 'categories must be an array of strings' }, 400)
+            const categories = []
+            for (const category of body.categories) {
+              if (typeof category !== 'string') return this._json(res, { error: 'categories must be an array of strings' }, 400)
+              const normalized = category.trim()
+              if (!normalized) continue
+              categories.push(normalized.slice(0, 64))
+            }
+            seedOpts.categories = [...new Set(categories)].slice(0, 20)
+          }
           if (body.privacyTier !== undefined) {
             const tier = this._readPrivacyTier(body.privacyTier, null)
             if (!tier) return this._json(res, { error: PRIVACY_TIER_ERROR }, 400)
