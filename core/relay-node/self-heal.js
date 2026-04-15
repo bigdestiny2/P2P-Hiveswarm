@@ -1,9 +1,5 @@
 import { EventEmitter } from 'events'
-import b4a from 'b4a'
-import sodium from 'sodium-universal'
-
-const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
-sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
+import { RELAY_DISCOVERY_TOPIC } from '../constants.js'
 
 const DEFAULT_OPTS = {
   maxRestarts: 3,

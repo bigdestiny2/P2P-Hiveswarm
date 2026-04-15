@@ -18,12 +18,14 @@ import { RelayNode } from '../core/relay-node/index.js'
 import { createLogger } from '../core/logger.js'
 import { loadConfig, saveConfig, ensureDirs } from '../config/loader.js'
 import b4a from 'b4a'
-import { existsSync, mkdirSync, cpSync } from 'fs'
+import { existsSync, mkdirSync, cpSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
+const VERSION = pkg.version
 const SKILL_SRC = join(__dirname, '..', 'skills', 'SKILL.md')
 
 const args = minimist(process.argv.slice(2))
@@ -87,7 +89,7 @@ async function manage () {
 // ─── init ───────────────────────────────────────────────────────────
 
 async function init () {
-  console.log('HiveRelay v0.3.0 — Init')
+  console.log('HiveRelay v' + VERSION + ' — Init')
   console.log()
 
   // 1. Create directories and config
@@ -200,7 +202,7 @@ async function start () {
 
   const config = loadConfig(cliOverrides)
 
-  console.log('HiveRelay v0.3.0')
+  console.log('HiveRelay v' + VERSION)
   console.log('Starting relay node...')
   console.log()
 
@@ -602,7 +604,7 @@ async function status () {
 
 function help () {
   console.log(`
-HiveRelay v0.3.0 — Shared P2P Relay Backbone
+HiveRelay v${VERSION} — Shared P2P Relay Backbone
 
 Usage:
   hiverelay setup               Interactive setup wizard (first-time config)

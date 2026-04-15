@@ -29,12 +29,10 @@ import {
   StorageService, IdentityService, ComputeService,
   AIService, SLAService, SchemaService, ArbitrationService, ZKService
 } from '../services/index.js'
+import { PluginLoader } from '../plugin-loader.js'
 import { Router } from '../router/index.js'
 import { AppRegistry } from '../app-registry.js'
-
-// Well-known discovery topic — clients join this to find relay nodes
-const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
-sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
+import { RELAY_DISCOVERY_TOPIC } from '../constants.js'
 
 const DEFAULT_CONFIG = {
   storage: './storage',
@@ -296,24 +294,43 @@ export class RelayNode extends EventEmitter {
         this.serviceRegistry = new ServiceRegistry()
         this.serviceProtocol = new ServiceProtocol(this.serviceRegistry)
 
-        // Register built-in services
-        const storageService = new StorageService({
-          policyGuard: this.policyGuard || null,
-          getAppTier: (keyHex) => this.seededApps.get(keyHex)?.privacyTier || null
-        })
-        const identityService = new IdentityService()
-        const computeService = new ComputeService()
-        const aiService = new AIService()
-        const zkService = new ZKService()
+        // Register services via PluginLoader (config-driven) or fallback to hardcoded
+        // All builtins: storage, identity, compute, ai, zk, sla, schema, arbitration
+        this.pluginLoader = new PluginLoader()
 
-        this.serviceRegistry.register(storageService)
-        this.serviceRegistry.register(identityService)
-        this.serviceRegistry.register(computeService)
-        this.serviceRegistry.register(aiService)
-        this.serviceRegistry.register(zkService)
-        this.serviceRegistry.register(new SLAService())
-        this.serviceRegistry.register(new SchemaService())
-        this.serviceRegistry.register(new ArbitrationService())
+        if (this.config.plugins) {
+          // Config-driven: load only the plugins specified
+          const providers = await this.pluginLoader.load(this.config.plugins, {
+            constructorOpts: {
+              policyGuard: this.policyGuard || null,
+              getAppTier: (keyHex) => this.seededApps.get(keyHex)?.privacyTier || null
+            }
+          })
+          for (const provider of providers) {
+            this.serviceRegistry.register(provider)
+          }
+        } else {
+          // No plugins config — load all builtins for backward compatibility
+          // Use hardcoded imports so StorageService gets its special options
+          const storageService = new StorageService({
+            policyGuard: this.policyGuard || null,
+            getAppTier: (keyHex) => this.seededApps.get(keyHex)?.privacyTier || null
+          })
+          const hardcoded = [
+            storageService,
+            new IdentityService(),
+            new ComputeService(),
+            new AIService(),
+            new ZKService(),
+            new SLAService(),
+            new SchemaService(),
+            new ArbitrationService()
+          ]
+          for (const svc of hardcoded) {
+            this.serviceRegistry.register(svc)
+            this.pluginLoader.plugins.push(svc)
+          }
+        }
 
         // Start all services (passes { node: this } as context)
         await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })

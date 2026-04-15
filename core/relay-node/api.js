@@ -19,6 +19,7 @@ import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
 import { DashboardFeed } from './ws-feed.js'
 import { HyperGateway } from '../../compute/gateway/hyper-gateway.js'
+import { isValidHexKey } from '../constants.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -29,16 +30,6 @@ const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
 
 const MAX_DISCOVERY_KEYS = 100
-
-/**
- * Validate a hex-encoded key string.
- * @param {*} str - value to check
- * @param {number} len - expected character length (e.g. 64 for 32-byte keys)
- * @returns {boolean}
- */
-function isValidHexKey (str, len) {
-  return typeof str === 'string' && str.length === len && /^[0-9a-f]+$/i.test(str)
-}
 
 export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
@@ -772,18 +763,6 @@ export class RelayAPI extends EventEmitter {
     if (!requestOrigin) return null
     if (allowed.includes(requestOrigin)) return requestOrigin
     return null
-  }
-
-  _compareVersions (a, b) {
-    const pa = (a || '0.0.0').split('.').map(Number)
-    const pb = (b || '0.0.0').split('.').map(Number)
-    for (let i = 0; i < 3; i++) {
-      const na = pa[i] || 0
-      const nb = pb[i] || 0
-      if (na > nb) return 1
-      if (na < nb) return -1
-    }
-    return 0
   }
 
   _json (res, data, status = 200) {

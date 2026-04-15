@@ -14,6 +14,7 @@
  */
 
 import { EventEmitter } from 'events'
+import { compareVersions } from '../constants.js'
 
 export class ServiceRegistry extends EventEmitter {
   constructor (opts = {}) {
@@ -137,7 +138,7 @@ export class ServiceRegistry extends EventEmitter {
     for (const [relay, info] of this.remoteServices) {
       const svc = info.services.find(s => s.name === serviceName)
       if (svc) {
-        if (opts.minVersion && !this._versionSatisfies(svc.version, opts.minVersion)) continue
+        if (opts.minVersion && compareVersions(svc.version, opts.minVersion) < 0) continue
         providers.push({
           relay,
           service: svc,
@@ -208,21 +209,5 @@ export class ServiceRegistry extends EventEmitter {
     }
     this.services.clear()
     this.remoteServices.clear()
-  }
-
-  /**
-   * Simple semver check: version >= minVersion
-   */
-  _versionSatisfies (version, minVersion) {
-    const parse = v => (v || '0.0.0').split('.').map(s => parseInt(s, 10) || 0)
-    const a = parse(version)
-    const b = parse(minVersion)
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const av = a[i] || 0
-      const bv = b[i] || 0
-      if (av > bv) return true
-      if (av < bv) return false
-    }
-    return true // equal
   }
 }

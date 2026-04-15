@@ -15,6 +15,7 @@
 import { readFile, writeFile, rename } from 'fs/promises'
 import { join } from 'path'
 import { EventEmitter } from 'events'
+import { compareVersions } from './constants.js'
 
 const REGISTRY_FILE = 'app-registry.json'
 
@@ -143,7 +144,7 @@ export class AppRegistry extends EventEmitter {
       const existingIdx = seen.get(appId)
       if (existingIdx !== undefined) {
         const existing = apps[existingIdx]
-        if (this._compareVersions(catalogEntry.version, existing.version) > 0) {
+        if (compareVersions(catalogEntry.version, existing.version) > 0) {
           apps[existingIdx] = catalogEntry
         }
       } else {
@@ -192,20 +193,8 @@ export class AppRegistry extends EventEmitter {
       conflict: true,
       existingKey,
       existingVersion: existing.version || '0.0.0',
-      shouldReplace: this._compareVersions(version, existing.version || '0.0.0') >= 0
+      shouldReplace: compareVersions(version, existing.version || '0.0.0') >= 0
     }
-  }
-
-  _compareVersions (a, b) {
-    const pa = (a || '0.0.0').split('.').map(Number)
-    const pb = (b || '0.0.0').split('.').map(Number)
-    for (let i = 0; i < 3; i++) {
-      const na = pa[i] || 0
-      const nb = pb[i] || 0
-      if (na > nb) return 1
-      if (na < nb) return -1
-    }
-    return 0
   }
 
   // ─── Persistence ───────────────────────────────────────────

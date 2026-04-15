@@ -16,13 +16,8 @@ import { createServer } from 'http'
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
-import b4a from 'b4a'
-import sodium from 'sodium-universal'
 import { HyperGateway } from './hyper-gateway.js'
-
-// Same discovery topic as HiveRelay
-const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
-sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
+import { RELAY_DISCOVERY_TOPIC } from '../../core/constants.js'
 
 const DEFAULT_PORT = 9100
 

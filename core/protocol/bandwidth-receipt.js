@@ -11,6 +11,7 @@
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
+import { uint64ToBuffer } from '../constants.js'
 
 /**
  * Circular buffer for efficient receipt storage
@@ -368,13 +369,6 @@ export class BandwidthReceipt extends EventEmitter {
       peerSignature: b4a.toString(r.peerSignature, 'hex')
     }))
   }
-}
-
-function uint64ToBuffer (n) {
-  const buf = b4a.alloc(8)
-  const view = new DataView(buf.buffer, buf.byteOffset, 8)
-  view.setBigUint64(0, BigInt(n), false) // big-endian
-  return buf
 }
 
 function uint32ToBuffer (n) {

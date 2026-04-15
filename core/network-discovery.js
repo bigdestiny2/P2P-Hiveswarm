@@ -11,15 +11,12 @@
 
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
-import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
 import http from 'http'
 import Protomux from 'protomux'
 import c from 'compact-encoding'
 import { createRequire } from 'module'
-
-const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
-sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
+import { RELAY_DISCOVERY_TOPIC } from './constants.js'
 
 const POLL_INTERVAL = 30_000 // poll each relay every 30s
 const STALE_THRESHOLD = 5 * 60_000 // remove relays not seen for 5 min

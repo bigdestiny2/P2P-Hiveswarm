@@ -46,10 +46,7 @@ import {
   relayReserveEncoding
 } from '../core/protocol/messages.js'
 import { SeedingRegistry } from '../core/registry/index.js'
-
-// Well-known topic that all HiveRelay nodes join for discovery
-const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
-sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
+import { RELAY_DISCOVERY_TOPIC } from '../core/constants.js'
 
 const SEED_PROTOCOL = 'hiverelay-seed'
 const CIRCUIT_PROTOCOL = 'hiverelay-circuit'

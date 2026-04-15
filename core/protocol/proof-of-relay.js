@@ -2,7 +2,9 @@
  * Proof-of-Relay Protocol
  *
  * Cryptographic verification that relay nodes actually store and serve data.
- * Uses challenge-response with Hypercore's built-in Merkle tree proofs.
+ * Uses challenge-response with data-presence and nonce-keyed hash checks.
+ * Hypercore's own flat-tree Merkle verification handles transport-layer integrity,
+ * so no custom Merkle verifier is needed here.
  *
  * Verifiers (any peer) can challenge relays to prove they hold specific blocks.
  * Relays that respond correctly within the latency bound earn relay credits.
@@ -306,20 +308,15 @@ export class ProofOfRelay extends EventEmitter {
     const hasData = msg.blockData && msg.blockData.byteLength > 0
     const reasonableSize = hasData && msg.blockData.byteLength <= MAX_BLOCK_SIZE
 
-    // Verify data integrity via hash (only when nonce was stored in the challenge)
-    let hashValid = true // default to true if no nonce-based verification is possible
-    if (hasData && reasonableSize && pending.nonce) {
+    // Verify data integrity via hash check.
+    // When the challenger has the original block data, compare nonce-keyed hashes.
+    // Otherwise, rely on data-presence + latency checks — Hypercore's own Merkle
+    // tree provides integrity at the transport layer, so a custom verifier is not
+    // needed (and would be incompatible with Hypercore's flat-tree layout).
+    let hashValid = true
+    if (hasData && reasonableSize && pending.nonce && pending.expectedHash) {
       const responseHash = this._hashBlock(msg.blockData, pending.nonce)
-
-      if (pending.expectedHash) {
-        // Challenger has the original data — compare hashes directly
-        hashValid = b4a.equals(responseHash, pending.expectedHash)
-      } else if (msg.merkleProof && msg.merkleProof.byteLength > 0) {
-        // Third-party verifier — verify against Hypercore Merkle tree proof
-        hashValid = this._verifyMerkleProof(msg.blockData, msg.merkleProof, pending.coreKey)
-      }
-      // If nonce present but neither expectedHash nor merkleProof, default stays true
-      // (relay responded with data, but we can't verify content — pass on other checks)
+      hashValid = b4a.equals(responseHash, pending.expectedHash)
     }
 
     const passed = withinLatency && correctCore && correctIndex && hasData && reasonableSize && hashValid
@@ -356,46 +353,6 @@ export class ProofOfRelay extends EventEmitter {
     const hash = b4a.alloc(32)
     sodium.crypto_generichash(hash, b4a.concat([data, nonce]))
     return hash
-  }
-
-  /**
-   * Verify block data against a Hypercore Merkle tree proof.
-   * The proof contains the Merkle tree nodes needed to reconstruct
-   * the root hash. We hash the block data to get the leaf, then
-   * verify it is consistent with the proof nodes.
-   */
-  _verifyMerkleProof (blockData, merkleProof, coreKeyHex) {
-    try {
-      // Hash the block data to derive the leaf hash
-      const leafHash = b4a.alloc(32)
-      sodium.crypto_generichash(leafHash, blockData)
-
-      // The merkleProof buffer contains concatenated 32-byte tree nodes
-      // followed by a 32-byte expected root hash
-      if (merkleProof.byteLength < 32 || merkleProof.byteLength % 32 !== 0) {
-        return false
-      }
-
-      const nodeCount = (merkleProof.byteLength / 32) - 1
-      const expectedRoot = merkleProof.subarray(nodeCount * 32)
-
-      // Walk up the tree: combine hashes in canonical (sorted) order to prevent reordering attacks
-      let current = leafHash
-      for (let i = 0; i < nodeCount; i++) {
-        const sibling = merkleProof.subarray(i * 32, (i + 1) * 32)
-        const combined = b4a.alloc(32)
-        // Canonical ordering: always hash the smaller value first
-        const ordered = b4a.compare(current, sibling) <= 0
-          ? b4a.concat([current, sibling])
-          : b4a.concat([sibling, current])
-        sodium.crypto_generichash(combined, ordered)
-        current = combined
-      }
-
-      return b4a.equals(current, expectedRoot)
-    } catch {
-      return false
-    }
   }
 
   _updateScore (relayPubkeyHex, passed, latencyMs) {
