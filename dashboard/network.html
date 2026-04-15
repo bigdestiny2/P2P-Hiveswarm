@@ -338,6 +338,12 @@ function copyText(el) {
   navigator.clipboard.writeText(text).then(function() { showToast('Copied!'); });
 }
 
+function escapeHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
 function copyPubkey(el, key) {
   navigator.clipboard.writeText(key).then(function() {
     el.classList.add('copied');
@@ -422,8 +428,8 @@ function renderRelayCard(data) {
   return '<div class="relay-card ' + (online ? '' : 'offline') + '">' +
     '<div class="relay-header">' +
       '<div class="relay-status ' + (online ? 'online' : 'offline') + '"></div>' +
-      '<div class="relay-name">' + data._name + '</div>' +
-      '<div class="relay-region">' + data._region + '</div>' +
+      '<div class="relay-name">' + escapeHtml(data._name) + '</div>' +
+      '<div class="relay-region">' + escapeHtml(data._region) + '</div>' +
       (hasTor ? '<div class="relay-region" style="background:rgba(63,185,80,.1);color:var(--green)">TOR</div>' : '') +
       (data._holesailKey ? '<div class="relay-region" style="background:rgba(56,132,244,.1);color:var(--blue,#3884f4)">HS</div>' : '') +
     '</div>' +
@@ -441,12 +447,12 @@ function renderRelayCard(data) {
       '<span>Relayed: ' + formatBytes(relayed) + '</span>' +
       '<span>Circuits: ' + circuits + '</span>' +
       '<span>Mem: ' + rssMB + ' MB</span>' +
-      (onionAddr ? '<span style="color:var(--green)">.onion: ' + onionAddr.slice(0,16) + '...</span>' : '') +
+      (onionAddr ? '<span style="color:var(--green)">.onion: ' + escapeHtml(onionAddr.slice(0,16)) + '...</span>' : '') +
     '</div>' +
     '<div class="relay-actions">' +
       '<button class="btn primary" onclick=\'openConnectModal(' + JSON.stringify({ name: data._name, url: data._url }) + ',' + JSON.stringify({ publicKey: pk }) + ',' + JSON.stringify(onionAddr) + ')\'>Connect</button>' +
-      '<a class="btn" href="' + data._url + '/dashboard" target="_blank">Dashboard</a>' +
-      '<a class="btn" href="' + data._url + '/api/overview" target="_blank">API</a>' +
+      '<a class="btn" href="' + escapeHtml(data._url) + '/dashboard" target="_blank">Dashboard</a>' +
+      '<a class="btn" href="' + escapeHtml(data._url) + '/api/overview" target="_blank">API</a>' +
     '</div>' +
   '</div>';
 }

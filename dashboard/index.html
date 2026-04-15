@@ -548,7 +548,7 @@ function renderAppsTable() {
   tbody.innerHTML = currentApps.map(function(app) {
     var uptime = app.started ? Date.now() - new Date(app.started).getTime() : app.uptime || 0;
     var appKey = app.appKey || app.key || '';
-    var name = catalogNames[appKey] || app.appId || appKey.slice(0, 12);
+    var name = escapeHtml(catalogNames[appKey] || app.appId || appKey.slice(0, 12));
     return '<tr>' +
       '<td style="color:var(--text-bright);font-weight:500">' + name + '</td>' +
       '<td>' + renderDev(appKey) + '</td>' +

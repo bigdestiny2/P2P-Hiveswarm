@@ -4,7 +4,7 @@ import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
-import { readFile, writeFile, mkdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, chmod } from 'fs/promises'
 import { join } from 'path'
 import { Seeder } from './seeder.js'
 import { Relay } from './relay.js'
@@ -890,6 +890,7 @@ export class RelayNode extends EventEmitter {
         publicKey: b4a.toString(publicKey, 'hex'),
         secretKey: b4a.toString(secretKey, 'hex')
       }, null, 2))
+      await chmod(keyPath, 0o600)
       return { publicKey, secretKey }
     }
   }
@@ -1198,7 +1199,7 @@ export class RelayNode extends EventEmitter {
     if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
     if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (_) {} this.networkDiscovery = null }
-    if (this._proofOfRelay) { this._proofOfRelay = null }
+    if (this._proofOfRelay) { if (this._proofOfRelay.destroy) this._proofOfRelay.destroy(); this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
     if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
     if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }

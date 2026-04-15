@@ -49,6 +49,10 @@ export class RelayAPI extends EventEmitter {
     this.corsOrigins = opts.corsOrigins || '*'
     this.server = null
 
+    // API key for authenticated endpoints (manage, seed, unseed)
+    // Read from opts, env var, or generate a random one
+    this._apiKey = opts.apiKey || process.env.HIVERELAY_API_KEY || null
+
     // Per-IP request counts: ip -> { count, resetAt }
     this._rateLimits = new Map()
     this._rateLimitCleanup = null
@@ -97,6 +101,25 @@ export class RelayAPI extends EventEmitter {
 
     entry.count++
     return entry.count <= RATE_LIMIT_MAX
+  }
+
+  /**
+   * Check if the request has a valid API key.
+   * Checks Authorization: Bearer <key> header.
+   * If no API key is configured, management endpoints are localhost-only.
+   */
+  _checkAuth (req) {
+    const ip = req.socket.remoteAddress || ''
+
+    // If API key is configured, require it
+    if (this._apiKey) {
+      const auth = req.headers.authorization || ''
+      if (auth === 'Bearer ' + this._apiKey) return true
+      return false
+    }
+
+    // No API key configured — restrict to localhost only
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
   }
 
   async _handle (req, res) {
@@ -439,7 +462,7 @@ export class RelayAPI extends EventEmitter {
         try {
           const result = await this.node.router.dispatch(body.route, body.params || {}, {
             transport: 'http',
-            caller: 'api'
+            caller: 'remote'
           })
           return this._json(res, { ok: true, result })
         } catch (err) {
@@ -452,6 +475,9 @@ export class RelayAPI extends EventEmitter {
         const body = await this._readBody(req)
 
         if (path === '/seed') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /seed' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const seedOpts = body.opts || {}
@@ -527,6 +553,10 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/unseed') {
+          // Operator unseed — requires API key (use /api/v1/unseed for developer-signed unseed)
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /unseed (use /api/v1/unseed for developer-signed unseed)' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.unseedApp(body.appKey)
@@ -556,7 +586,13 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { ok: true, message: 'App unseeded and unseed broadcast to network' })
         }
 
-        // ─── Live Management API ─────────────────────────────────────
+        // ─── Live Management API (requires API key or localhost) ─────
+
+        if (path.startsWith('/api/manage/')) {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — management API requires API key or localhost access' }, 401)
+          }
+        }
 
         if (path === '/api/manage/config') {
           return this._handleConfigUpdate(res, body)
@@ -601,8 +637,12 @@ export class RelayAPI extends EventEmitter {
         }
       }
 
-      // GET — Management info endpoints
+      // GET — Management info endpoints (require auth)
       if (req.method === 'GET') {
+        if (path.startsWith('/api/manage/') && !this._checkAuth(req)) {
+          return this._json(res, { error: 'Unauthorized — management API requires API key or localhost access' }, 401)
+        }
+
         if (path === '/api/manage/config') {
           return this._json(res, {
             config: this._getSafeConfig(),
@@ -700,7 +740,8 @@ export class RelayAPI extends EventEmitter {
       // 404
       this._json(res, { error: 'Not found' }, 404)
     } catch (err) {
-      this._json(res, { error: err.message }, 500)
+      this.emit('error', { context: 'api-handler', error: err })
+      this._json(res, { error: 'Internal server error' }, 500)
     }
   }
 

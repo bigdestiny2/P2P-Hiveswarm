@@ -72,9 +72,17 @@ export class ServiceProtocol extends EventEmitter {
         },
         decode (state) {
           const len = state.buffer.readUInt32BE(state.start)
+          if (len > 1048576) { // 1 MB max message size
+            state.start += 4 + len
+            return { type: -1, error: 'message too large' }
+          }
           const json = state.buffer.subarray(state.start + 4, state.start + 4 + len).toString()
           state.start += 4 + len
-          return JSON.parse(json)
+          try {
+            return JSON.parse(json)
+          } catch (_) {
+            return { type: -1, error: 'malformed JSON' }
+          }
         }
       },
       onmessage: (msg) => this._onMessage(remotePubkey, msg)

@@ -354,6 +354,12 @@ tr.this-node:hover{background:rgba(88,166,255,.08)}
     setTimeout(function() { t.classList.remove('show'); }, 2000);
   }
 
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
   function copyText(text) {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(function() { showToast('Copied!'); });
@@ -433,7 +439,7 @@ tr.this-node:hover{background:rgba(88,166,255,.08)}
       html += '<tr class="' + (isMe ? 'this-node' : '') + '">';
       html += '<td class="mono ' + rankCls + '">' + r._rank + '</td>';
       html += '<td><div class="pubkey-cell"><span class="pubkey">' + truncatePubkey(r.pubkey) + '</span>';
-      html += '<button class="copy-btn" onclick="event.stopPropagation();(function(){if(navigator.clipboard)navigator.clipboard.writeText(\'' + (r.pubkey || '') + '\').then(function(){var t=document.getElementById(\'toast\');t.textContent=\'Copied!\';t.classList.add(\'show\');setTimeout(function(){t.classList.remove(\'show\')},2000)})})()">&#x2398;</button>';
+      html += '<button class="copy-btn" onclick="event.stopPropagation();(function(){if(navigator.clipboard)navigator.clipboard.writeText(' + JSON.stringify(r.pubkey || '') + ').then(function(){var t=document.getElementById(\'toast\');t.textContent=\'Copied!\';t.classList.add(\'show\');setTimeout(function(){t.classList.remove(\'show\')},2000)})})()">&#x2398;</button>';
       if (isMe) html += '<span class="you-badge">YOU</span>';
       html += '</div></td>';
       html += '<td class="mono ' + scoreClass(score) + '">' + score.toFixed(1) + '</td>';
@@ -441,7 +447,7 @@ tr.this-node:hover{background:rgba(88,166,255,.08)}
       html += '<td class="mono ' + latencyClass(lat) + '">' + Math.round(lat) + ' ms</td>';
       html += '<td class="mono">' + formatUptime(up) + '</td>';
       html += '<td class="mono">' + formatBytes(bytes) + '</td>';
-      html += '<td><div class="region-cell"><span class="region-flag">' + regionFlag(region) + '</span><span class="region-code">' + region + '</span></div></td>';
+      html += '<td><div class="region-cell"><span class="region-flag">' + regionFlag(region) + '</span><span class="region-code">' + escapeHtml(region) + '</span></div></td>';
       html += '<td class="mono" style="color:var(--text-dim)">' + formatRelativeTime(lastActive) + '</td>';
       html += '</tr>';
     }
