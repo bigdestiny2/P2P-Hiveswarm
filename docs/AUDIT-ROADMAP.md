@@ -15,10 +15,24 @@
 - [x] **Q1** `_proofOfRelay.destroy()` called on shutdown — prevents timer leak
 - [x] **Q2** `chmod 0o600` on `relay-identity.json` — protects secret key
 - [x] **Q3** Error message leak — catch-all returns generic "Internal server error"
+- [x] **1.1** Unseed replay protection — signature-based dedup with 6-min eviction
+- [x] **1.2** Legacy unseed rejection — NO_PUBLISHER_KEY error when no publisher recorded
+- [x] **1.3** Catalog sync rate limiting — max 10 apps/event, 30s per-peer throttle
+- [x] **1.4** Service RPC access control — RESTRICTED_METHODS blocks sensitive methods from P2P
+- [x] **1.5** WebSocket dashboard auth — Origin validation + API key token
+- [x] **1.6** Content-Type validation — POST must be application/json
+- [x] **1.7** Config update bounds — per-field min/max validation
+- [x] **2.1** Gateway shared Corestore — eliminates duplicate P2P stack (~30-50MB savings)
+- [x] **2.2** Gateway file streaming — non-HTML files streamed instead of buffered
+- [x] **2.3** DriveCache reduced — default 50 → 20
+- [x] **2.4** Catalog broadcast debounce — 5s window prevents burst on startup
+- [x] **2.6** AppRegistry save debounce — 5s timer with flush() for shutdown
+- [x] **2.7** Circuit relay pending-connect bounds — rejects at capacity
+- [x] **2.8** BandwidthReceipt nonce eviction — O(1) time-bucketed
 
 ---
 
-## Phase 1: Remaining Security (Priority: Critical — do this week)
+## Phase 1: Remaining Security (completed)
 
 ### 1.1 Unseed replay protection
 - **File:** `core/protocol/seed-request.js`
