@@ -34,7 +34,7 @@ import {
 import { PluginLoader } from '../plugin-loader.js'
 import { Router } from '../router/index.js'
 import { AppRegistry } from '../app-registry.js'
-import { RELAY_DISCOVERY_TOPIC, isValidHexKey, normalizePrivacyTier } from '../constants.js'
+import { RELAY_DISCOVERY_TOPIC, isValidHexKey, normalizeContentType, normalizePrivacyTier } from '../constants.js'
 import { PolicyGuard } from '../policy-guard.js'
 
 const DEFAULT_CONFIG = {
@@ -650,6 +650,9 @@ export class RelayNode extends EventEmitter {
                 appId: app.id || app.appId || null,
                 name: app.name || null,
                 version: app.version || null,
+                type: app.type || 'app',
+                parentKey: app.parentKey || null,
+                mountPath: app.mountPath || null,
                 privacyTier: app.privacyTier || null,
                 blind: app.blind || false,
                 author: app.author || null,
@@ -765,6 +768,9 @@ export class RelayNode extends EventEmitter {
       try {
         await this.seedApp(entry.appKey, {
           appId: entry.appId || null,
+          type: entry.type || 'app',
+          parentKey: entry.parentKey || null,
+          mountPath: entry.mountPath || null,
           version: entry.version || null,
           privacyTier: entry.privacyTier || null
         })
@@ -791,6 +797,9 @@ export class RelayNode extends EventEmitter {
         try {
           await this.seedApp(appKey, {
             appId: entry.appId || null,
+            type: entry.type || 'app',
+            parentKey: entry.parentKey || null,
+            mountPath: entry.mountPath || null,
             version: entry.version || null,
             privacyTier: entry.privacyTier || null
           })
@@ -809,11 +818,24 @@ export class RelayNode extends EventEmitter {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
 
+    const contentType = normalizeContentType(opts.type, 'app')
+    const parentKey = typeof opts.parentKey === 'string' ? opts.parentKey.toLowerCase() : null
+    const mountPath = typeof opts.mountPath === 'string' ? opts.mountPath.trim() : null
+    if (parentKey && !isValidHexKey(parentKey, 64)) {
+      throw new Error('Invalid parent key: must be 64 hex characters')
+    }
+    if (mountPath && !mountPath.startsWith('/')) {
+      throw new Error('Invalid mountPath: must start with "/"')
+    }
+    if ((parentKey || mountPath) && contentType !== 'drive') {
+      throw new Error('parentKey and mountPath are only valid for content type "drive"')
+    }
+
     const privacyTier = normalizePrivacyTier(opts.privacyTier || opts.tier, 'public')
     if (this.policyGuard) {
       const policyOperation = this.config.strictSeedingPrivacy !== false
         ? 'replicate-user-data'
-        : 'serve-code'
+        : (contentType === 'app' ? 'serve-code' : 'replicate-user-data')
       const policy = this.policyGuard.check(appKeyHex, privacyTier, policyOperation)
       if (!policy.allowed) {
         throw new Error(`POLICY_VIOLATION: ${policy.reason}`)
@@ -929,6 +951,9 @@ export class RelayNode extends EventEmitter {
         discoveryKey,
         startedAt: Date.now(),
         bytesServed: 0,
+        type: contentType,
+        parentKey,
+        mountPath,
         appId: opts.appId || null,
         version: opts.version || null,
         privacyTier,
@@ -965,13 +990,30 @@ export class RelayNode extends EventEmitter {
       if (!manifestBuf) return
 
       const manifest = JSON.parse(manifestBuf.toString())
-      const appId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : null)
-      if (!appId) return
-
+      const manifestAppId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : null)
       const version = manifest.version || '0.0.0'
+      const manifestType = normalizeContentType(
+        manifest.contentType ||
+        manifest.hiverelay?.contentType ||
+        manifest.hiverelay?.type ||
+        manifest.type,
+        null
+      )
+      const existing = this.appRegistry.get(appKeyHex)
+      const contentType = manifestType || normalizeContentType(existing?.type, 'app')
+      const appId = manifestAppId || existing?.appId || null
+      const parentKey = isValidHexKey(manifest.parentKey, 64)
+        ? manifest.parentKey
+        : existing?.parentKey || null
+      const mountPath = typeof manifest.mountPath === 'string' && manifest.mountPath.trim().startsWith('/')
+        ? manifest.mountPath.trim()
+        : existing?.mountPath || null
 
       // Update this entry's metadata via the registry
       this.appRegistry.update(appKeyHex, {
+        type: contentType,
+        parentKey,
+        mountPath,
         appId,
         version,
         privacyTier: manifest.privacyTier || manifest.privacy?.tier || manifest.privacy?.mode || undefined,
@@ -980,6 +1022,9 @@ export class RelayNode extends EventEmitter {
         author: manifest.author || null,
         categories: manifest.categories || null
       })
+
+      if (contentType !== 'app') return
+      if (!appId) return
 
       // Check for version conflicts with existing apps
       const conflict = this.appRegistry.checkConflict(appId, appKeyHex, version)
@@ -1426,6 +1471,9 @@ export class RelayNode extends EventEmitter {
           try {
             await this.seedApp(req.appKey, {
               publisherPubkey: typeof req.publisherPubkey === 'string' ? req.publisherPubkey : null,
+              type: req.contentType || req.type || 'app',
+              parentKey: req.parentKey || null,
+              mountPath: req.mountPath || null,
               privacyTier: req.privacyTier || 'public'
             })
             this.emit('reseeded', { appKey: req.appKey, source: 'registry' })
@@ -1450,6 +1498,9 @@ export class RelayNode extends EventEmitter {
             : (req.publisherPubkey ? b4a.toString(req.publisherPubkey, 'hex') : null)
           await this.seedApp(req.appKey, {
             publisherPubkey: publisherHex,
+            type: req.contentType || req.type || 'app',
+            parentKey: req.parentKey || null,
+            mountPath: req.mountPath || null,
             privacyTier: req.privacyTier || 'public'
           })
           await this.seedingRegistry.recordAcceptance(
@@ -1489,6 +1540,9 @@ export class RelayNode extends EventEmitter {
 
     await this.seedApp(appKeyHex, {
       publisherPubkey: typeof req.publisherPubkey === 'string' ? req.publisherPubkey : null,
+      type: req.contentType || req.type || 'app',
+      parentKey: req.parentKey || null,
+      mountPath: req.mountPath || null,
       privacyTier: req.privacyTier || 'public'
     })
     if (this.seedingRegistry) {
@@ -1683,6 +1737,9 @@ export class RelayNode extends EventEmitter {
     try {
       await this.seedApp(request.appKey, {
         publisherPubkey: typeof request.publisherPubkey === 'string' ? request.publisherPubkey : null,
+        type: request.contentType || request.type || 'app',
+        parentKey: request.parentKey || null,
+        mountPath: request.mountPath || null,
         privacyTier: request.privacyTier || 'public'
       })
       if (!alreadyAccepted) {

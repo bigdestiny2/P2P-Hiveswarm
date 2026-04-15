@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
 import { DashboardFeed } from './ws-feed.js'
 import { HyperGateway } from '../../compute/gateway/hyper-gateway.js'
-import { isValidHexKey, normalizePrivacyTier } from '../constants.js'
+import { CONTENT_TYPES, isValidHexKey, normalizeContentType, normalizePrivacyTier } from '../constants.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -31,6 +31,7 @@ const RATE_LIMIT_MAX = 60
 
 const MAX_DISCOVERY_KEYS = 100
 const PRIVACY_TIER_ERROR = 'privacyTier must be one of: public, local-first, p2p-only'
+const CONTENT_TYPE_ERROR = `type must be one of: ${Array.from(CONTENT_TYPES).join(', ')}`
 const MANAGEMENT_AUTH_ERROR = 'Unauthorized — management API requires API key or localhost access'
 const LOCAL_ONLY_DISPATCH_ROUTES = new Set([
   'identity.sign',
@@ -145,6 +146,10 @@ export class RelayAPI extends EventEmitter {
     return normalizePrivacyTier(value, fallback)
   }
 
+  _readContentType (value, fallback = 'app') {
+    return normalizeContentType(value, fallback)
+  }
+
   async _handle (req, res) {
     const ip = req.socket.remoteAddress || '127.0.0.1'
     const requestOrigin = req.headers.origin
@@ -192,24 +197,50 @@ export class RelayAPI extends EventEmitter {
         return this._json(res, this._gateway.getStats())
       }
 
-      // Catalog endpoint — lists all seeded drives as an app catalog
-      // PearBrowser can use this as a catalog source
-      // Deduplicated by appId — only shows the latest version of each app
+      // Catalog endpoint — typed content catalog (apps, drives, resources, datasets, media)
       if (req.method === 'GET' && path === '/catalog.json') {
-        const page = parseInt(url.searchParams.get('page')) || 1
-        const pageSize = Math.min(parseInt(url.searchParams.get('pageSize')) || 50, 500)
-        const apps = this.node.appRegistry.catalog()
-        const total = apps.length
+        const page = Math.max(parseInt(url.searchParams.get('page')) || 1, 1)
+        const pageSize = Math.min(Math.max(parseInt(url.searchParams.get('pageSize')) || 50, 1), 500)
+        const requestedType = url.searchParams.get('type')
+        const parent = url.searchParams.get('parent')
+        const category = url.searchParams.get('category')
+        const normalizedType = requestedType ? this._readContentType(requestedType, null) : null
+        if (requestedType && !normalizedType) {
+          return this._json(res, { error: CONTENT_TYPE_ERROR }, 400)
+        }
+
+        const allEntries = this.node.appRegistry.catalog()
+        const filtered = allEntries.filter((entry) => {
+          if (normalizedType && entry.type !== normalizedType) return false
+          if (parent && entry.parentKey !== parent) return false
+          if (category) {
+            const categories = Array.isArray(entry.categories) ? entry.categories : []
+            if (!categories.some(c => String(c).toLowerCase() === String(category).toLowerCase())) return false
+          }
+          return true
+        })
+
+        const total = filtered.length
         const start = (page - 1) * pageSize
-        const paged = apps.slice(start, start + pageSize)
+        const paged = filtered.slice(start, start + pageSize)
+        const apps = paged.filter(entry => entry.type === 'app')
+        const drives = paged.filter(entry => entry.type === 'drive' && !entry.parentKey)
+        const resources = paged.filter(entry => entry.type === 'drive' && entry.parentKey)
+        const datasets = paged.filter(entry => entry.type === 'dataset')
+        const media = paged.filter(entry => entry.type === 'media')
 
         res.setHeader('Content-Type', 'application/json')
         return this._json(res, {
-          version: 1,
-          name: 'HiveRelay App Catalog',
+          version: 2,
+          name: 'HiveRelay Content Catalog',
           relayKey: this.node.swarm
             ? Buffer.from(this.node.swarm.keyPair.publicKey).toString('hex')
             : null,
+          filters: {
+            type: normalizedType,
+            parent: parent || null,
+            category: category || null
+          },
           pagination: {
             page,
             pageSize,
@@ -218,7 +249,21 @@ export class RelayAPI extends EventEmitter {
             hasNext: start + pageSize < total,
             hasPrev: page > 1
           },
-          apps: paged
+          count: {
+            total,
+            apps: filtered.filter(entry => entry.type === 'app').length,
+            drives: filtered.filter(entry => entry.type === 'drive' && !entry.parentKey).length,
+            resources: filtered.filter(entry => entry.type === 'drive' && entry.parentKey).length,
+            datasets: filtered.filter(entry => entry.type === 'dataset').length,
+            media: filtered.filter(entry => entry.type === 'media').length
+          },
+          // apps remains for backward compatibility with existing catalog clients.
+          apps,
+          drives,
+          resources,
+          datasets,
+          media,
+          entries: paged
         })
       }
 
@@ -380,6 +425,9 @@ export class RelayAPI extends EventEmitter {
           for (const [appKey, entry] of this.node.seededApps) {
             apps.push({
               appKey,
+              type: this._readContentType(entry.type, 'app'),
+              parentKey: entry.parentKey || null,
+              mountPath: entry.mountPath || null,
               appId: entry.appId || null,
               version: entry.version || null,
               discoveryKey: entry.discoveryKey ? (typeof entry.discoveryKey === 'string' ? entry.discoveryKey : Buffer.from(entry.discoveryKey).toString('hex')) : null,
@@ -389,6 +437,32 @@ export class RelayAPI extends EventEmitter {
             })
           }
           return this._json(res, apps)
+        }
+
+        if (path === '/api/drives') {
+          const drives = []
+          const now = Date.now()
+          for (const [appKey, entry] of this.node.seededApps) {
+            if (this._readContentType(entry.type, 'app') !== 'drive') continue
+            drives.push({
+              appKey,
+              type: 'drive',
+              parentKey: entry.parentKey || null,
+              mountPath: entry.mountPath || null,
+              appId: entry.appId || null,
+              name: entry.name || entry.appId || null,
+              description: entry.description || '',
+              author: entry.author || null,
+              categories: entry.categories || [],
+              privacyTier: entry.privacyTier || 'public',
+              version: entry.version || null,
+              discoveryKey: entry.discoveryKey ? (typeof entry.discoveryKey === 'string' ? entry.discoveryKey : Buffer.from(entry.discoveryKey).toString('hex')) : null,
+              startedAt: entry.startedAt,
+              bytesServed: entry.bytesServed || 0,
+              uptimeMinutes: Math.round((now - entry.startedAt) / 60_000)
+            })
+          }
+          return this._json(res, drives)
         }
 
         if (path === '/api/peers') {
@@ -548,9 +622,34 @@ export class RelayAPI extends EventEmitter {
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const seedOpts = body.opts || {}
+          const requestedType = body.type !== undefined ? body.type : seedOpts.type
+          if (requestedType !== undefined) {
+            const type = this._readContentType(requestedType, null)
+            if (!type) return this._json(res, { error: CONTENT_TYPE_ERROR }, 400)
+            seedOpts.type = type
+          }
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
           if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          if (body.parentKey !== undefined) {
+            if (typeof body.parentKey !== 'string' || !isValidHexKey(body.parentKey, 64)) {
+              return this._json(res, { error: 'parentKey must be a 64-character hex key' }, 400)
+            }
+            seedOpts.parentKey = body.parentKey
+          }
+          if (body.mountPath !== undefined) {
+            if (typeof body.mountPath !== 'string') return this._json(res, { error: 'mountPath must be a string' }, 400)
+            const mountPath = body.mountPath.trim()
+            if (!mountPath.startsWith('/')) return this._json(res, { error: 'mountPath must start with "/"' }, 400)
+            if (mountPath.length > 256) return this._json(res, { error: 'mountPath exceeds max length (256)' }, 400)
+            seedOpts.mountPath = mountPath
+          }
+          if ((seedOpts.parentKey || seedOpts.mountPath) && !seedOpts.type) {
+            seedOpts.type = 'drive'
+          }
+          if ((seedOpts.parentKey || seedOpts.mountPath) && seedOpts.type && seedOpts.type !== 'drive') {
+            return this._json(res, { error: 'parentKey and mountPath are only supported when type is "drive"' }, 400)
+          }
           if (body.name !== undefined) {
             if (typeof body.name !== 'string') return this._json(res, { error: 'name must be a string' }, 400)
             seedOpts.name = body.name.trim().slice(0, 120)
@@ -588,6 +687,28 @@ export class RelayAPI extends EventEmitter {
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
+          const rawContentType = body.contentType !== undefined ? body.contentType : body.type
+          const contentType = this._readContentType(rawContentType, 'app')
+          if (rawContentType !== undefined && this._readContentType(rawContentType, null) === null) {
+            return this._json(res, { error: CONTENT_TYPE_ERROR }, 400)
+          }
+          let parentKey = null
+          if (body.parentKey !== undefined) {
+            if (typeof body.parentKey !== 'string' || !isValidHexKey(body.parentKey, 64)) {
+              return this._json(res, { error: 'parentKey must be a 64-character hex key' }, 400)
+            }
+            parentKey = body.parentKey
+          }
+          let mountPath = null
+          if (body.mountPath !== undefined) {
+            if (typeof body.mountPath !== 'string') return this._json(res, { error: 'mountPath must be a string' }, 400)
+            mountPath = body.mountPath.trim()
+            if (!mountPath.startsWith('/')) return this._json(res, { error: 'mountPath must start with "/"' }, 400)
+            if (mountPath.length > 256) return this._json(res, { error: 'mountPath exceeds max length (256)' }, 400)
+          }
+          if ((parentKey || mountPath) && contentType !== 'drive') {
+            return this._json(res, { error: 'parentKey and mountPath are only supported when type is "drive"' }, 400)
+          }
 
           const dks = body.discoveryKeys || []
           if (!Array.isArray(dks) || dks.length > MAX_DISCOVERY_KEYS) {
@@ -613,6 +734,9 @@ export class RelayAPI extends EventEmitter {
           const request = {
             appKey: appKeyBuf,
             discoveryKeys: dkBufs,
+            contentType,
+            parentKey,
+            mountPath,
             replicationFactor: body.replicas || 3,
             geoPreference: body.geo ? [].concat(body.geo) : [],
             maxStorageBytes: body.maxStorageBytes || 0,

@@ -11,12 +11,32 @@ function mockRelayNode () {
     running: true,
     config: { storage: null, registryAutoAccept: false },
     metrics: { getSummary () { return { uptime: 100 } } },
+    _catalogEntries: [
+      {
+        appKey: '1'.repeat(64),
+        type: 'app',
+        id: 'peer-chat',
+        name: 'Peer Chat',
+        version: '1.0.0',
+        categories: ['messaging']
+      },
+      {
+        appKey: '2'.repeat(64),
+        type: 'drive',
+        id: 'ghost-drive-demo',
+        name: 'Ghost Demo',
+        version: '0.1.0',
+        categories: ['ghost-drive', 'files'],
+        parentKey: null,
+        mountPath: null
+      }
+    ],
     seededApps: new Map(),
     appRegistry: {
       get () { return null },
       has () { return false },
       apps: new Map(),
-      catalog () { return [] },
+      catalog () { return node._catalogEntries },
       catalogForBroadcast () { return [] }
     },
     getStats () { return { running: true, seededApps: 0, connections: 0 } },
@@ -119,6 +139,9 @@ test('api-auth: POST /seed without auth returns 401', async (t) => {
 test('api-auth: POST /seed forwards metadata fields with auth', async (t) => {
   const res = await request(port, 'POST', '/seed', {
     appKey: 'c'.repeat(64),
+    type: 'drive',
+    parentKey: 'd'.repeat(64),
+    mountPath: '/data',
     appId: 'ghost-drive-demo',
     version: '0.1.0',
     name: 'Ghost Drive Demo',
@@ -135,12 +158,53 @@ test('api-auth: POST /seed forwards metadata fields with auth', async (t) => {
 
   const lastCall = node._seedCalls[node._seedCalls.length - 1]
   t.is(lastCall.appKey, 'c'.repeat(64), 'app key forwarded')
+  t.is(lastCall.opts.type, 'drive', 'content type forwarded')
+  t.is(lastCall.opts.parentKey, 'd'.repeat(64), 'parent key forwarded')
+  t.is(lastCall.opts.mountPath, '/data', 'mount path forwarded')
   t.is(lastCall.opts.appId, 'ghost-drive-demo', 'appId forwarded')
   t.is(lastCall.opts.version, '0.1.0', 'version forwarded')
   t.is(lastCall.opts.name, 'Ghost Drive Demo', 'name forwarded')
   t.is(lastCall.opts.author, 'integration-test', 'author forwarded')
   t.alike(lastCall.opts.categories, ['ghost-drive', 'files'], 'categories forwarded')
   t.is(lastCall.opts.privacyTier, 'public', 'privacy tier forwarded')
+})
+
+test('api-auth: GET /catalog.json supports type filtering and typed buckets', async (t) => {
+  const res = await request(port, 'GET', '/catalog.json?type=drive&page=1&pageSize=50')
+  t.is(res.statusCode, 200, 'status is 200')
+  t.is(res.body.version, 2, 'catalog version is 2')
+  t.is(res.body.filters.type, 'drive', 'type filter reported')
+  t.ok(Array.isArray(res.body.drives), 'drives array present')
+  t.ok(Array.isArray(res.body.apps), 'apps array present for compatibility')
+  t.is(res.body.drives.length, 1, 'drive entry returned')
+  t.is(res.body.apps.length, 0, 'apps empty when filtering by drive')
+})
+
+test('api-auth: GET /api/drives returns only seeded drives', async (t) => {
+  const now = Date.now()
+  node.seededApps.clear()
+  node.seededApps.set('a'.repeat(64), {
+    type: 'app',
+    appId: 'peer-chat',
+    startedAt: now - 10_000,
+    bytesServed: 100
+  })
+  node.seededApps.set('b'.repeat(64), {
+    type: 'drive',
+    appId: 'ghost-drive-demo',
+    parentKey: null,
+    mountPath: null,
+    startedAt: now - 8_000,
+    bytesServed: 200,
+    categories: ['ghost-drive']
+  })
+
+  const res = await request(port, 'GET', '/api/drives')
+  t.is(res.statusCode, 200, 'status is 200')
+  t.ok(Array.isArray(res.body), 'body is array')
+  t.is(res.body.length, 1, 'only one drive returned')
+  t.is(res.body[0].type, 'drive', 'entry marked as drive')
+  t.is(res.body[0].appKey, 'b'.repeat(64), 'drive key matches')
 })
 
 test('api-auth: POST /unseed without auth returns 401', async (t) => {

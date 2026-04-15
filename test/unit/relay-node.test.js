@@ -180,6 +180,28 @@ test('RelayNode - seedApp can use serve-code policy when strict mode disabled', 
   t.is(operation, 'serve-code')
 })
 
+test('RelayNode - seedApp keeps replicate-user-data policy for drive type when strict mode disabled', async (t) => {
+  const node = new RelayNode({ storage: tmpStorage(), enableAPI: false })
+  node.seeder = { totalBytesStored: 0 }
+  node.config.strictSeedingPrivacy = false
+
+  let operation = null
+  node.policyGuard = {
+    check (_appKey, _tier, op) {
+      operation = op
+      return { allowed: false, reason: 'blocked by test policy' }
+    }
+  }
+
+  try {
+    await node.seedApp('f'.repeat(64), { type: 'drive', privacyTier: 'local-first' })
+    t.fail('expected policy violation')
+  } catch (err) {
+    t.ok(err.message.includes('POLICY_VIOLATION'))
+  }
+  t.is(operation, 'replicate-user-data')
+})
+
 test('RelayNode - replication repair skips non-public tiers in strict privacy mode', async (t) => {
   const node = new RelayNode({ storage: tmpStorage(), enableAPI: false, enableServices: false })
   const appKey = 'e'.repeat(64)

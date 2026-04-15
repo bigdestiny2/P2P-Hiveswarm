@@ -555,6 +555,7 @@ async function startTestnet () {
 // ─── seed ───────────────────────────────────────────────────────────
 
 const VALID_PRIVACY_TIERS = new Set(['public', 'local-first', 'p2p-only'])
+const VALID_CONTENT_TYPES = new Set(['app', 'drive', 'dataset', 'media'])
 const GHOSTDRIVE_DEFAULT_CATEGORIES = ['ghost-drive', 'files']
 
 async function seed () {
@@ -583,7 +584,7 @@ async function seed () {
     if (seedResult.discoveryKey) console.log(`  Discovery key: ${seedResult.discoveryKey}`)
 
     if (shouldPublishRegistry(args)) {
-      const publishBody = collectRegistryOptions(args, appKey, seedMetadata.privacyTier || 'public')
+      const publishBody = collectRegistryOptions(args, appKey, seedMetadata)
       const publishResult = await publishSeedRequestViaApi({ relay, apiKey, body: publishBody })
       console.log(`  Registry publish: replicas=${publishResult.replicationFactor || publishBody.replicas}`)
       if (publishResult.requestId) console.log(`  Request ID: ${publishResult.requestId}`)
@@ -635,7 +636,7 @@ async function ghostdrive () {
     console.log(`  Catalog tags: ${(metadata.categories || []).join(', ') || 'none'}`)
 
     if (action === 'publish') {
-      const publishBody = collectRegistryOptions(args, driveKey, metadata.privacyTier || 'public')
+      const publishBody = collectRegistryOptions(args, driveKey, metadata)
       const publishResult = await publishSeedRequestViaApi({ relay, apiKey, body: publishBody })
       console.log(`  Published to registry (replicas=${publishResult.replicationFactor || publishBody.replicas})`)
     }
@@ -651,9 +652,23 @@ async function ghostDriveDiscover () {
 
   try {
     for (const relay of relays) {
-      const catalog = await relayRequestJson(relay, '/catalog.json?page=1&pageSize=500')
-      const apps = Array.isArray(catalog.apps) ? catalog.apps : []
-      const ghostApps = apps.filter(isGhostDriveCatalogEntry)
+      const catalog = await relayRequestJson(relay, '/catalog.json?type=drive&page=1&pageSize=500')
+      const typedEntriesRaw = [
+        ...(Array.isArray(catalog.drives) ? catalog.drives : []),
+        ...(Array.isArray(catalog.resources) ? catalog.resources : []),
+        ...(Array.isArray(catalog.entries) ? catalog.entries.filter(e => e && e.type === 'drive') : [])
+      ]
+      const typedEntries = []
+      const seenKeys = new Set()
+      for (const entry of typedEntriesRaw) {
+        const key = entry?.appKey || entry?.driveKey
+        if (!key || seenKeys.has(key)) continue
+        seenKeys.add(key)
+        typedEntries.push(entry)
+      }
+      const fallbackEntries = Array.isArray(catalog.apps) ? catalog.apps : []
+      const candidates = typedEntries.length > 0 ? typedEntries : fallbackEntries
+      const ghostApps = candidates.filter(isGhostDriveCatalogEntry)
       for (const app of ghostApps) {
         discovered.push({ relay, app })
       }
@@ -700,6 +715,9 @@ Options:
   --relay <url>                Relay URL (repeat for discover; default: http://127.0.0.1:9100)
   --host <ip> --port <n>       Alternative to --relay
   --api-key <key>              API key (or use HIVERELAY_API_KEY env)
+  --type <kind>                app | drive | dataset | media (ghostdrive defaults to drive)
+  --parent-key <hex>           Parent content key for mounted drive resources
+  --mount-path <path>          Mount path for parent resources (example: /data)
   --name <text>                Catalog name
   --description <text>         Catalog description
   --author <text>              Catalog author
@@ -714,8 +732,11 @@ Options:
 
 async function seedAppViaApi ({ relay, apiKey, appKey, metadata }) {
   const body = { appKey }
+  if (metadata.type) body.type = metadata.type
   if (metadata.appId) body.appId = metadata.appId
   if (metadata.version) body.version = metadata.version
+  if (metadata.parentKey) body.parentKey = metadata.parentKey
+  if (metadata.mountPath) body.mountPath = metadata.mountPath
   if (metadata.name) body.name = metadata.name
   if (metadata.description !== undefined) body.description = metadata.description
   if (metadata.author) body.author = metadata.author
@@ -773,8 +794,32 @@ async function parseResponseBody (res) {
 
 function collectSeedMetadata (argv) {
   const metadata = {}
+  if (typeof argv.type === 'string' && argv.type.trim()) metadata.type = parseContentTypeOrExit(argv.type)
   if (typeof argv['app-id'] === 'string' && argv['app-id'].trim()) metadata.appId = argv['app-id'].trim()
   if (typeof argv.version === 'string' && argv.version.trim()) metadata.version = argv.version.trim()
+  if (typeof argv['parent-key'] === 'string' && argv['parent-key'].trim()) {
+    const parentKey = argv['parent-key'].trim().toLowerCase()
+    if (!isValidHexKey(parentKey, 64)) {
+      console.error('Invalid --parent-key: must be 64 hex characters')
+      process.exit(1)
+    }
+    metadata.parentKey = parentKey
+  }
+  if (typeof argv['mount-path'] === 'string' && argv['mount-path'].trim()) {
+    const mountPath = argv['mount-path'].trim()
+    if (!mountPath.startsWith('/')) {
+      console.error('Invalid --mount-path: must start with "/"')
+      process.exit(1)
+    }
+    metadata.mountPath = mountPath
+  }
+  if ((metadata.parentKey || metadata.mountPath) && !metadata.type) {
+    metadata.type = 'drive'
+  }
+  if ((metadata.parentKey || metadata.mountPath) && metadata.type !== 'drive') {
+    console.error('--parent-key and --mount-path are only valid when --type drive')
+    process.exit(1)
+  }
   if (typeof argv.name === 'string' && argv.name.trim()) metadata.name = argv.name.trim()
   if (typeof argv.description === 'string') metadata.description = argv.description
   if (typeof argv.author === 'string' && argv.author.trim()) metadata.author = argv.author.trim()
@@ -788,6 +833,7 @@ function collectSeedMetadata (argv) {
 
 function collectGhostDriveMetadata (argv, driveKey) {
   const metadata = collectSeedMetadata(argv)
+  metadata.type = 'drive'
   if (!metadata.appId) metadata.appId = `ghost-drive-${driveKey.slice(0, 16)}`
   if (!metadata.name) metadata.name = `Ghost Drive ${driveKey.slice(0, 8)}`
   if (metadata.description === undefined) {
@@ -799,15 +845,19 @@ function collectGhostDriveMetadata (argv, driveKey) {
   return metadata
 }
 
-function collectRegistryOptions (argv, appKey, defaultPrivacyTier = 'public') {
+function collectRegistryOptions (argv, appKey, metadata = {}) {
   const body = {
     appKey,
     replicas: argv.replicas ? parseInt(argv.replicas) : 3,
     ttlDays: argv.ttl ? parseInt(argv.ttl) : 30,
     privacyTier: argv['privacy-tier'] !== undefined
       ? parsePrivacyTierOrExit(argv['privacy-tier'])
-      : defaultPrivacyTier
+      : (metadata.privacyTier || 'public')
   }
+
+  if (metadata.type) body.contentType = metadata.type
+  if (metadata.parentKey) body.parentKey = metadata.parentKey
+  if (metadata.mountPath) body.mountPath = metadata.mountPath
 
   if (argv.geo !== undefined) {
     const geo = parseCsvValues(argv.geo)
@@ -869,6 +919,7 @@ function normalizeRelayUrl (value) {
 
 function isGhostDriveCatalogEntry (app) {
   if (!app || typeof app !== 'object') return false
+  if (app.type && String(app.type).toLowerCase() !== 'drive') return false
   const categories = Array.isArray(app.categories)
     ? app.categories.map(c => String(c).toLowerCase())
     : []
@@ -902,6 +953,16 @@ function parsePrivacyTierOrExit (value) {
     process.exit(1)
   }
   return tier
+}
+
+function parseContentTypeOrExit (value) {
+  const type = String(value || '').trim().toLowerCase()
+  if (!VALID_CONTENT_TYPES.has(type)) {
+    console.error('Invalid content type: ' + value)
+    console.error('Valid types: app, drive, dataset, media')
+    process.exit(1)
+  }
+  return type
 }
 
 function isValidHexKey (value, length = 64) {
@@ -984,6 +1045,9 @@ Manage Options:
 Seed / Ghost Drive Options:
   --relay <url>                 Relay URL (default: http://127.0.0.1:9100)
   --api-key <key>               API key (or use HIVERELAY_API_KEY env)
+  --type <kind>                 app | drive | dataset | media
+  --parent-key <hex>            Parent content key (for drive resources)
+  --mount-path <path>           Mount path (for drive resources, e.g. /data)
   --app-id <id>                 Optional app id for catalog dedup
   --name <text>                 Catalog name
   --description <text>          Catalog description

@@ -15,7 +15,7 @@
 import { readFile, writeFile, rename } from 'fs/promises'
 import { join } from 'path'
 import { EventEmitter } from 'events'
-import { compareVersions } from './constants.js'
+import { compareVersions, normalizeContentType } from './constants.js'
 
 const REGISTRY_FILE = 'app-registry.json'
 
@@ -59,19 +59,49 @@ export class AppRegistry extends EventEmitter {
 
   // ─── Mutations ─────────────────────────────────────────────
 
+  _isAppType (entry) {
+    return normalizeContentType(entry?.type, 'app') === 'app'
+  }
+
+  _isAppIdIndexed (entry) {
+    return this._isAppType(entry) && typeof entry?.appId === 'string' && entry.appId.length > 0
+  }
+
+  _normalizeEntry (entry = {}) {
+    const type = normalizeContentType(entry.type, 'app')
+    const parentKey = typeof entry.parentKey === 'string' && entry.parentKey.length > 0
+      ? entry.parentKey
+      : null
+    const mountPath = typeof entry.mountPath === 'string' && entry.mountPath.trim().length > 0
+      ? entry.mountPath.trim()
+      : null
+    const categories = Array.isArray(entry.categories)
+      ? [...new Set(entry.categories.map(c => String(c).trim()).filter(Boolean))]
+      : null
+
+    return {
+      ...entry,
+      type,
+      parentKey,
+      mountPath,
+      categories
+    }
+  }
+
   /**
    * Register a seeded app. Automatically persists and emits change event.
    */
   set (appKey, entry) {
-    this.apps.set(appKey, entry)
+    const normalized = this._normalizeEntry(entry)
+    this.apps.set(appKey, normalized)
 
     // Update dedup index if entry has an appId
-    if (entry.appId) {
-      this.byAppId.set(entry.appId, appKey)
+    if (this._isAppIdIndexed(normalized)) {
+      this.byAppId.set(normalized.appId, appKey)
     }
 
     this._scheduleSave()
-    this.emit('change', { type: 'set', appKey, entry })
+    this.emit('change', { type: 'set', appKey, entry: normalized })
   }
 
   /**
@@ -81,11 +111,16 @@ export class AppRegistry extends EventEmitter {
     const entry = this.apps.get(appKey)
     if (!entry) return false
 
-    Object.assign(entry, updates)
+    const hadIndexedAppId = this._isAppIdIndexed(entry)
+    const previousAppId = entry.appId
+    Object.assign(entry, this._normalizeEntry({ ...entry, ...updates }))
 
-    // Update dedup index if appId changed
-    if (updates.appId) {
-      this.byAppId.set(updates.appId, appKey)
+    // Update dedup index when app identity changed
+    if (hadIndexedAppId && previousAppId && this.byAppId.get(previousAppId) === appKey) {
+      this.byAppId.delete(previousAppId)
+    }
+    if (this._isAppIdIndexed(entry)) {
+      this.byAppId.set(entry.appId, appKey)
     }
 
     this._scheduleSave()
@@ -101,7 +136,7 @@ export class AppRegistry extends EventEmitter {
     if (!entry) return false
 
     // Clean dedup index
-    if (entry.appId && this.byAppId.get(entry.appId) === appKey) {
+    if (this._isAppIdIndexed(entry) && this.byAppId.get(entry.appId) === appKey) {
       this.byAppId.delete(entry.appId)
     }
 
@@ -119,13 +154,17 @@ export class AppRegistry extends EventEmitter {
    * No drive reads needed — all metadata comes from the registry.
    */
   catalog () {
-    const apps = []
-    const seen = new Map() // appId → index in apps array (dedup)
+    const items = []
+    const seen = new Map() // appId → index in items array (dedup for app type)
 
     for (const [appKey, entry] of this.apps) {
+      const type = normalizeContentType(entry.type, 'app')
       const appId = entry.appId || appKey.slice(0, 12)
       const catalogEntry = {
         appKey,
+        type,
+        parentKey: entry.parentKey || null,
+        mountPath: entry.mountPath || null,
         id: appId,
         name: entry.name || entry.appId || 'Unknown App',
         description: entry.description || '',
@@ -141,20 +180,35 @@ export class AppRegistry extends EventEmitter {
         seededAt: entry.startedAt || entry.seededAt || Date.now()
       }
 
-      // Dedup by appId — keep latest version
-      const existingIdx = seen.get(appId)
-      if (existingIdx !== undefined) {
-        const existing = apps[existingIdx]
-        if (compareVersions(catalogEntry.version, existing.version) > 0) {
-          apps[existingIdx] = catalogEntry
+      // Dedup app entries by appId — keep latest version
+      if (type === 'app') {
+        const existingIdx = seen.get(appId)
+        if (existingIdx !== undefined) {
+          const existing = items[existingIdx]
+          if (compareVersions(catalogEntry.version, existing.version) > 0) {
+            items[existingIdx] = catalogEntry
+          }
+        } else {
+          seen.set(appId, items.length)
+          items.push(catalogEntry)
         }
       } else {
-        seen.set(appId, apps.length)
-        apps.push(catalogEntry)
+        items.push(catalogEntry)
       }
     }
 
-    return apps
+    return items
+  }
+
+  catalogByType (type) {
+    const normalizedType = normalizeContentType(type, null)
+    if (!normalizedType) return []
+    return this.catalog().filter(entry => entry.type === normalizedType)
+  }
+
+  catalogByParent (parentKey) {
+    if (!parentKey) return []
+    return this.catalog().filter(entry => entry.parentKey === parentKey)
   }
 
   /**
@@ -166,6 +220,9 @@ export class AppRegistry extends EventEmitter {
       apps.push({
         appKey,
         appId: entry.appId || null,
+        type: normalizeContentType(entry.type, 'app'),
+        parentKey: entry.parentKey || null,
+        mountPath: entry.mountPath || null,
         version: entry.version || null,
         discoveryKey: entry.discoveryKey
           ? (typeof entry.discoveryKey === 'string' ? entry.discoveryKey : entry.discoveryKey.toString('hex'))
@@ -221,6 +278,9 @@ export class AppRegistry extends EventEmitter {
         this.apps.set(appKey, {
           startedAt: entry.startedAt || entry.seededAt || Date.now(),
           appId: entry.appId || entry.name || null,
+          type: normalizeContentType(entry.type, 'app'),
+          parentKey: entry.parentKey || null,
+          mountPath: entry.mountPath || null,
           version: entry.version || null,
           name: entry.name || entry.appId || null,
           description: entry.description || '',
@@ -234,7 +294,7 @@ export class AppRegistry extends EventEmitter {
           discoveryKey: null
         })
 
-        if (entry.appId) {
+        if (entry.appId && normalizeContentType(entry.type, 'app') === 'app') {
           this.byAppId.set(entry.appId, appKey)
         }
       }
@@ -242,6 +302,9 @@ export class AppRegistry extends EventEmitter {
       return entries.map(e => ({
         appKey: e.appKey || e.driveKey,
         appId: e.appId || e.name || null,
+        type: normalizeContentType(e.type, 'app'),
+        parentKey: e.parentKey || null,
+        mountPath: e.mountPath || null,
         version: e.version || null,
         privacyTier: e.privacyTier || 'public'
       })).filter(e => e.appKey)
@@ -269,6 +332,9 @@ export class AppRegistry extends EventEmitter {
         entries.push({
           appKey,
           appId: entry.appId || null,
+          type: normalizeContentType(entry.type, 'app'),
+          parentKey: entry.parentKey || null,
+          mountPath: entry.mountPath || null,
           version: entry.version || null,
           name: entry.name || entry.appId || null,
           description: entry.description || '',

@@ -10,7 +10,7 @@ import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import Protomux from 'protomux'
 import { EventEmitter } from 'events'
-import { isValidHexKey, normalizePrivacyTier } from '../constants.js'
+import { isValidHexKey, normalizeContentType, normalizePrivacyTier } from '../constants.js'
 
 // Well-known topic for registry discovery
 const REGISTRY_TOPIC = b4a.alloc(32)
@@ -270,11 +270,21 @@ export class SeedingRegistry extends EventEmitter {
    */
   async publishRequest (request) {
     const privacyTier = normalizePrivacyTier(request.privacyTier, 'public')
+    const contentType = normalizeContentType(request.contentType || request.type, 'app')
+    const parentKey = typeof request.parentKey === 'string' && isValidHexKey(request.parentKey, 64)
+      ? request.parentKey
+      : null
+    const mountPath = typeof request.mountPath === 'string' && request.mountPath.trim().startsWith('/')
+      ? request.mountPath.trim()
+      : null
     const entry = {
       type: 'seed-request',
       timestamp: Date.now(),
       appKey: b4a.toString(request.appKey, 'hex'),
       discoveryKeys: request.discoveryKeys.map(dk => b4a.toString(dk, 'hex')),
+      contentType,
+      parentKey,
+      mountPath,
       replicationFactor: request.replicationFactor || 3,
       geoPreference: request.geoPreference || [],
       maxStorageBytes: request.maxStorageBytes || 0,
