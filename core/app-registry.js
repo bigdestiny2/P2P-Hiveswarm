@@ -137,6 +137,7 @@ export class AppRegistry extends EventEmitter {
           : null,
         blind: entry.blind || false,
         categories: entry.categories || ['uncategorized'],
+        privacyTier: entry.privacyTier || 'public',
         seededAt: entry.startedAt || entry.seededAt || Date.now()
       }
 
@@ -170,6 +171,7 @@ export class AppRegistry extends EventEmitter {
           ? (typeof entry.discoveryKey === 'string' ? entry.discoveryKey : entry.discoveryKey.toString('hex'))
           : null,
         blind: entry.blind || false,
+        privacyTier: entry.privacyTier || 'public',
         seededAt: entry.startedAt || entry.seededAt || Date.now()
       })
     }
@@ -224,6 +226,7 @@ export class AppRegistry extends EventEmitter {
           description: entry.description || '',
           author: entry.author || null,
           blind: entry.blind || false,
+          privacyTier: entry.privacyTier || 'public',
           categories: entry.categories || null,
           bytesServed: 0,
           // drive and discoveryKey are set during reseeding
@@ -239,7 +242,8 @@ export class AppRegistry extends EventEmitter {
       return entries.map(e => ({
         appKey: e.appKey || e.driveKey,
         appId: e.appId || e.name || null,
-        version: e.version || null
+        version: e.version || null,
+        privacyTier: e.privacyTier || 'public'
       })).filter(e => e.appKey)
     } catch (_) {
       return []
@@ -270,6 +274,7 @@ export class AppRegistry extends EventEmitter {
           description: entry.description || '',
           author: entry.author || null,
           blind: entry.blind || false,
+          privacyTier: entry.privacyTier || 'public',
           categories: entry.categories || null,
           startedAt: entry.startedAt || Date.now(),
           discoveryKey: entry.discoveryKey

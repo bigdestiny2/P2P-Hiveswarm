@@ -52,6 +52,7 @@ export class Router extends EventEmitter {
       middleware: opts.middleware || [],
       timeout: opts.timeout || 30_000,
       maxPayloadBytes: opts.maxPayloadBytes || 0,
+      access: opts.access || 'public', // public | authenticated-user | relay-admin | local-only
       rateLimit: opts.rateLimit || null // { tokensPerMin, burst }
     })
   }
@@ -82,9 +83,10 @@ export class Router extends EventEmitter {
       for (const method of manifest.capabilities) {
         const key = `${name}.${method}`
         const provider = entry.provider
+        const access = this._inferAccessPolicy(name, method)
         // Bind the method if it exists on the provider
         if (typeof provider[method] === 'function') {
-          this.addRoute(key, (params, ctx) => provider[method](params, ctx))
+          this.addRoute(key, (params, ctx) => provider[method](params, ctx), { access })
         }
       }
     }
@@ -108,6 +110,10 @@ export class Router extends EventEmitter {
     const entry = this._routes.get(route)
 
     if (entry) {
+      if (!this._isAuthorized(entry.access, context)) {
+        throw new Error(`ACCESS_DENIED: route requires ${entry.access}`)
+      }
+
       // Per-route rate limiting
       if (entry.rateLimit && context.remotePubkey) {
         if (!this._checkRateLimit(route, context.remotePubkey, entry.rateLimit)) {
@@ -149,6 +155,51 @@ export class Router extends EventEmitter {
     }
 
     throw new Error(`ROUTE_NOT_FOUND: ${route}`)
+  }
+
+  _inferAccessPolicy (service, method) {
+    const route = `${service}.${method}`
+
+    if (route === 'identity.sign' || route === 'identity.verify') {
+      return 'local-only'
+    }
+    if (route === 'ai.register-model' || route === 'ai.remove-model') {
+      return 'relay-admin'
+    }
+
+    if (
+      method.includes('create') ||
+      method.includes('write') ||
+      method.includes('delete') ||
+      method.includes('append') ||
+      method === 'submit' ||
+      method === 'cancel' ||
+      method === 'register'
+    ) {
+      return 'authenticated-user'
+    }
+
+    return 'public'
+  }
+
+  _isAuthorized (required, context = {}) {
+    const role = context.role || null
+
+    if (!required || required === 'public') return true
+
+    if (required === 'authenticated-user') {
+      return context.authenticated === true || role === 'authenticated-user' || role === 'relay-admin' || role === 'local'
+    }
+
+    if (required === 'relay-admin') {
+      return role === 'relay-admin' || role === 'local'
+    }
+
+    if (required === 'local-only') {
+      return role === 'local' || context.caller === 'local'
+    }
+
+    return false
   }
 
   /**

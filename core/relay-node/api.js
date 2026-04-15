@@ -7,7 +7,7 @@
  *
  * Security features:
  *   - Configurable bind address (opts.apiHost, default '0.0.0.0')
- *   - Configurable CORS origins (opts.corsOrigins, default '*')
+ *   - Configurable CORS origins (opts.corsOrigins, default deny)
  *   - Per-IP rate limiting to prevent abuse
  *   - Hex key input validation on all POST routes
  */
@@ -30,6 +30,14 @@ const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
 
 const MAX_DISCOVERY_KEYS = 100
+const LOCAL_ONLY_DISPATCH_ROUTES = new Set([
+  'identity.sign',
+  'identity.verify'
+])
+const ADMIN_ONLY_DISPATCH_ROUTES = new Set([
+  'ai.register-model',
+  'ai.remove-model'
+])
 
 export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
@@ -37,7 +45,7 @@ export class RelayAPI extends EventEmitter {
     this.node = relayNode
     this.port = opts.apiPort || DEFAULT_PORT
     this.host = opts.apiHost || '0.0.0.0'
-    this.corsOrigins = opts.corsOrigins || '*'
+    this.corsOrigins = opts.corsOrigins || []
     this.server = null
 
     // API key for authenticated endpoints (manage, seed, unseed)
@@ -102,8 +110,6 @@ export class RelayAPI extends EventEmitter {
    * If no API key is configured, management endpoints are localhost-only.
    */
   _checkAuth (req) {
-    const ip = req.socket.remoteAddress || ''
-
     // If API key is configured, require it
     if (this._apiKey) {
       const auth = req.headers.authorization || ''
@@ -112,14 +118,20 @@ export class RelayAPI extends EventEmitter {
     }
 
     // No API key configured — restrict to localhost only
+    return this._isLocalRequest(req)
+  }
+
+  _isLocalRequest (req) {
+    const ip = req.socket.remoteAddress || ''
     return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
   }
 
   async _handle (req, res) {
     const ip = req.socket.remoteAddress || '127.0.0.1'
+    const requestOrigin = req.headers.origin
 
     // CORS headers on all responses
-    const allowedOrigin = this._getAllowedOrigin(req.headers.origin)
+    const allowedOrigin = this._getAllowedOrigin(requestOrigin)
     if (allowedOrigin) {
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin)
     }
@@ -127,6 +139,9 @@ export class RelayAPI extends EventEmitter {
 
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
+      if (requestOrigin && !allowedOrigin) {
+        return this._json(res, { error: 'CORS origin denied' }, 403)
+      }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.writeHead(204)
       res.end()
@@ -170,7 +185,6 @@ export class RelayAPI extends EventEmitter {
         const paged = apps.slice(start, start + pageSize)
 
         res.setHeader('Content-Type', 'application/json')
-        res.setHeader('Access-Control-Allow-Origin', '*')
         return this._json(res, {
           version: 1,
           name: 'HiveRelay App Catalog',
@@ -282,6 +296,28 @@ export class RelayAPI extends EventEmitter {
           const config = this.node.config || {}
           const maxStorage = config.maxStorageBytes || 5368709120
           const bytesStored = stats.seeder ? stats.seeder.totalBytesStored : 0
+          const reputationSummary = this.node.reputation
+            ? {
+                trackedRelays: Object.keys(this.node.reputation.export()).length,
+                topRelay: (() => {
+                  const lb = this.node.reputation.getLeaderboard(1)
+                  return lb.length ? lb[0] : null
+                })()
+              }
+            : null
+          const bandwidthSummary = this.node._bandwidthReceipt
+            ? {
+                totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
+                receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
+              }
+            : null
+          const registrySummary = this.node.seedingRegistry
+            ? {
+                running: this.node.seedingRegistry.running,
+                autoAccept: this.node.config.registryAutoAccept !== false
+              }
+            : null
+          const gatewayStats = this._gateway ? this._gateway.getStats() : null
 
           return this._json(res, {
             uptime: { ms: uptimeMs, hours, human: parts.join(' ') },
@@ -298,25 +334,13 @@ export class RelayAPI extends EventEmitter {
             seeder: stats.seeder || { coresSeeded: 0, totalBytesStored: 0, totalBytesServed: 0 },
             memory: { heapUsed: mem.heapUsed, rss: mem.rss },
             errors: this.node.metrics ? this.node.metrics._errorCount : 0,
-            reputation: this.node.reputation ? {
-              trackedRelays: Object.keys(this.node.reputation.export()).length,
-              topRelay: (() => {
-                const lb = this.node.reputation.getLeaderboard(1)
-                return lb.length ? lb[0] : null
-              })()
-            } : null,
+            reputation: reputationSummary,
             tor: this.node.torTransport ? this.node.torTransport.getInfo() : null,
             holesailKey: this.node.holesailTransport ? this.node.holesailTransport.connectionKey : null,
             health: this.node.getHealthStatus(),
-            bandwidth: this.node._bandwidthReceipt ? {
-              totalProvenBytes: this.node._bandwidthReceipt.getTotalProvenBandwidth(),
-              receiptsIssued: this.node._bandwidthReceipt._issuedReceipts ? this.node._bandwidthReceipt._issuedReceipts.length : 0
-            } : null,
-            registry: this.node.seedingRegistry ? {
-              running: this.node.seedingRegistry.running,
-              autoAccept: this.node.config.registryAutoAccept !== false
-            } : null,
-            gateway: this._gateway ? this._gateway.getStats() : null
+            bandwidth: bandwidthSummary,
+            registry: registrySummary,
+            gateway: gatewayStats
           })
         }
 
@@ -378,6 +402,9 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/api/registry/pending') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /api/registry/pending' }, 401)
+          }
           const pending = []
           for (const [appKey, entry] of this.node._pendingRequests) {
             pending.push({ appKey, ...entry })
@@ -386,6 +413,9 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/api/registry') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /api/registry' }, 401)
+          }
           if (!this.node.seedingRegistry) {
             return this._json(res, { error: 'Registry not running' }, 503)
           }
@@ -436,11 +466,14 @@ export class RelayAPI extends EventEmitter {
         if (!this.node.router) {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
+        const pubsubInfo = this.node.router.pubsub
+          ? {
+              topics: this.node.router.pubsub.topics?.() || []
+            }
+          : null
         return this._json(res, {
           routes: this.node.router.routes().length,
-          pubsub: this.node.router.pubsub ? {
-            topics: this.node.router.pubsub.topics?.() || []
-          } : null
+          pubsub: pubsubInfo
         })
       }
 
@@ -458,6 +491,9 @@ export class RelayAPI extends EventEmitter {
       }
 
       if (req.method === 'POST' && path === '/api/v1/dispatch') {
+        if (!this._checkAuth(req)) {
+          return this._json(res, { error: 'Unauthorized — API key required for /api/v1/dispatch' }, 401)
+        }
         if (!this.node.router) {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
@@ -465,10 +501,21 @@ export class RelayAPI extends EventEmitter {
         if (!body.route || typeof body.route !== 'string') {
           return this._json(res, { error: 'route required (e.g. "ai.infer", "zk.commit")' }, 400)
         }
+
+        const isLocalRequest = this._isLocalRequest(req)
+        if (LOCAL_ONLY_DISPATCH_ROUTES.has(body.route) && !isLocalRequest) {
+          return this._json(res, { error: `ACCESS_DENIED: ${body.route} is local-only` }, 403)
+        }
+
+        const routeRole = isLocalRequest
+          ? 'local'
+          : (ADMIN_ONLY_DISPATCH_ROUTES.has(body.route) ? 'relay-admin' : 'authenticated-user')
         try {
           const result = await this.node.router.dispatch(body.route, body.params || {}, {
             transport: 'http',
-            caller: 'remote'
+            caller: 'remote',
+            role: routeRole,
+            authenticated: true
           })
           return this._json(res, { ok: true, result })
         } catch (err) {
@@ -495,6 +542,9 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/publish') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /registry/publish' }, 401)
+          }
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -531,11 +581,17 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/auto-accept') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /registry/auto-accept' }, 401)
+          }
           this.node.config.registryAutoAccept = body.enabled !== false
           return this._json(res, { ok: true, autoAccept: this.node.config.registryAutoAccept })
         }
 
         if (path === '/registry/approve') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /registry/approve' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.approveRequest(body.appKey)
@@ -543,6 +599,9 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/reject') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /registry/reject' }, 401)
+          }
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           this.node.rejectRequest(body.appKey)
@@ -550,6 +609,9 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/cancel') {
+          if (!this._checkAuth(req)) {
+            return this._json(res, { error: 'Unauthorized — API key required for /registry/cancel' }, 401)
+          }
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -746,6 +808,12 @@ export class RelayAPI extends EventEmitter {
       // 404
       this._json(res, { error: 'Not found' }, 404)
     } catch (err) {
+      if (err && err.message === 'Invalid JSON body') {
+        return this._json(res, { error: 'Invalid JSON body' }, 400)
+      }
+      if (err && err.message === 'Request body too large') {
+        return this._json(res, { error: 'Request body too large' }, 413)
+      }
       this.emit('error', { context: 'api-handler', error: err })
       this._json(res, { error: 'Internal server error' }, 500)
     }
@@ -974,6 +1042,7 @@ export class RelayAPI extends EventEmitter {
     // Apply mode config
     Object.assign(config, modeConfig)
     this.node._operatingMode = mode
+    this.node.mode = mode
 
     // Persist
     this._persistConfig().catch(() => {})

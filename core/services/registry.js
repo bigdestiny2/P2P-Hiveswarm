@@ -182,16 +182,28 @@ export class ServiceRegistry extends EventEmitter {
    * Start all registered services.
    */
   async startAll (context) {
+    const started = []
+    const failed = []
+
     for (const [name, entry] of this.services) {
       if (entry.provider.start) {
         try {
           await entry.provider.start(context)
           this.emit('service-started', { name })
+          started.push(name)
         } catch (err) {
           this.emit('service-start-error', { name, error: err.message })
+          failed.push({ name, error: err.message })
         }
       }
     }
+
+    // Fail closed: providers that failed startup are removed so they cannot be dispatched.
+    for (const failure of failed) {
+      this.services.delete(failure.name)
+    }
+
+    return { started, failed }
   }
 
   /**

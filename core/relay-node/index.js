@@ -23,6 +23,7 @@ import { ReputationSystem } from '../../incentive/reputation/index.js'
 import { NetworkDiscovery } from '../network-discovery.js'
 import { HealthMonitor } from './health-monitor.js'
 import { SelfHeal } from './self-heal.js'
+import { AccessControl } from './access-control.js'
 import { SeedingRegistry } from '../registry/index.js'
 import {
   ServiceRegistry, ServiceProtocol,
@@ -33,6 +34,7 @@ import { PluginLoader } from '../plugin-loader.js'
 import { Router } from '../router/index.js'
 import { AppRegistry } from '../app-registry.js'
 import { RELAY_DISCOVERY_TOPIC } from '../constants.js'
+import { PolicyGuard } from '../policy-guard.js'
 
 const DEFAULT_CONFIG = {
   storage: './storage',
@@ -46,9 +48,102 @@ const DEFAULT_CONFIG = {
   enableMetrics: true,
   enableAPI: true,
   apiPort: 9100,
+  apiHost: '0.0.0.0',
+  corsOrigins: [],
+  discovery: {
+    dht: true,
+    announce: true,
+    mdns: false
+  },
+  access: {
+    open: true,
+    allowlist: []
+  },
+  pairing: {
+    enabled: false
+  },
   bootstrapNodes: null, // null = use HyperDHT defaults
   shutdownTimeoutMs: 10_000,
   enableEviction: true
+}
+
+const MODE_PRESETS = {
+  public: {},
+  standard: {
+    enableRelay: true,
+    enableSeeding: true,
+    maxConnections: 256,
+    maxRelayBandwidthMbps: 100
+  },
+  private: {
+    discovery: { dht: false, announce: false, mdns: true },
+    access: { open: false },
+    pairing: { enabled: true },
+    enableRelay: false,
+    enableAPI: false
+  },
+  hybrid: {
+    discovery: { dht: true, announce: false, mdns: true },
+    access: { open: false },
+    pairing: { enabled: true }
+  },
+  homehive: {
+    discovery: { dht: true, announce: false, mdns: true },
+    access: { open: false },
+    pairing: { enabled: true },
+    maxConnections: 32,
+    maxRelayBandwidthMbps: 25,
+    maxStorageBytes: 10 * 1024 * 1024 * 1024,
+    registryAutoAccept: true
+  },
+  'seed-only': {
+    enableRelay: false,
+    enableSeeding: true
+  },
+  'relay-only': {
+    enableRelay: true,
+    enableSeeding: false
+  },
+  stealth: {
+    enableRelay: true,
+    enableSeeding: true,
+    maxConnections: 32,
+    maxRelayBandwidthMbps: 25
+  },
+  gateway: {
+    enableRelay: false,
+    enableSeeding: true,
+    maxConnections: 512,
+    maxRelayBandwidthMbps: 500
+  }
+}
+
+function buildConfig (mode, opts) {
+  const preset = MODE_PRESETS[mode]
+  if (!preset) {
+    throw new Error('Invalid mode: ' + mode + ' (expected one of: ' + Object.keys(MODE_PRESETS).join(', ') + ')')
+  }
+
+  return {
+    ...DEFAULT_CONFIG,
+    ...preset,
+    ...opts,
+    discovery: {
+      ...DEFAULT_CONFIG.discovery,
+      ...(preset.discovery || {}),
+      ...(opts.discovery || {})
+    },
+    access: {
+      ...DEFAULT_CONFIG.access,
+      ...(preset.access || {}),
+      ...(opts.access || {})
+    },
+    pairing: {
+      ...DEFAULT_CONFIG.pairing,
+      ...(preset.pairing || {}),
+      ...(opts.pairing || {})
+    }
+  }
 }
 
 function isValidHexKey (hex) {
@@ -67,7 +162,9 @@ function withTimeout (promise, ms, label) {
 export class RelayNode extends EventEmitter {
   constructor (opts = {}) {
     super()
-    this.config = { ...DEFAULT_CONFIG, ...opts }
+    this.mode = opts.mode || 'public'
+    this.config = buildConfig(this.mode, opts)
+    this._operatingMode = this.mode
     this.store = new Corestore(this.config.storage)
     this.swarm = null
     this.seeder = null
@@ -100,6 +197,9 @@ export class RelayNode extends EventEmitter {
     this.serviceRegistry = null
     this.serviceProtocol = null
     this.router = null
+    this.policyGuard = new PolicyGuard()
+    this.accessControl = null
+    this._rejectedConnections = 0
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this._catalogBroadcastTimer = null
     this._catalogPeerThrottle = new Map() // peerKey -> lastCatalogTime
@@ -128,6 +228,23 @@ export class RelayNode extends EventEmitter {
         keyPair,
         maxConnections: this.config.maxConnections
       })
+
+      const restrictedMode = this.mode === 'private' || this.mode === 'homehive' || this.config?.access?.open === false
+      if (restrictedMode) {
+        this.accessControl = new AccessControl(this.config.storage, {
+          maxDevices: this.config?.access?.maxDevices || 50
+        })
+        await this.accessControl.load()
+        const bootstrapAllowlist = this.config?.access?.allowlist
+        if (Array.isArray(bootstrapAllowlist)) {
+          for (const pubkey of bootstrapAllowlist) {
+            if (!isValidHexKey(pubkey)) continue
+            if (!this.accessControl.isAllowed(pubkey)) {
+              await this.accessControl.addDevice(pubkey, 'config-allowlist')
+            }
+          }
+        }
+      }
 
       this.bootstrapCache.start(this.swarm)
       this.swarm.on('connection', (conn, info) => this._onConnection(conn, info))
@@ -222,7 +339,12 @@ export class RelayNode extends EventEmitter {
       }
 
       if (this.config.enableAPI) {
-        this.api = new RelayAPI(this, { apiPort: this.config.apiPort })
+        this.api = new RelayAPI(this, {
+          apiPort: this.config.apiPort,
+          apiHost: this.config.apiHost,
+          corsOrigins: this.config.corsOrigins,
+          apiKey: this.config.apiKey
+        })
         startups.push(this.api.start())
       }
 
@@ -333,7 +455,11 @@ export class RelayNode extends EventEmitter {
         }
 
         // Start all services (passes { node: this } as context)
-        await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
+        const startupResult = await this.serviceRegistry.startAll({ node: this, store: this.store, config: this.config })
+        if (startupResult.failed.length > 0 && this.config.servicesFailOpen !== true) {
+          const names = startupResult.failed.map(s => s.name).join(', ')
+          throw new Error(`SERVICE_START_FAILED: ${names}`)
+        }
 
         // Set up seeded apps callback for catalog broadcast
         this.serviceProtocol._getSeededApps = () => this.appRegistry.catalogForBroadcast()
@@ -359,8 +485,9 @@ export class RelayNode extends EventEmitter {
           this.on('unseeded', () => this._scheduleCatalogBroadcast())
 
           // Handle incoming app catalogs from other relays — seed missing apps
-          this.serviceProtocol.on('app-catalog', ({ apps, peerKey }) => {
+          this.serviceProtocol.on('app-catalog', ({ apps, remotePubkey }) => {
             if (!this.config.enableSeeding || !apps || !Array.isArray(apps)) return
+            const peerKey = remotePubkey || null
 
             // Per-peer throttle: max 1 catalog event per peer per 30 seconds
             if (peerKey) {
@@ -388,6 +515,7 @@ export class RelayNode extends EventEmitter {
                 appId: app.id || app.appId || null,
                 name: app.name || null,
                 version: app.version || null,
+                privacyTier: app.privacyTier || null,
                 blind: app.blind || false,
                 author: app.author || null,
                 description: app.description || ''
@@ -476,6 +604,7 @@ export class RelayNode extends EventEmitter {
       if (this.relay) { try { await this.relay.stop() } catch (_) {} this.relay = null }
       if (this.seeder) { try { await this.seeder.stop() } catch (_) {} this.seeder = null }
       if (this.swarm) { try { await this.swarm.destroy() } catch (_) {} this.swarm = null }
+      if (this.accessControl) { try { this.accessControl.disablePairing() } catch (_) {} this.accessControl = null }
       this.running = false
       throw err
     }
@@ -497,7 +626,8 @@ export class RelayNode extends EventEmitter {
       try {
         await this.seedApp(entry.appKey, {
           appId: entry.appId || null,
-          version: entry.version || null
+          version: entry.version || null,
+          privacyTier: entry.privacyTier || null
         })
         this.emit('reseeded', { appKey: entry.appKey })
       } catch (err) {
@@ -522,7 +652,8 @@ export class RelayNode extends EventEmitter {
         try {
           await this.seedApp(appKey, {
             appId: entry.appId || null,
-            version: entry.version || null
+            version: entry.version || null,
+            privacyTier: entry.privacyTier || null
           })
           this.emit('reseeded', { appKey, source: 'migration' })
         } catch (err) {
@@ -644,6 +775,7 @@ export class RelayNode extends EventEmitter {
         bytesServed: 0,
         appId: opts.appId || null,
         version: opts.version || null,
+        privacyTier: opts.privacyTier || opts.tier || 'public',
         name: opts.name || opts.appId || null,
         description: opts.description || '',
         author: opts.author || null,
@@ -681,6 +813,7 @@ export class RelayNode extends EventEmitter {
       this.appRegistry.update(appKeyHex, {
         appId,
         version,
+        privacyTier: manifest.privacyTier || manifest.privacy?.tier || manifest.privacy?.mode || undefined,
         name: manifest.name || appId,
         description: manifest.description || '',
         author: manifest.author || null,
@@ -788,8 +921,16 @@ export class RelayNode extends EventEmitter {
   }
 
   getStats () {
+    const accessControlStats = this.accessControl
+      ? {
+          pairedDevices: this.accessControl.allowedDevices.size,
+          rejectedConnections: this._rejectedConnections
+        }
+      : null
+
     return {
       running: this.running,
+      mode: this.mode,
       publicKey: this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null,
       seededApps: this.seededApps.size,
       connections: this.swarm ? this.swarm.connections.size : 0,
@@ -805,8 +946,46 @@ export class RelayNode extends EventEmitter {
         key: this.seedingRegistry && this.seedingRegistry.key
           ? b4a.toString(this.seedingRegistry.key, 'hex')
           : null
-      }
+      },
+      accessControl: accessControlStats
     }
+  }
+
+  listDevices () {
+    if (!this.accessControl) return []
+    return this.accessControl.listDevices()
+  }
+
+  enablePairing (opts = {}) {
+    if (!this.accessControl) {
+      throw new Error('Access control is only available in private/homehive mode')
+    }
+    const pairing = this.accessControl.enablePairing(opts)
+    return {
+      ...pairing,
+      relayPubkey: this.swarm ? b4a.toString(this.swarm.keyPair.publicKey, 'hex') : null
+    }
+  }
+
+  async pairDevice (token, devicePubkeyHex, deviceName = 'unknown') {
+    if (!this.accessControl) {
+      throw new Error('Access control is only available in private/homehive mode')
+    }
+    return this.accessControl.attemptPair(token, devicePubkeyHex, deviceName)
+  }
+
+  async addDevice (pubkeyHex, name = 'unknown') {
+    if (!this.accessControl) {
+      throw new Error('Access control is only available in private/homehive mode')
+    }
+    return this.accessControl.addDevice(pubkeyHex, name)
+  }
+
+  async removeDevice (pubkeyHex) {
+    if (!this.accessControl) {
+      throw new Error('Access control is only available in private/homehive mode')
+    }
+    return this.accessControl.removeDevice(pubkeyHex)
   }
 
   getLeaderboard (limit = 50) {
@@ -950,6 +1129,23 @@ export class RelayNode extends EventEmitter {
   }
 
   _onConnection (conn, info) {
+    const remotePubKeyBuf = conn.remotePublicKey || info?.publicKey || null
+    const remotePubKeyHex = remotePubKeyBuf ? b4a.toString(remotePubKeyBuf, 'hex') : null
+
+    if (this.accessControl) {
+      if (!remotePubKeyHex || !this.accessControl.isAllowed(remotePubKeyHex)) {
+        this._rejectedConnections++
+        this.emit('connection-rejected', {
+          reason: 'not in allowlist',
+          remotePubKey: remotePubKeyHex,
+          info
+        })
+        try { conn.destroy() } catch {}
+        return
+      }
+      this.accessControl.recordActivity(remotePubKeyHex)
+    }
+
     // Replicate all cores in our store over this connection
     this.store.replicate(conn)
 
@@ -971,9 +1167,6 @@ export class RelayNode extends EventEmitter {
     }
     if (this.serviceProtocol) {
       try {
-        const remotePubKeyHex = conn.remotePublicKey
-          ? b4a.toString(conn.remotePublicKey, 'hex')
-          : null
         if (remotePubKeyHex) {
           this.serviceProtocol.attach(conn, remotePubKeyHex)
         }
@@ -998,7 +1191,7 @@ export class RelayNode extends EventEmitter {
       this.emit('connection-closed', { info })
     })
 
-    this.emit('connection', { info, remotePubKey: b4a.toString(info.publicKey, 'hex') })
+    this.emit('connection', { info, remotePubKey: remotePubKeyHex })
   }
 
   async _scanRegistry () {
@@ -1239,6 +1432,10 @@ export class RelayNode extends EventEmitter {
     if (this.serviceRegistry) {
       try { await this.serviceRegistry.stopAll() } catch (_) {}
       this.serviceRegistry = null
+    }
+    if (this.accessControl) {
+      try { this.accessControl.disablePairing() } catch (_) {}
+      this.accessControl = null
     }
 
     // Destroy protocol handlers

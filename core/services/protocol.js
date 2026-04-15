@@ -30,7 +30,9 @@ const RESTRICTED_METHODS = new Set([
   'identity.sign',
   'identity.verify',
   'compute.submit',
-  'compute.result'
+  'compute.result',
+  'ai.register-model',
+  'ai.remove-model'
 ])
 
 const MSG_SUBSCRIBE = 4
@@ -176,7 +178,7 @@ export class ServiceProtocol extends EventEmitter {
     const apps = this._getSeededApps()
     const msg = { type: MSG_APP_CATALOG, apps }
 
-    for (const [remotePubkey, entry] of this.channels) {
+    for (const [, entry] of this.channels) {
       try { entry.msgHandler.send(msg) } catch {}
     }
   }
@@ -269,7 +271,9 @@ export class ServiceProtocol extends EventEmitter {
         result = await this.router.dispatch(route, msg.params, {
           transport: 'p2p',
           remotePubkey,
-          caller: 'remote'
+          caller: 'remote',
+          role: 'authenticated-user',
+          authenticated: true
         })
       } else {
         result = await this.registry.handleRequest(
@@ -345,7 +349,7 @@ export class ServiceProtocol extends EventEmitter {
    * Cleanup all channels and pending requests.
    */
   destroy () {
-    for (const [id, pending] of this._pendingRequests) {
+    for (const [, pending] of this._pendingRequests) {
       clearTimeout(pending.timer)
       pending.reject(new Error('PROTOCOL_DESTROYED'))
     }

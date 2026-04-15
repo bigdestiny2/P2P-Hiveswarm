@@ -221,6 +221,29 @@ test('ServiceRegistry - startAll and stopAll', async (t) => {
   t.is(registry.services.size, 0, 'services cleared')
 })
 
+test('ServiceRegistry - startAll fail-closed unregisters failed service', async (t) => {
+  const registry = new ServiceRegistry()
+
+  class GoodService extends ServiceProvider {
+    manifest () { return { name: 'good', version: '1.0.0', capabilities: [] } }
+    async start () {}
+  }
+
+  class BadService extends ServiceProvider {
+    manifest () { return { name: 'bad', version: '1.0.0', capabilities: [] } }
+    async start () { throw new Error('boom') }
+  }
+
+  registry.register(new GoodService())
+  registry.register(new BadService())
+
+  const result = await registry.startAll({})
+  t.is(result.failed.length, 1, 'one service failed')
+  t.is(result.failed[0].name, 'bad', 'failed service recorded')
+  t.is(registry.services.has('good'), true, 'healthy service stays registered')
+  t.is(registry.services.has('bad'), false, 'failed service removed')
+})
+
 // ─── ComputeService tests ──────────────────────────────────────────
 
 test('ComputeService - manifest', async (t) => {

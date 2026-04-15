@@ -44,7 +44,7 @@ export class PolicyGuard extends EventEmitter {
    *
    * @param {string} appKeyHex - The app being operated on
    * @param {string} tier - The app's declared privacy tier
-   * @param {string} operation - What's happening: 'replicate-user-data' | 'store-on-relay' | 'serve-code'
+   * @param {string} operation - What's happening: 'replicate-user-data' | 'store-on-relay' | 'read-from-relay' | 'delete-from-relay' | 'serve-code'
    * @returns {{ allowed: boolean, suspended?: boolean, reason?: string }}
    */
   check (appKeyHex, tier, operation) {
@@ -64,7 +64,12 @@ export class PolicyGuard extends EventEmitter {
     }
 
     // User data operations: only allowed if tier is public
-    if (operation === 'replicate-user-data' || operation === 'store-on-relay') {
+    if (
+      operation === 'replicate-user-data' ||
+      operation === 'store-on-relay' ||
+      operation === 'read-from-relay' ||
+      operation === 'delete-from-relay'
+    ) {
       if (exposure !== 'full') {
         return this._suspend(appKeyHex, tier,
           `${tier} tier violation: user data must not reach relay (attempted: ${operation})`

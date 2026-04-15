@@ -26,6 +26,11 @@ function mockRelayNode () {
     async unseedApp () {},
     verifyUnseedRequest () { return { ok: true } },
     broadcastUnseed () {},
+    router: {
+      async dispatch () {
+        return { ok: true }
+      }
+    },
     serviceRegistry: null,
     reputation: null,
     networkDiscovery: null,
@@ -111,6 +116,42 @@ test('api-auth: POST /unseed without auth returns 401', async (t) => {
   })
   t.is(res.statusCode, 401, 'status is 401')
   t.ok(res.body.error, 'error message present')
+})
+
+test('api-auth: POST /api/v1/dispatch without auth returns 401', async (t) => {
+  const res = await request(port, 'POST', '/api/v1/dispatch', {
+    route: 'ai.infer',
+    params: { hello: 'world' }
+  })
+  t.is(res.statusCode, 401, 'status is 401')
+  t.ok(res.body.error, 'error message present')
+})
+
+test('api-auth: POST /registry/publish without auth returns 401', async (t) => {
+  const res = await request(port, 'POST', '/registry/publish', {
+    appKey: 'a'.repeat(64)
+  })
+  t.is(res.statusCode, 401, 'status is 401')
+  t.ok(res.body.error, 'error message present')
+})
+
+test('api-auth: POST /api/v1/dispatch local-only route allowed from localhost with auth', async (t) => {
+  const res = await request(port, 'POST', '/api/v1/dispatch', {
+    route: 'identity.sign',
+    params: { message: 'hello' }
+  }, {
+    Authorization: 'Bearer ' + API_KEY
+  })
+  t.is(res.statusCode, 200, 'status is 200')
+  t.ok(res.body.ok, 'dispatch succeeded for local-only localhost call')
+})
+
+test('api-auth: OPTIONS preflight denied by default when origin is not allowed', async (t) => {
+  const res = await request(port, 'OPTIONS', '/health', null, {
+    Origin: 'https://example.com'
+  })
+  t.is(res.statusCode, 403, 'status is 403')
+  t.ok(res.body.error.includes('CORS'), 'origin denied')
 })
 
 test('api-auth: GET /health without auth returns 200 (public endpoint)', async (t) => {

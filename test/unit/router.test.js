@@ -162,6 +162,57 @@ test('Router - context passed to handler', async (t) => {
   await router.stop()
 })
 
+test('Router - authenticated-user access policy enforced', async (t) => {
+  const router = new Router()
+  router.addRoute('secure.user', async () => 'ok', { access: 'authenticated-user' })
+  await router.start()
+
+  try {
+    await router.dispatch('secure.user', {})
+    t.fail('should require auth')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'))
+  }
+
+  const result = await router.dispatch('secure.user', {}, { authenticated: true, role: 'authenticated-user' })
+  t.is(result, 'ok')
+  await router.stop()
+})
+
+test('Router - relay-admin access policy enforced', async (t) => {
+  const router = new Router()
+  router.addRoute('secure.admin', async () => 'ok', { access: 'relay-admin' })
+  await router.start()
+
+  try {
+    await router.dispatch('secure.admin', {}, { role: 'authenticated-user', authenticated: true })
+    t.fail('should require relay-admin')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'))
+  }
+
+  const result = await router.dispatch('secure.admin', {}, { role: 'relay-admin', authenticated: true })
+  t.is(result, 'ok')
+  await router.stop()
+})
+
+test('Router - local-only access policy enforced', async (t) => {
+  const router = new Router()
+  router.addRoute('secure.local', async () => 'ok', { access: 'local-only' })
+  await router.start()
+
+  try {
+    await router.dispatch('secure.local', {}, { role: 'authenticated-user', authenticated: true })
+    t.fail('should require local')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'))
+  }
+
+  const result = await router.dispatch('secure.local', {}, { role: 'local', caller: 'local' })
+  t.is(result, 'ok')
+  await router.stop()
+})
+
 // --- PubSub Tests ---
 
 test('PubSub - subscribe and publish exact topic', async (t) => {
