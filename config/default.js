@@ -46,6 +46,7 @@ export default {
   apiPort: 9100,
   apiHost: '0.0.0.0',
   corsOrigins: [],
+  strictSeedingPrivacy: true,
 
   // Seeding registry
   registryKey: null, // null = create new autobase

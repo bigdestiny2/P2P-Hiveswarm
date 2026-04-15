@@ -1023,6 +1023,10 @@ export class RelayAPI extends EventEmitter {
       config.gatewayPublicOnlyPrivacyTier = body.gatewayPublicOnlyPrivacyTier !== false
       applied.push('gatewayPublicOnlyPrivacyTier')
     }
+    if (body.strictSeedingPrivacy !== undefined) {
+      config.strictSeedingPrivacy = body.strictSeedingPrivacy !== false
+      applied.push('strictSeedingPrivacy')
+    }
     if (body.requireSignedCatalog !== undefined) {
       config.requireSignedCatalog = body.requireSignedCatalog === true
       applied.push('requireSignedCatalog')
@@ -1272,6 +1276,7 @@ export class RelayAPI extends EventEmitter {
       requireSignedCatalog: c.requireSignedCatalog,
       catalogSignatureMaxAgeMs: c.catalogSignatureMaxAgeMs,
       catalogMaxAppAgeMs: c.catalogMaxAppAgeMs,
+      strictSeedingPrivacy: c.strictSeedingPrivacy,
       gatewayPublicOnlyPrivacyTier: c.gatewayPublicOnlyPrivacyTier,
       replicationCheckInterval: c.replicationCheckInterval,
       replicationRepairEnabled: c.replicationRepairEnabled,

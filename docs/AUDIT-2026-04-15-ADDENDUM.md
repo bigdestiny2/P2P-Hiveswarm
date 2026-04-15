@@ -12,7 +12,9 @@ Scope: changes after `da29316` in this working branch
 - Added integration coverage for cross-relay request replication.
 
 ### 2) Privacy tier/runtime enforcement
-- `seedApp` now enforces `PolicyGuard` `serve-code` checks before accepting seeded apps.
+- `seedApp` now enforces `PolicyGuard` on the relay data path:
+  - default mode uses `replicate-user-data` (strict fail-closed),
+  - optional operator override (`strictSeedingPrivacy=false`) relaxes to `serve-code`.
 - `privacyTier` is normalized/persisted in registry + app metadata paths.
 - Gateway now enforces `gatewayPublicOnlyPrivacyTier` (default on) and blocks non-public tiers via HTTP.
 
@@ -64,7 +66,7 @@ Scope: changes after `da29316` in this working branch
 - AI/compute safety: guardrails added, but not full OS/process-level tenant isolation.
 
 ### Still not production-strong claims
-- Payments/operator economics as reliable default behavior (still optional/backend dependent).
+- Payments/operator economics as reliable default behavior (still optional/backend dependent and explicitly marked experimental in runtime stats/warnings).
 - SLA/trust layer as buyer-grade production guarantee.
 
 ## Highest-Value Remaining Gaps

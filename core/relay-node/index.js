@@ -50,6 +50,7 @@ const DEFAULT_CONFIG = {
   apiPort: 9100,
   apiHost: '0.0.0.0',
   corsOrigins: [],
+  strictSeedingPrivacy: true,
   gatewayPublicOnlyPrivacyTier: true,
   requireSignedCatalog: false,
   catalogSignatureMaxAgeMs: 5 * 60 * 1000,
@@ -479,6 +480,13 @@ export class RelayNode extends EventEmitter {
             this.emit('settlement-error', { error: err })
           })
         }, interval)
+      } else if (this.config.payment && this.config.payment.enabled) {
+        this.emit('payment-warning', {
+          enabled: true,
+          active: false,
+          reason: 'payment.enabled is true but no paymentManager was provided',
+          experimental: true
+        })
       }
 
       // ─── Services Layer ─────────────────────────────────────────────
@@ -788,9 +796,13 @@ export class RelayNode extends EventEmitter {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
 
-    const privacyTier = String(opts.privacyTier || opts.tier || 'public').toLowerCase()
+    const rawTier = String(opts.privacyTier || opts.tier || 'public').toLowerCase()
+    const privacyTier = ['public', 'local-first', 'p2p-only'].includes(rawTier) ? rawTier : 'public'
     if (this.policyGuard) {
-      const policy = this.policyGuard.check(appKeyHex, privacyTier, 'serve-code')
+      const policyOperation = this.config.strictSeedingPrivacy !== false
+        ? 'replicate-user-data'
+        : 'serve-code'
+      const policy = this.policyGuard.check(appKeyHex, privacyTier, policyOperation)
       if (!policy.allowed) {
         throw new Error(`POLICY_VIOLATION: ${policy.reason}`)
       }
@@ -1086,6 +1098,12 @@ export class RelayNode extends EventEmitter {
         lastCheckedAt: this._lastReplicationCheckAt,
         repairEnabled: this.config.replicationRepairEnabled !== false
       },
+      payment: {
+        enabled: this.config.payment?.enabled === true,
+        active: !!this.paymentManager,
+        experimental: true,
+        settlementIntervalMs: this.config.payment?.settlementInterval || null
+      },
       accessControl: accessControlStats
     }
   }
@@ -1349,6 +1367,17 @@ export class RelayNode extends EventEmitter {
 
     for (const req of requests) {
       availableBytes = this.config.maxStorageBytes - (this.seeder.totalBytesStored || 0)
+      const reqTier = String(req.privacyTier || 'public').toLowerCase()
+
+      if (this.config.strictSeedingPrivacy !== false && reqTier !== 'public') {
+        this.emit('registry-skipped-policy', {
+          appKey: req.appKey,
+          privacyTier: reqTier,
+          reason: 'strictSeedingPrivacy blocks non-public tiers on relay data path'
+        })
+        continue
+      }
+
       // Skip if we already seed this app
       if (this.seededApps.has(req.appKey)) continue
 
@@ -1604,6 +1633,8 @@ export class RelayNode extends EventEmitter {
   async _attemptReplicationRepair (request, status) {
     if (!this.config.enableSeeding || !this.seeder || !this.seedingRegistry || !this.swarm) return false
     if (this.config.registryAutoAccept === false) return false
+    const reqTier = String(request.privacyTier || 'public').toLowerCase()
+    if (this.config.strictSeedingPrivacy !== false && reqTier !== 'public') return false
 
     const myPubkey = b4a.toString(this.swarm.keyPair.publicKey, 'hex')
     const alreadyAccepted = status.relays.some(r => r.relayPubkey === myPubkey)

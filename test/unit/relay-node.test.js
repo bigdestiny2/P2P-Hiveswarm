@@ -35,6 +35,7 @@ test('RelayNode - getStats returns expected shape', async (t) => {
   t.ok(typeof stats.connections === 'number')
   t.ok(stats.relay !== null)
   t.ok(stats.seeder !== null)
+  t.ok(stats.payment && stats.payment.experimental === true)
 
   await node.stop()
 })
@@ -102,4 +103,84 @@ test('RelayNode - replication health monitor attempts local repair', async (t) =
   t.is(seeded.length, 1, 'under-replicated app seeded locally')
   t.is(accepted.length, 1, 'acceptance recorded after repair')
   t.ok(node._replicationHealth.has(appKey), 'replication health entry recorded')
+})
+
+test('RelayNode - seedApp enforces strict replicate-user-data policy by default', async (t) => {
+  const node = new RelayNode({ storage: tmpStorage(), enableAPI: false })
+  node.seeder = { totalBytesStored: 0 }
+
+  let operation = null
+  node.policyGuard = {
+    check (_appKey, _tier, op) {
+      operation = op
+      return { allowed: false, reason: 'blocked by test policy' }
+    }
+  }
+
+  try {
+    await node.seedApp('c'.repeat(64), { privacyTier: 'local-first' })
+    t.fail('expected policy violation')
+  } catch (err) {
+    t.ok(err.message.includes('POLICY_VIOLATION'))
+  }
+  t.is(operation, 'replicate-user-data')
+})
+
+test('RelayNode - seedApp can use serve-code policy when strict mode disabled', async (t) => {
+  const node = new RelayNode({ storage: tmpStorage(), enableAPI: false })
+  node.seeder = { totalBytesStored: 0 }
+  node.config.strictSeedingPrivacy = false
+
+  let operation = null
+  node.policyGuard = {
+    check (_appKey, _tier, op) {
+      operation = op
+      return { allowed: false, reason: 'blocked by test policy' }
+    }
+  }
+
+  try {
+    await node.seedApp('d'.repeat(64), { privacyTier: 'local-first' })
+    t.fail('expected policy violation')
+  } catch (err) {
+    t.ok(err.message.includes('POLICY_VIOLATION'))
+  }
+  t.is(operation, 'serve-code')
+})
+
+test('RelayNode - replication repair skips non-public tiers in strict privacy mode', async (t) => {
+  const node = new RelayNode({ storage: tmpStorage(), enableAPI: false, enableServices: false })
+  const appKey = 'e'.repeat(64)
+  const seeded = []
+
+  node.swarm = { keyPair: { publicKey: randomBytes(32) } }
+  node.seeder = { totalBytesStored: 0 }
+  node.config.enableSeeding = true
+  node.config.registryAutoAccept = true
+  node.config.replicationRepairEnabled = true
+  node.config.strictSeedingPrivacy = true
+
+  node.seedingRegistry = {
+    async getActiveRequests () {
+      return [{
+        appKey,
+        replicationFactor: 2,
+        maxStorageBytes: 0,
+        publisherPubkey: 'f'.repeat(64),
+        privacyTier: 'local-first'
+      }]
+    },
+    async getRelaysForApp () { return [] },
+    async recordAcceptance () {}
+  }
+
+  node.seedApp = async (key) => {
+    seeded.push(key)
+    return { discoveryKey: 'a'.repeat(64) }
+  }
+
+  await node._checkReplicationHealth()
+
+  t.is(seeded.length, 0, 'non-public tier request not auto-repaired in strict mode')
+  t.ok(node._replicationHealth.has(appKey), 'health still tracked for skipped request')
 })
