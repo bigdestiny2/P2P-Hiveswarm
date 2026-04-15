@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url'
 import { EventEmitter } from 'events'
 import { DashboardFeed } from './ws-feed.js'
 import { HyperGateway } from '../../compute/gateway/hyper-gateway.js'
-import { isValidHexKey } from '../constants.js'
+import { isValidHexKey, normalizePrivacyTier } from '../constants.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -30,6 +30,8 @@ const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
 
 const MAX_DISCOVERY_KEYS = 100
+const PRIVACY_TIER_ERROR = 'privacyTier must be one of: public, local-first, p2p-only'
+const MANAGEMENT_AUTH_ERROR = 'Unauthorized — management API requires API key or localhost access'
 const LOCAL_ONLY_DISPATCH_ROUTES = new Set([
   'identity.sign',
   'identity.verify'
@@ -131,6 +133,16 @@ export class RelayAPI extends EventEmitter {
   _isLocalRequest (req) {
     const ip = req.socket.remoteAddress || ''
     return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+  }
+
+  _requireAuth (req, res, errorMessage) {
+    if (this._checkAuth(req)) return true
+    this._json(res, { error: errorMessage }, 401)
+    return false
+  }
+
+  _readPrivacyTier (value, fallback = 'public') {
+    return normalizePrivacyTier(value, fallback)
   }
 
   async _handle (req, res) {
@@ -409,9 +421,7 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/api/registry/pending') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /api/registry/pending' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /api/registry/pending')) return
           const pending = []
           for (const [appKey, entry] of this.node._pendingRequests) {
             pending.push({ appKey, ...entry })
@@ -420,9 +430,7 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/api/registry') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /api/registry' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /api/registry')) return
           if (!this.node.seedingRegistry) {
             return this._json(res, { error: 'Registry not running' }, 503)
           }
@@ -498,9 +506,7 @@ export class RelayAPI extends EventEmitter {
       }
 
       if (req.method === 'POST' && path === '/api/v1/dispatch') {
-        if (!this._checkAuth(req)) {
-          return this._json(res, { error: 'Unauthorized — API key required for /api/v1/dispatch' }, 401)
-        }
+        if (!this._requireAuth(req, res, 'Unauthorized — API key required for /api/v1/dispatch')) return
         if (!this.node.router) {
           return this._json(res, { error: 'Router not enabled' }, 503)
         }
@@ -538,20 +544,16 @@ export class RelayAPI extends EventEmitter {
         const body = await this._readBody(req)
 
         if (path === '/seed') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /seed' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /seed')) return
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           const seedOpts = body.opts || {}
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
           if (body.version && typeof body.version === 'string') seedOpts.version = body.version
-          if (body.privacyTier && typeof body.privacyTier === 'string') {
-            const tier = body.privacyTier.toLowerCase()
-            if (!['public', 'local-first', 'p2p-only'].includes(tier)) {
-              return this._json(res, { error: 'privacyTier must be one of: public, local-first, p2p-only' }, 400)
-            }
+          if (body.privacyTier !== undefined) {
+            const tier = this._readPrivacyTier(body.privacyTier, null)
+            if (!tier) return this._json(res, { error: PRIVACY_TIER_ERROR }, 400)
             seedOpts.privacyTier = tier
           }
           const result = await this.node.seedApp(body.appKey, seedOpts)
@@ -559,9 +561,7 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/publish') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /registry/publish' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /registry/publish')) return
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -574,10 +574,10 @@ export class RelayAPI extends EventEmitter {
             if (!isValidHexKey(dk, 64)) return this._json(res, { error: 'Each discoveryKey must be 64 hex characters' }, 400)
           }
 
-          const privacyTier = body.privacyTier ? String(body.privacyTier).toLowerCase() : 'public'
-          if (!['public', 'local-first', 'p2p-only'].includes(privacyTier)) {
-            return this._json(res, { error: 'privacyTier must be one of: public, local-first, p2p-only' }, 400)
-          }
+          const privacyTier = body.privacyTier === undefined
+            ? 'public'
+            : this._readPrivacyTier(body.privacyTier, null)
+          if (!privacyTier) return this._json(res, { error: PRIVACY_TIER_ERROR }, 400)
 
           let appKeyBuf, dkBufs
           try {
@@ -604,17 +604,13 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/auto-accept') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /registry/auto-accept' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /registry/auto-accept')) return
           this.node.config.registryAutoAccept = body.enabled !== false
           return this._json(res, { ok: true, autoAccept: this.node.config.registryAutoAccept })
         }
 
         if (path === '/registry/approve') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /registry/approve' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /registry/approve')) return
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.approveRequest(body.appKey)
@@ -622,9 +618,7 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/reject') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /registry/reject' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /registry/reject')) return
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           this.node.rejectRequest(body.appKey)
@@ -632,9 +626,7 @@ export class RelayAPI extends EventEmitter {
         }
 
         if (path === '/registry/cancel') {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /registry/cancel' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /registry/cancel')) return
           if (!this.node.seedingRegistry) return this._json(res, { error: 'Registry not running' }, 503)
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
@@ -645,9 +637,7 @@ export class RelayAPI extends EventEmitter {
 
         if (path === '/unseed') {
           // Operator unseed — requires API key (use /api/v1/unseed for developer-signed unseed)
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — API key required for /unseed (use /api/v1/unseed for developer-signed unseed)' }, 401)
-          }
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /unseed (use /api/v1/unseed for developer-signed unseed)')) return
           if (!body.appKey) return this._json(res, { error: 'appKey required' }, 400)
           if (!isValidHexKey(body.appKey, 64)) return this._json(res, { error: 'appKey must be 64 hex characters' }, 400)
           await this.node.unseedApp(body.appKey)
@@ -680,9 +670,7 @@ export class RelayAPI extends EventEmitter {
         // ─── Live Management API (requires API key or localhost) ─────
 
         if (path.startsWith('/api/manage/')) {
-          if (!this._checkAuth(req)) {
-            return this._json(res, { error: 'Unauthorized — management API requires API key or localhost access' }, 401)
-          }
+          if (!this._requireAuth(req, res, MANAGEMENT_AUTH_ERROR)) return
         }
 
         if (path === '/api/manage/config') {
@@ -738,9 +726,7 @@ export class RelayAPI extends EventEmitter {
 
       // GET — Management info endpoints (require auth)
       if (req.method === 'GET') {
-        if (path.startsWith('/api/manage/') && !this._checkAuth(req)) {
-          return this._json(res, { error: 'Unauthorized — management API requires API key or localhost access' }, 401)
-        }
+        if (path.startsWith('/api/manage/') && !this._requireAuth(req, res, MANAGEMENT_AUTH_ERROR)) return
 
         if (path === '/api/manage/config') {
           return this._json(res, {

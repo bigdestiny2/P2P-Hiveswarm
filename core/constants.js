@@ -18,6 +18,27 @@ import sodium from 'sodium-universal'
 const RELAY_DISCOVERY_TOPIC = b4a.alloc(32)
 sodium.crypto_generichash(RELAY_DISCOVERY_TOPIC, b4a.from('hiverelay-discovery-v1'))
 
+// ─── Privacy tiers ───────────────────────────────────────────
+
+/**
+ * Supported relay privacy tiers for app data paths.
+ */
+const PRIVACY_TIERS = new Set(['public', 'local-first', 'p2p-only'])
+
+/**
+ * Normalize a privacy tier string.
+ * Returns fallback when missing/invalid.
+ *
+ * @param {*} tier
+ * @param {string|null} [fallback='public']
+ * @returns {string|null}
+ */
+function normalizePrivacyTier (tier, fallback = 'public') {
+  if (tier === undefined || tier === null || tier === '') return fallback
+  const normalized = String(tier).toLowerCase()
+  return PRIVACY_TIERS.has(normalized) ? normalized : fallback
+}
+
 // ─── Validation ──────────────────────────────────────────────
 
 /**
@@ -66,6 +87,8 @@ function uint64ToBuffer (n) {
 
 export {
   RELAY_DISCOVERY_TOPIC,
+  PRIVACY_TIERS,
+  normalizePrivacyTier,
   isValidHexKey,
   compareVersions,
   uint64ToBuffer

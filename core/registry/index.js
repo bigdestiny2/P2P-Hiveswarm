@@ -10,6 +10,7 @@ import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import Protomux from 'protomux'
 import { EventEmitter } from 'events'
+import { isValidHexKey, normalizePrivacyTier } from '../constants.js'
 
 // Well-known topic for registry discovery
 const REGISTRY_TOPIC = b4a.alloc(32)
@@ -144,7 +145,7 @@ export class SeedingRegistry extends EventEmitter {
     if (!msg || msg.type === -1) return
     if (msg.type !== MSG_ANNOUNCE_LOG) return
     if (!msg.logKey || typeof msg.logKey !== 'string') return
-    if (!/^[0-9a-f]{64}$/i.test(msg.logKey)) return
+    if (!isValidHexKey(msg.logKey, 64)) return
 
     const peerPubkey = msg.peerPubkey || (
       info?.publicKey ? b4a.toString(info.publicKey, 'hex') : null
@@ -268,7 +269,7 @@ export class SeedingRegistry extends EventEmitter {
    * Publish a seed request to the registry
    */
   async publishRequest (request) {
-    const privacyTier = String(request.privacyTier || 'public').toLowerCase()
+    const privacyTier = normalizePrivacyTier(request.privacyTier, 'public')
     const entry = {
       type: 'seed-request',
       timestamp: Date.now(),
@@ -279,7 +280,7 @@ export class SeedingRegistry extends EventEmitter {
       maxStorageBytes: request.maxStorageBytes || 0,
       bountyRate: request.bountyRate || 0,
       ttlSeconds: request.ttlSeconds || 30 * 24 * 3600, // 30 days default
-      privacyTier: ['public', 'local-first', 'p2p-only'].includes(privacyTier) ? privacyTier : 'public',
+      privacyTier,
       publisherPubkey: b4a.toString(request.publisherPubkey, 'hex')
     }
 

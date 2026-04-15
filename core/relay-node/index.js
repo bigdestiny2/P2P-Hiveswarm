@@ -33,7 +33,7 @@ import {
 import { PluginLoader } from '../plugin-loader.js'
 import { Router } from '../router/index.js'
 import { AppRegistry } from '../app-registry.js'
-import { RELAY_DISCOVERY_TOPIC } from '../constants.js'
+import { RELAY_DISCOVERY_TOPIC, isValidHexKey, normalizePrivacyTier } from '../constants.js'
 import { PolicyGuard } from '../policy-guard.js'
 
 const DEFAULT_CONFIG = {
@@ -152,10 +152,6 @@ function buildConfig (mode, opts) {
       ...(opts.pairing || {})
     }
   }
-}
-
-function isValidHexKey (hex) {
-  return typeof hex === 'string' && hex.length === 64 && /^[0-9a-f]+$/i.test(hex)
 }
 
 function withTimeout (promise, ms, label) {
@@ -796,8 +792,7 @@ export class RelayNode extends EventEmitter {
     if (!this.seeder) throw new Error('Seeding not enabled')
     if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
 
-    const rawTier = String(opts.privacyTier || opts.tier || 'public').toLowerCase()
-    const privacyTier = ['public', 'local-first', 'p2p-only'].includes(rawTier) ? rawTier : 'public'
+    const privacyTier = normalizePrivacyTier(opts.privacyTier || opts.tier, 'public')
     if (this.policyGuard) {
       const policyOperation = this.config.strictSeedingPrivacy !== false
         ? 'replicate-user-data'
@@ -1367,7 +1362,7 @@ export class RelayNode extends EventEmitter {
 
     for (const req of requests) {
       availableBytes = this.config.maxStorageBytes - (this.seeder.totalBytesStored || 0)
-      const reqTier = String(req.privacyTier || 'public').toLowerCase()
+      const reqTier = normalizePrivacyTier(req.privacyTier, 'public')
 
       if (this.config.strictSeedingPrivacy !== false && reqTier !== 'public') {
         this.emit('registry-skipped-policy', {
@@ -1633,7 +1628,7 @@ export class RelayNode extends EventEmitter {
   async _attemptReplicationRepair (request, status) {
     if (!this.config.enableSeeding || !this.seeder || !this.seedingRegistry || !this.swarm) return false
     if (this.config.registryAutoAccept === false) return false
-    const reqTier = String(request.privacyTier || 'public').toLowerCase()
+    const reqTier = normalizePrivacyTier(request.privacyTier, 'public')
     if (this.config.strictSeedingPrivacy !== false && reqTier !== 'public') return false
 
     const myPubkey = b4a.toString(this.swarm.keyPair.publicKey, 'hex')
