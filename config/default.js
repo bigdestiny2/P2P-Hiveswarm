@@ -44,11 +44,36 @@ export default {
   enableMetrics: true,
   enableAPI: true,
   apiPort: 9100,
+  apiHost: '0.0.0.0',
+  corsOrigins: [],
 
   // Seeding registry
   registryKey: null, // null = create new autobase
   registryScanInterval: 60_000, // 1 minute
   registryAutoAccept: true, // Auto-accept matching seed requests (false = approval mode)
+  targetReplicaFloor: 2,
+  replicationCheckInterval: 60_000,
+  replicationRepairEnabled: true,
+
+  // Catalog and gateway trust policy
+  gatewayPublicOnlyPrivacyTier: true,
+  requireSignedCatalog: false,
+  catalogSignatureMaxAgeMs: 5 * 60 * 1000,
+  catalogMaxAppAgeMs: 30 * 24 * 60 * 60 * 1000,
+
+  // Discovery / access mode controls
+  discovery: {
+    dht: true,
+    announce: true,
+    mdns: false
+  },
+  access: {
+    open: true,
+    allowlist: []
+  },
+  pairing: {
+    enabled: false
+  },
 
   // Regions
   regions: [], // Empty = accept from all regions

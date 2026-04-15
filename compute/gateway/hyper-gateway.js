@@ -145,7 +145,7 @@ export class HyperGateway extends EventEmitter {
   _withTimeout (promise, ms, context) {
     return Promise.race([
       promise,
-      new Promise((_, reject) =>
+      new Promise((_resolve, reject) =>
         setTimeout(() => reject(new Error(`${context} timed out after ${ms}ms`)), ms)
       )
     ])
@@ -244,6 +244,30 @@ export class HyperGateway extends EventEmitter {
         hint: 'Use PearBrowser or Hyperswarm to access this app with the encryption key'
       }))
       return
+    }
+
+    const privacyTier = String(appEntry?.privacyTier || 'public').toLowerCase()
+    if (this.node.config?.gatewayPublicOnlyPrivacyTier !== false && privacyTier !== 'public') {
+      res.writeHead(403)
+      res.end(JSON.stringify({
+        error: 'Gateway access blocked by privacy tier policy',
+        privacyTier,
+        hint: 'Use direct P2P access for non-public apps'
+      }))
+      return
+    }
+
+    if (this.node.policyGuard && appEntry) {
+      const policy = this.node.policyGuard.check(keyHex, privacyTier, 'serve-code')
+      if (!policy.allowed) {
+        res.writeHead(403)
+        res.end(JSON.stringify({
+          error: 'PolicyGuard blocked this app',
+          privacyTier,
+          reason: policy.reason
+        }))
+        return
+      }
     }
 
     this._totalRequests++
@@ -376,7 +400,7 @@ export class HyperGateway extends EventEmitter {
         try {
           await Promise.race([
             drive.update({ wait: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
+            new Promise((_resolve, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ])
         } catch (err) {
           this.emit('drive-wait-error', { key: keyHex, error: err.message })

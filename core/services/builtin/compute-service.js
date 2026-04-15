@@ -32,8 +32,12 @@ export class ComputeService extends ServiceProvider {
   constructor (opts = {}) {
     super()
     this.jobs = new Map() // jobId -> Job
-    this.maxJobs = opts.maxJobs || 1000
-    this.maxConcurrent = opts.maxConcurrent || 4
+    this.maxJobs = opts.maxJobs ?? 1000
+    this.maxJobsPerCaller = opts.maxJobsPerCaller ?? 100
+    this.maxConcurrent = opts.maxConcurrent ?? 4
+    this.maxInputBytes = opts.maxInputBytes ?? 256 * 1024
+    this.maxResultBytes = opts.maxResultBytes ?? 512 * 1024
+    this.maxExecutionMs = opts.maxExecutionMs ?? 30_000
     this.handlers = new Map() // taskType -> handler function
     this._running = 0
     this._queue = [] // pending job IDs
@@ -56,7 +60,7 @@ export class ComputeService extends ServiceProvider {
     this.handlers.set(taskType, handler)
   }
 
-  async submit (params) {
+  async submit (params, context = {}) {
     if (this.jobs.size >= this.maxJobs) {
       throw new Error('JOB_LIMIT: max jobs reached')
     }
@@ -65,6 +69,13 @@ export class ComputeService extends ServiceProvider {
     if (!this.handlers.has(type)) {
       throw new Error(`UNKNOWN_TASK_TYPE: ${type}`)
     }
+
+    const owner = this._callerKey(context)
+    if (this._countActiveJobs(owner) >= this.maxJobsPerCaller) {
+      throw new Error('CALLER_JOB_LIMIT: too many active jobs for this caller')
+    }
+
+    this._assertSizeLimit(input, this.maxInputBytes, 'JOB_INPUT_TOO_LARGE')
 
     const jobId = randomBytes(16).toString('hex')
     const job = {
@@ -75,6 +86,7 @@ export class ComputeService extends ServiceProvider {
       state: JOB_STATES.PENDING,
       result: null,
       error: null,
+      owner,
       createdAt: Date.now(),
       startedAt: null,
       completedAt: null
@@ -87,9 +99,10 @@ export class ComputeService extends ServiceProvider {
     return { jobId, state: job.state }
   }
 
-  async status (params) {
+  async status (params, context = {}) {
     const job = this.jobs.get(params.jobId)
     if (!job) throw new Error('JOB_NOT_FOUND')
+    this._assertCanAccess(job, context)
     return {
       jobId: job.id,
       state: job.state,
@@ -99,9 +112,10 @@ export class ComputeService extends ServiceProvider {
     }
   }
 
-  async result (params) {
+  async result (params, context = {}) {
     const job = this.jobs.get(params.jobId)
     if (!job) throw new Error('JOB_NOT_FOUND')
+    this._assertCanAccess(job, context)
     if (job.state === JOB_STATES.PENDING || job.state === JOB_STATES.RUNNING) {
       return { jobId: job.id, state: job.state, ready: false }
     }
@@ -114,9 +128,10 @@ export class ComputeService extends ServiceProvider {
     }
   }
 
-  async cancel (params) {
+  async cancel (params, context = {}) {
     const job = this.jobs.get(params.jobId)
     if (!job) throw new Error('JOB_NOT_FOUND')
+    this._assertCanAccess(job, context)
     if (job.state === JOB_STATES.COMPLETE || job.state === JOB_STATES.FAILED) {
       return { jobId: job.id, cancelled: false, reason: 'already finished' }
     }
@@ -128,9 +143,12 @@ export class ComputeService extends ServiceProvider {
     return { jobId: job.id, cancelled: true }
   }
 
-  async list () {
+  async list (_params = {}, context = {}) {
     const jobs = []
+    const caller = this._callerKey(context)
+    const canSeeAll = this._isAdminContext(context)
     for (const [, job] of this.jobs) {
+      if (!canSeeAll && job.owner !== caller) continue
       jobs.push({
         jobId: job.id,
         type: job.type,
@@ -146,6 +164,10 @@ export class ComputeService extends ServiceProvider {
       taskTypes: [...this.handlers.keys()],
       maxConcurrent: this.maxConcurrent,
       maxJobs: this.maxJobs,
+      maxJobsPerCaller: this.maxJobsPerCaller,
+      maxInputBytes: this.maxInputBytes,
+      maxResultBytes: this.maxResultBytes,
+      maxExecutionMs: this.maxExecutionMs,
       currentJobs: this.jobs.size,
       runningJobs: this._running
     }
@@ -163,8 +185,12 @@ export class ComputeService extends ServiceProvider {
 
       const handler = this.handlers.get(job.type)
       Promise.resolve()
-        .then(() => handler(job.input))
+        .then(() => Promise.race([
+          Promise.resolve().then(() => handler(job.input)),
+          new Promise((_resolve, reject) => setTimeout(() => reject(new Error('JOB_TIMEOUT')), this.maxExecutionMs))
+        ]))
         .then(result => {
+          this._assertSizeLimit(result, this.maxResultBytes, 'JOB_RESULT_TOO_LARGE')
           job.state = JOB_STATES.COMPLETE
           job.result = result
           job.completedAt = Date.now()
@@ -192,5 +218,44 @@ export class ComputeService extends ServiceProvider {
     }
     this._queue = []
     this.jobs.clear()
+  }
+
+  _callerKey (context = {}) {
+    if (context.remotePubkey) return context.remotePubkey
+    if (context.userId) return context.userId
+    if (context.caller === 'local' || context.role === 'local') return 'local'
+    return 'anonymous'
+  }
+
+  _isAdminContext (context = {}) {
+    return context.role === 'relay-admin' || context.role === 'local' || context.caller === 'local'
+  }
+
+  _assertCanAccess (job, context = {}) {
+    if (this._isAdminContext(context)) return
+    if (job.owner === this._callerKey(context)) return
+    throw new Error('ACCESS_DENIED: job owned by another caller')
+  }
+
+  _countActiveJobs (owner) {
+    let total = 0
+    for (const [, job] of this.jobs) {
+      if (job.owner !== owner) continue
+      if (job.state === JOB_STATES.PENDING || job.state === JOB_STATES.RUNNING) total++
+    }
+    return total
+  }
+
+  _assertSizeLimit (value, limit, code) {
+    if (!limit || limit <= 0) return
+    let size = 0
+    try {
+      size = Buffer.byteLength(JSON.stringify(value || null))
+    } catch {
+      throw new Error(`${code}: payload is not serializable`)
+    }
+    if (size > limit) {
+      throw new Error(`${code}: payload exceeds ${limit} bytes`)
+    }
   }
 }

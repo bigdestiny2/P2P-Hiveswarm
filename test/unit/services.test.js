@@ -366,6 +366,41 @@ test('ComputeService - concurrent job execution', async (t) => {
   t.is(maxRunning, 2, 'max 2 concurrent jobs')
 })
 
+test('ComputeService - enforces job ownership between callers', async (t) => {
+  const svc = new ComputeService()
+  svc.registerHandler('double', (input) => ({ value: input.value * 2 }))
+
+  const { jobId } = await svc.submit({ type: 'double', input: { value: 5 } }, { remotePubkey: 'peer-a' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const ownerResult = await svc.result({ jobId }, { remotePubkey: 'peer-a' })
+  t.is(ownerResult.result.value, 10, 'owner can read result')
+
+  try {
+    await svc.result({ jobId }, { remotePubkey: 'peer-b' })
+    t.fail('expected access denied for other caller')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'))
+  }
+
+  const adminResult = await svc.result({ jobId }, { role: 'relay-admin', authenticated: true })
+  t.is(adminResult.result.value, 10, 'relay admin can read any result')
+})
+
+test('ComputeService - per-caller active job limit', async (t) => {
+  const svc = new ComputeService({ maxConcurrent: 0, maxJobsPerCaller: 1 })
+  svc.registerHandler('noop', () => ({}))
+
+  await svc.submit({ type: 'noop', input: {} }, { remotePubkey: 'peer-a' })
+
+  try {
+    await svc.submit({ type: 'noop', input: {} }, { remotePubkey: 'peer-a' })
+    t.fail('should reject second active job for same caller')
+  } catch (err) {
+    t.ok(err.message.includes('CALLER_JOB_LIMIT'))
+  }
+})
+
 // ─── ZKService tests (secp256k1 EC-based) ──────────────────────────
 
 test('ZKService - manifest v2', async (t) => {
@@ -687,7 +722,7 @@ test('AIService - queue full', async (t) => {
   const svc = new AIService({ maxQueue: 1, maxConcurrent: 0 })
   await svc['register-model']({ modelId: 'slow', type: 'llm' })
   svc.registerHandler('slow', async () => {
-    await new Promise(r => setTimeout(r, 10000))
+    await new Promise(resolve => setTimeout(resolve, 10000))
   })
 
   await svc.infer({ modelId: 'slow', input: 'a' })
@@ -697,5 +732,34 @@ test('AIService - queue full', async (t) => {
     t.fail('should throw')
   } catch (err) {
     t.ok(err.message.includes('AI_QUEUE_FULL'))
+  }
+})
+
+test('AIService - model registration requires admin context', async (t) => {
+  const svc = new AIService()
+
+  try {
+    await svc['register-model']({ modelId: 'locked', type: 'llm' }, { remotePubkey: 'peer-a', role: 'authenticated-user' })
+    t.fail('non-admin should not register models')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'))
+  }
+
+  const ok = await svc['register-model']({ modelId: 'admin-model', type: 'llm' }, { role: 'relay-admin' })
+  t.is(ok.registered, true, 'admin can register model')
+})
+
+test('AIService - per-caller queue limit', async (t) => {
+  const svc = new AIService({ maxConcurrent: 0, maxJobsPerCaller: 1 })
+  await svc['register-model']({ modelId: 'q', type: 'llm' }, { role: 'relay-admin' })
+  svc.registerHandler('q', async () => ({ text: 'ok' }))
+
+  await svc.infer({ modelId: 'q', input: 'one' }, { remotePubkey: 'peer-a' })
+
+  try {
+    await svc.infer({ modelId: 'q', input: 'two' }, { remotePubkey: 'peer-a' })
+    t.fail('should reject second queued job for same caller')
+  } catch (err) {
+    t.ok(err.message.includes('AI_CALLER_QUEUE_FULL'))
   }
 })

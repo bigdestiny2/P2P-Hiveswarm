@@ -37,8 +37,12 @@ export class AIService extends ServiceProvider {
     super()
     this.models = new Map() // modelId -> ModelEntry
     this.jobs = new Map() // jobId -> InferenceJob
-    this.maxQueue = opts.maxQueue || 100
-    this.maxConcurrent = opts.maxConcurrent || 2
+    this.maxQueue = opts.maxQueue ?? 100
+    this.maxJobsPerCaller = opts.maxJobsPerCaller ?? 20
+    this.maxConcurrent = opts.maxConcurrent ?? 2
+    this.maxInputBytes = opts.maxInputBytes ?? 256 * 1024
+    this.maxOutputBytes = opts.maxOutputBytes ?? 512 * 1024
+    this.allowRemoteModelRegistration = opts.allowRemoteModelRegistration === true
     this._running = 0
     this._queue = []
   }
@@ -61,7 +65,11 @@ export class AIService extends ServiceProvider {
    *   endpoint: HTTP URL for remote model (e.g., http://localhost:11434/api/generate)
    *   handler: async function for local/custom inference
    */
-  async 'register-model' (params) {
+  async 'register-model' (params, context = {}) {
+    if (!this._isAdminContext(context) && !this.allowRemoteModelRegistration) {
+      throw new Error('ACCESS_DENIED: model registration requires relay-admin/local context')
+    }
+
     const { modelId, type, endpoint, config } = params
     if (!modelId || !type) throw new Error('AI_MISSING_PARAMS: need modelId and type')
 
@@ -105,7 +113,10 @@ export class AIService extends ServiceProvider {
     entry.handler = handler
   }
 
-  async 'remove-model' (params) {
+  async 'remove-model' (params, context = {}) {
+    if (!this._isAdminContext(context) && !this.allowRemoteModelRegistration) {
+      throw new Error('ACCESS_DENIED: model removal requires relay-admin/local context')
+    }
     const removed = this.models.delete(params.modelId)
     return { modelId: params.modelId, removed }
   }
@@ -127,7 +138,7 @@ export class AIService extends ServiceProvider {
   /**
    * Run inference on a model.
    */
-  async infer (params) {
+  async infer (params, context = {}) {
     const { modelId, input, options } = params
     if (!modelId || input === undefined) {
       throw new Error('AI_MISSING_PARAMS: need modelId and input')
@@ -136,8 +147,15 @@ export class AIService extends ServiceProvider {
     const model = this.models.get(modelId)
     if (!model) throw new Error(`AI_MODEL_NOT_FOUND: ${modelId}`)
 
-    if (this.jobs.size >= this.maxQueue) {
+    this._assertSizeLimit(input, this.maxInputBytes, 'AI_INPUT_TOO_LARGE')
+
+    if (this._countActiveJobs() >= this.maxQueue) {
       throw new Error('AI_QUEUE_FULL')
+    }
+
+    const owner = this._callerKey(context)
+    if (this._countActiveJobs(owner) >= this.maxJobsPerCaller) {
+      throw new Error('AI_CALLER_QUEUE_FULL')
     }
 
     const jobId = randomBytes(16).toString('hex')
@@ -146,6 +164,7 @@ export class AIService extends ServiceProvider {
       modelId,
       input,
       options: options || {},
+      owner,
       state: JOB_STATES.PENDING,
       result: null,
       error: null,
@@ -173,9 +192,10 @@ export class AIService extends ServiceProvider {
   /**
    * Generate embeddings.
    */
-  async embed (params) {
+  async embed (params, context = {}) {
     const { modelId, input } = params
     if (!modelId || !input) throw new Error('AI_MISSING_PARAMS: need modelId and input')
+    this._assertSizeLimit(input, this.maxInputBytes, 'AI_INPUT_TOO_LARGE')
 
     const model = this.models.get(modelId)
     if (!model) throw new Error(`AI_MODEL_NOT_FOUND: ${modelId}`)
@@ -188,12 +208,19 @@ export class AIService extends ServiceProvider {
     let result
 
     if (model.handler) {
-      result = await model.handler({ type: 'embed', input, options: params.options || {} })
+      result = await model.handler({
+        type: 'embed',
+        input,
+        options: params.options || {},
+        context
+      })
     } else if (model.endpoint) {
       result = await this._httpInfer(model, { type: 'embed', input })
     } else {
       throw new Error('AI_NO_BACKEND: model has no handler or endpoint')
     }
+
+    this._assertSizeLimit(result, this.maxOutputBytes, 'AI_OUTPUT_TOO_LARGE')
 
     model.stats.requests++
     model.stats.totalLatencyMs += Date.now() - startTime
@@ -238,6 +265,7 @@ export class AIService extends ServiceProvider {
         throw new Error('AI_NO_BACKEND: model has no handler or endpoint')
       }
 
+      this._assertSizeLimit(result, this.maxOutputBytes, 'AI_OUTPUT_TOO_LARGE')
       job.state = JOB_STATES.COMPLETE
       job.result = result
       job.completedAt = Date.now()
@@ -393,5 +421,39 @@ export class AIService extends ServiceProvider {
     }
     this._queue = []
     this.jobs.clear()
+  }
+
+  _callerKey (context = {}) {
+    if (context.remotePubkey) return context.remotePubkey
+    if (context.userId) return context.userId
+    if (context.caller === 'local' || context.role === 'local') return 'local'
+    return 'anonymous'
+  }
+
+  _isAdminContext (context = {}) {
+    if (!context || Object.keys(context).length === 0) return true
+    return context.role === 'relay-admin' || context.role === 'local' || context.caller === 'local'
+  }
+
+  _countActiveJobs (owner = null) {
+    let total = 0
+    for (const [, job] of this.jobs) {
+      if (owner && job.owner !== owner) continue
+      if (job.state === JOB_STATES.PENDING || job.state === JOB_STATES.RUNNING) total++
+    }
+    return total
+  }
+
+  _assertSizeLimit (value, limit, code) {
+    if (!limit || limit <= 0) return
+    let size = 0
+    try {
+      size = Buffer.byteLength(JSON.stringify(value || null))
+    } catch {
+      throw new Error(`${code}: payload is not serializable`)
+    }
+    if (size > limit) {
+      throw new Error(`${code}: payload exceeds ${limit} bytes`)
+    }
   }
 }

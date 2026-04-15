@@ -1,6 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
+import { ServiceProtocol } from '../../core/services/protocol.js'
 
 // ─── Test 1 & 2: Service protocol message decoding ────────────────────────
 // We test the decode function directly from the ServiceProtocol encoding.
@@ -135,4 +136,59 @@ test('protocol-security: unseed replay detection drops duplicate signature', asy
   const second = handleUnseed(msg, 'peer-b')
   t.is(second, false, 'duplicate unseed request dropped')
   t.is(received.length, 1, 'still only one request recorded')
+})
+
+test('protocol-security: app catalog envelope fields are preserved', async (t) => {
+  const registry = {
+    catalog () { return [] },
+    addRemoteServices () {},
+    handleRequest: async () => ({ ok: true })
+  }
+  const proto = new ServiceProtocol(registry)
+  proto._getCatalogEnvelope = () => ({
+    apps: [{ appKey: 'a'.repeat(64), version: '1.0.0' }],
+    relayPubkey: 'b'.repeat(64),
+    catalogTimestamp: 123456,
+    signature: 'c'.repeat(128)
+  })
+
+  const msg = proto._buildCatalogMessage()
+  t.is(msg.type, 7)
+  t.is(msg.apps.length, 1)
+  t.is(msg.relayPubkey, 'b'.repeat(64))
+  t.is(msg.catalogTimestamp, 123456)
+  t.is(msg.signature, 'c'.repeat(128))
+})
+
+test('protocol-security: restricted local methods blocked while compute submit allowed', async (t) => {
+  const sent = []
+  const registry = {
+    catalog () { return [] },
+    addRemoteServices () {},
+    handleRequest: async () => ({ ok: true })
+  }
+  const proto = new ServiceProtocol(registry)
+  proto.router = {
+    dispatch: async () => ({ ok: true })
+  }
+  proto.channels.set('peer', {
+    channel: { opened: true },
+    msgHandler: { send: (msg) => sent.push(msg) }
+  })
+
+  await proto._handleRequest('peer', {
+    id: 1,
+    service: 'identity',
+    method: 'sign',
+    params: { payload: 'x' }
+  })
+  t.ok(sent[0].error.includes('ACCESS_DENIED'), 'identity.sign is blocked')
+
+  await proto._handleRequest('peer', {
+    id: 2,
+    service: 'compute',
+    method: 'submit',
+    params: { type: 'noop', input: {} }
+  })
+  t.alike(sent[1].result, { ok: true }, 'compute.submit passes to router')
 })

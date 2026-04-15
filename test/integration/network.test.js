@@ -20,6 +20,15 @@ function createNode (testnet, overrides = {}) {
   })
 }
 
+async function waitFor (fn, timeoutMs = 15000, intervalMs = 200) {
+  const start = Date.now()
+  while ((Date.now() - start) < timeoutMs) {
+    if (await fn()) return true
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  return false
+}
+
 // ─── Two-node discovery ────────────────────────────────────────────
 
 test('integration: two nodes discover each other via DHT', async (t) => {
@@ -133,6 +142,51 @@ test('integration: seedApp makes Hyperdrive available to other nodes', async (t)
   }
   t.ok(content, 'seeder downloaded the file')
   t.ok(b4a.equals(content, b4a.from('HiveRelay test file')), 'file content matches')
+})
+
+test('integration: seeding registry requests replicate across relays', async (t) => {
+  const testnet = await createTestnet(3)
+  const nodeA = createNode(testnet, { enableAPI: false, enableServices: false })
+  const nodeB = createNode(testnet, { enableAPI: false, enableServices: false })
+
+  t.teardown(async () => {
+    await nodeA.stop()
+    await nodeB.stop()
+    await testnet.destroy()
+  })
+
+  await nodeA.start()
+  await nodeB.start()
+
+  // Force at least one direct swarm connection by sharing a temporary topic.
+  const topicCore = nodeA.store.get({ name: 'registry-sync-topic' })
+  await topicCore.ready()
+  await topicCore.append(b4a.from('sync'))
+  nodeA.swarm.join(topicCore.discoveryKey, { server: true, client: true })
+  nodeB.swarm.join(topicCore.discoveryKey, { server: true, client: true })
+  await nodeA.swarm.flush()
+  await nodeB.swarm.flush()
+
+  const appKey = randomBytes(32)
+  const appKeyHex = appKey.toString('hex')
+  await nodeA.seedingRegistry.publishRequest({
+    appKey,
+    discoveryKeys: [randomBytes(32)],
+    replicationFactor: 1,
+    geoPreference: [],
+    maxStorageBytes: 0,
+    bountyRate: 0,
+    ttlSeconds: 3600,
+    privacyTier: 'public',
+    publisherPubkey: nodeA.swarm.keyPair.publicKey
+  })
+
+  const replicated = await waitFor(async () => {
+    const requests = await nodeB.seedingRegistry.getActiveRequests()
+    return requests.some(r => r.appKey === appKeyHex)
+  }, 20000, 250)
+
+  t.is(replicated, true, 'node B indexed node A registry request')
 })
 
 // ─── unseedApp cleanup ─────────────────────────────────────────────

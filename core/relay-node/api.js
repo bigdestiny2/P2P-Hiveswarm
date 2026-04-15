@@ -34,10 +34,17 @@ const LOCAL_ONLY_DISPATCH_ROUTES = new Set([
   'identity.sign',
   'identity.verify'
 ])
-const ADMIN_ONLY_DISPATCH_ROUTES = new Set([
-  'ai.register-model',
-  'ai.remove-model'
-])
+const AVAILABLE_MODES = [
+  'public',
+  'standard',
+  'private',
+  'hybrid',
+  'homehive',
+  'seed-only',
+  'relay-only',
+  'stealth',
+  'gateway'
+]
 
 export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
@@ -507,9 +514,12 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, { error: `ACCESS_DENIED: ${body.route} is local-only` }, 403)
         }
 
+        const routeAccess = this.node.router.getRouteAccess
+          ? this.node.router.getRouteAccess(body.route)
+          : null
         const routeRole = isLocalRequest
           ? 'local'
-          : (ADMIN_ONLY_DISPATCH_ROUTES.has(body.route) ? 'relay-admin' : 'authenticated-user')
+          : (routeAccess === 'relay-admin' ? 'relay-admin' : 'authenticated-user')
         try {
           const result = await this.node.router.dispatch(body.route, body.params || {}, {
             transport: 'http',
@@ -537,6 +547,13 @@ export class RelayAPI extends EventEmitter {
           // Forward appId from request body for deduplication
           if (body.appId && typeof body.appId === 'string') seedOpts.appId = body.appId
           if (body.version && typeof body.version === 'string') seedOpts.version = body.version
+          if (body.privacyTier && typeof body.privacyTier === 'string') {
+            const tier = body.privacyTier.toLowerCase()
+            if (!['public', 'local-first', 'p2p-only'].includes(tier)) {
+              return this._json(res, { error: 'privacyTier must be one of: public, local-first, p2p-only' }, 400)
+            }
+            seedOpts.privacyTier = tier
+          }
           const result = await this.node.seedApp(body.appKey, seedOpts)
           return this._json(res, { ok: true, ...result })
         }
@@ -557,6 +574,11 @@ export class RelayAPI extends EventEmitter {
             if (!isValidHexKey(dk, 64)) return this._json(res, { error: 'Each discoveryKey must be 64 hex characters' }, 400)
           }
 
+          const privacyTier = body.privacyTier ? String(body.privacyTier).toLowerCase() : 'public'
+          if (!['public', 'local-first', 'p2p-only'].includes(privacyTier)) {
+            return this._json(res, { error: 'privacyTier must be one of: public, local-first, p2p-only' }, 400)
+          }
+
           let appKeyBuf, dkBufs
           try {
             appKeyBuf = Buffer.from(body.appKey, 'hex')
@@ -573,6 +595,7 @@ export class RelayAPI extends EventEmitter {
             maxStorageBytes: body.maxStorageBytes || 0,
             bountyRate: body.bountyRate || 0,
             ttlSeconds: body.ttlDays ? body.ttlDays * 86400 : 30 * 86400,
+            privacyTier,
             publisherPubkey: this.node.swarm ? this.node.swarm.keyPair.publicKey : Buffer.alloc(32)
           }
 
@@ -674,6 +697,14 @@ export class RelayAPI extends EventEmitter {
           return this._handleModeSwitch(res, body)
         }
 
+        if (path === '/api/manage/devices') {
+          return this._handleDeviceManagement(res, body)
+        }
+
+        if (path === '/api/manage/pairing') {
+          return this._handlePairingManagement(res, body)
+        }
+
         if (path === '/api/manage/transport') {
           return this._handleTransportToggle(res, body)
         }
@@ -766,14 +797,67 @@ export class RelayAPI extends EventEmitter {
           })
         }
 
+        if (path === '/api/manage/devices') {
+          if (!this.node.accessControl) {
+            return this._json(res, {
+              enabled: false,
+              mode: this.node.mode,
+              devices: []
+            })
+          }
+          const devices = this.node.listDevices()
+          return this._json(res, {
+            enabled: true,
+            mode: this.node.mode,
+            count: devices.length,
+            devices
+          })
+        }
+
+        if (path === '/api/manage/pairing') {
+          if (!this.node.accessControl) {
+            return this._json(res, {
+              enabled: false,
+              mode: this.node.mode,
+              pairing: null
+            })
+          }
+          const state = this.node.accessControl._pairingState
+          return this._json(res, {
+            enabled: true,
+            mode: this.node.mode,
+            pairing: state
+              ? {
+                  active: this.node.accessControl.isPairing,
+                  expiresAt: state.expiresAt
+                }
+              : { active: false, expiresAt: null }
+          })
+        }
+
         if (path === '/api/manage/modes') {
           return this._json(res, {
             current: this.node._operatingMode || 'standard',
             available: [
               {
+                id: 'public',
+                name: 'Public',
+                description: 'Public relay defaults with open access'
+              },
+              {
                 id: 'standard',
                 name: 'Standard Relay',
                 description: 'Full relay + seeding + all services'
+              },
+              {
+                id: 'private',
+                name: 'Private',
+                description: 'LAN-friendly closed mode with allowlist and pairing'
+              },
+              {
+                id: 'hybrid',
+                name: 'Hybrid',
+                description: 'Public discovery with private admission control'
               },
               {
                 id: 'homehive',
@@ -900,6 +984,10 @@ export class RelayAPI extends EventEmitter {
       maxCircuitDuration: { min: 1000, max: 86400000 },
       maxCircuitBytes: { min: 1024, max: 10e12 },
       announceInterval: { min: 1000, max: 3600000 },
+      replicationCheckInterval: { min: 10000, max: 3600000 },
+      targetReplicaFloor: { min: 1, max: 16 },
+      catalogSignatureMaxAgeMs: { min: 1000, max: 86400000 },
+      catalogMaxAppAgeMs: { min: 0, max: 31536000000 },
       shutdownTimeoutMs: { min: 1000, max: 300000 }
     }
 
@@ -927,9 +1015,42 @@ export class RelayAPI extends EventEmitter {
       config.registryAutoAccept = body.registryAutoAccept !== false
       applied.push('registryAutoAccept')
     }
+    if (body.replicationRepairEnabled !== undefined) {
+      config.replicationRepairEnabled = body.replicationRepairEnabled !== false
+      applied.push('replicationRepairEnabled')
+    }
+    if (body.gatewayPublicOnlyPrivacyTier !== undefined) {
+      config.gatewayPublicOnlyPrivacyTier = body.gatewayPublicOnlyPrivacyTier !== false
+      applied.push('gatewayPublicOnlyPrivacyTier')
+    }
+    if (body.requireSignedCatalog !== undefined) {
+      config.requireSignedCatalog = body.requireSignedCatalog === true
+      applied.push('requireSignedCatalog')
+    }
     if (body.regions !== undefined) {
       config.regions = Array.isArray(body.regions) ? body.regions : []
       applied.push('regions')
+    }
+    if (body.discovery && typeof body.discovery === 'object') {
+      config.discovery = {
+        ...(config.discovery || {}),
+        ...body.discovery
+      }
+      applied.push('discovery')
+    }
+    if (body.access && typeof body.access === 'object') {
+      config.access = {
+        ...(config.access || {}),
+        ...body.access
+      }
+      applied.push('access')
+    }
+    if (body.pairing && typeof body.pairing === 'object') {
+      config.pairing = {
+        ...(config.pairing || {}),
+        ...body.pairing
+      }
+      applied.push('pairing')
     }
 
     // Persist config changes to disk
@@ -987,62 +1108,33 @@ export class RelayAPI extends EventEmitter {
     }, 400)
   }
 
-  _handleModeSwitch (res, body) {
+  async _handleModeSwitch (res, body) {
     const { mode } = body
     if (!mode) {
       return this._json(res, { error: 'mode required' }, 400)
     }
 
-    const config = this.node.config
-    const modeConfigs = {
-      standard: {
-        enableRelay: true,
-        enableSeeding: true,
-        maxConnections: 256,
-        maxRelayBandwidthMbps: 100
-      },
-      homehive: {
-        enableRelay: true,
-        enableSeeding: true,
-        maxConnections: 32,
-        maxRelayBandwidthMbps: 25,
-        maxStorageBytes: 10 * 1024 * 1024 * 1024,
-        registryAutoAccept: true
-      },
-      'seed-only': {
-        enableRelay: false,
-        enableSeeding: true
-      },
-      'relay-only': {
-        enableRelay: true,
-        enableSeeding: false
-      },
-      stealth: {
-        enableRelay: true,
-        enableSeeding: true,
-        maxConnections: 32,
-        maxRelayBandwidthMbps: 25
-      },
-      gateway: {
-        enableRelay: false,
-        enableSeeding: true,
-        maxConnections: 512,
-        maxRelayBandwidthMbps: 500
-      }
-    }
-
-    const modeConfig = modeConfigs[mode]
-    if (!modeConfig) {
+    if (!AVAILABLE_MODES.includes(mode)) {
       return this._json(res, {
         error: 'Unknown mode: ' + mode,
-        available: Object.keys(modeConfigs)
+        available: AVAILABLE_MODES
       }, 400)
     }
 
-    // Apply mode config
-    Object.assign(config, modeConfig)
-    this.node._operatingMode = mode
-    this.node.mode = mode
+    try {
+      const overrides = {}
+      if (body.maxConnections !== undefined) overrides.maxConnections = body.maxConnections
+      if (body.maxRelayBandwidthMbps !== undefined) overrides.maxRelayBandwidthMbps = body.maxRelayBandwidthMbps
+      if (body.maxStorageBytes !== undefined) overrides.maxStorageBytes = body.maxStorageBytes
+      if (body.discovery && typeof body.discovery === 'object') overrides.discovery = body.discovery
+      if (body.access && typeof body.access === 'object') overrides.access = body.access
+      if (body.pairing && typeof body.pairing === 'object') overrides.pairing = body.pairing
+      if (body.registryAutoAccept !== undefined) overrides.registryAutoAccept = body.registryAutoAccept !== false
+
+      await this.node.applyMode(mode, overrides)
+    } catch (err) {
+      return this._json(res, { error: err.message || 'Failed to apply mode' }, 400)
+    }
 
     // Persist
     this._persistConfig().catch(() => {})
@@ -1050,13 +1142,85 @@ export class RelayAPI extends EventEmitter {
     return this._json(res, {
       ok: true,
       mode,
-      applied: Object.keys(modeConfig),
+      applied: ['mode'],
       note: mode === 'stealth'
         ? 'Enable Tor transport for full stealth mode'
         : mode === 'homehive'
           ? 'HomeHive mode active — low resource, LAN-priority'
           : null
     })
+  }
+
+  async _handleDeviceManagement (res, body) {
+    if (!this.node.accessControl) {
+      return this._json(res, {
+        error: 'Access control is not active in current mode',
+        mode: this.node.mode
+      }, 400)
+    }
+
+    const action = body.action || 'list'
+    if (action === 'list') {
+      const devices = this.node.listDevices()
+      return this._json(res, { ok: true, count: devices.length, devices })
+    }
+
+    if (action === 'add') {
+      if (!body.pubkey || !isValidHexKey(body.pubkey, 64)) {
+        return this._json(res, { error: 'pubkey must be 64 hex characters' }, 400)
+      }
+      await this.node.addDevice(body.pubkey, body.name || 'manual')
+      return this._json(res, { ok: true, action: 'added', pubkey: body.pubkey })
+    }
+
+    if (action === 'remove') {
+      if (!body.pubkey || !isValidHexKey(body.pubkey, 64)) {
+        return this._json(res, { error: 'pubkey must be 64 hex characters' }, 400)
+      }
+      await this.node.removeDevice(body.pubkey)
+      return this._json(res, { ok: true, action: 'removed', pubkey: body.pubkey })
+    }
+
+    return this._json(res, { error: 'Unknown action (use list, add, remove)' }, 400)
+  }
+
+  _handlePairingManagement (res, body) {
+    if (!this.node.accessControl) {
+      return this._json(res, {
+        error: 'Pairing is not available in current mode',
+        mode: this.node.mode
+      }, 400)
+    }
+
+    const action = body.action || 'status'
+    if (action === 'status') {
+      const state = this.node.accessControl._pairingState
+      return this._json(res, {
+        ok: true,
+        active: this.node.accessControl.isPairing,
+        expiresAt: state ? state.expiresAt : null
+      })
+    }
+
+    if (action === 'start') {
+      const timeoutMs = body.timeoutMs ? Number(body.timeoutMs) : undefined
+      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 30 * 60 * 1000)) {
+        return this._json(res, { error: 'timeoutMs must be between 10000 and 1800000' }, 400)
+      }
+      const pairing = this.node.enablePairing({ timeoutMs })
+      return this._json(res, {
+        ok: true,
+        active: true,
+        ...pairing
+      })
+    }
+
+    if (action === 'stop') {
+      this.node.accessControl.disablePairing()
+      return this._json(res, { ok: true, active: false })
+    }
+
+    return this._json(res, { error: 'Unknown action (use status, start, stop)' }, 400)
   }
 
   _handleTransportToggle (res, body) {
@@ -1093,13 +1257,25 @@ export class RelayAPI extends EventEmitter {
       enableMetrics: c.enableMetrics,
       enableAPI: c.enableAPI,
       apiPort: c.apiPort,
+      apiHost: c.apiHost,
+      corsOrigins: c.corsOrigins,
       regions: c.regions || [],
+      discovery: c.discovery || { dht: true, announce: true, mdns: false },
+      access: c.access || { open: true, allowlist: [] },
+      pairing: c.pairing || { enabled: false },
       transports: c.transports || { udp: true },
       registryAutoAccept: c.registryAutoAccept,
       maxCircuitsPerPeer: c.maxCircuitsPerPeer,
       maxCircuitDuration: c.maxCircuitDuration,
       maxCircuitBytes: c.maxCircuitBytes,
       announceInterval: c.announceInterval,
+      requireSignedCatalog: c.requireSignedCatalog,
+      catalogSignatureMaxAgeMs: c.catalogSignatureMaxAgeMs,
+      catalogMaxAppAgeMs: c.catalogMaxAppAgeMs,
+      gatewayPublicOnlyPrivacyTier: c.gatewayPublicOnlyPrivacyTier,
+      replicationCheckInterval: c.replicationCheckInterval,
+      replicationRepairEnabled: c.replicationRepairEnabled,
+      targetReplicaFloor: c.targetReplicaFloor,
       shutdownTimeoutMs: c.shutdownTimeoutMs,
       mode: this.node._operatingMode || 'standard'
     }

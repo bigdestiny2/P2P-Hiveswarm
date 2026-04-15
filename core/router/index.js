@@ -13,6 +13,77 @@ import { EventEmitter } from 'events'
 import { PubSub } from './pubsub.js'
 import { WorkerPool } from './worker-pool.js'
 
+const ROUTE_ACCESS_POLICIES = {
+  // Identity
+  'identity.whoami': 'public',
+  'identity.resolve': 'public',
+  'identity.developer': 'public',
+  'identity.peers': 'authenticated-user',
+  'identity.sign': 'local-only',
+  'identity.verify': 'local-only',
+
+  // AI
+  'ai.list-models': 'public',
+  'ai.status': 'public',
+  'ai.infer': 'authenticated-user',
+  'ai.embed': 'authenticated-user',
+  'ai.register-model': 'relay-admin',
+  'ai.remove-model': 'relay-admin',
+
+  // Compute
+  'compute.capabilities': 'public',
+  'compute.submit': 'authenticated-user',
+  'compute.status': 'authenticated-user',
+  'compute.result': 'authenticated-user',
+  'compute.cancel': 'authenticated-user',
+  'compute.list': 'relay-admin',
+
+  // Storage
+  'storage.drive-create': 'authenticated-user',
+  'storage.drive-list': 'authenticated-user',
+  'storage.drive-get': 'authenticated-user',
+  'storage.drive-read': 'authenticated-user',
+  'storage.drive-write': 'authenticated-user',
+  'storage.drive-delete': 'authenticated-user',
+  'storage.core-create': 'authenticated-user',
+  'storage.core-append': 'authenticated-user',
+  'storage.core-get': 'authenticated-user',
+
+  // Schema
+  'schema.get': 'public',
+  'schema.list': 'public',
+  'schema.versions': 'public',
+  'schema.register': 'authenticated-user',
+  'schema.validate': 'authenticated-user',
+
+  // SLA
+  'sla.stats': 'public',
+  'sla.create': 'authenticated-user',
+  'sla.get': 'authenticated-user',
+  'sla.list': 'relay-admin',
+  'sla.check': 'relay-admin',
+  'sla.violations': 'relay-admin',
+  'sla.terminate': 'relay-admin',
+
+  // Arbitration
+  'arbitration.submit': 'authenticated-user',
+  'arbitration.vote': 'authenticated-user',
+  'arbitration.get': 'authenticated-user',
+  'arbitration.list': 'relay-admin',
+  'arbitration.evidence': 'relay-admin'
+}
+
+const SERVICE_DEFAULT_ACCESS = {
+  storage: 'authenticated-user',
+  compute: 'authenticated-user',
+  ai: 'authenticated-user',
+  schema: 'authenticated-user',
+  sla: 'authenticated-user',
+  arbitration: 'authenticated-user',
+  zk: 'authenticated-user',
+  identity: 'authenticated-user'
+}
+
 export class Router extends EventEmitter {
   constructor (opts = {}) {
     super()
@@ -83,7 +154,7 @@ export class Router extends EventEmitter {
       for (const method of manifest.capabilities) {
         const key = `${name}.${method}`
         const provider = entry.provider
-        const access = this._inferAccessPolicy(name, method)
+        const access = ROUTE_ACCESS_POLICIES[key] || SERVICE_DEFAULT_ACCESS[name] || 'authenticated-user'
         // Bind the method if it exists on the provider
         if (typeof provider[method] === 'function') {
           this.addRoute(key, (params, ctx) => provider[method](params, ctx), { access })
@@ -157,31 +228,6 @@ export class Router extends EventEmitter {
     throw new Error(`ROUTE_NOT_FOUND: ${route}`)
   }
 
-  _inferAccessPolicy (service, method) {
-    const route = `${service}.${method}`
-
-    if (route === 'identity.sign' || route === 'identity.verify') {
-      return 'local-only'
-    }
-    if (route === 'ai.register-model' || route === 'ai.remove-model') {
-      return 'relay-admin'
-    }
-
-    if (
-      method.includes('create') ||
-      method.includes('write') ||
-      method.includes('delete') ||
-      method.includes('append') ||
-      method === 'submit' ||
-      method === 'cancel' ||
-      method === 'register'
-    ) {
-      return 'authenticated-user'
-    }
-
-    return 'public'
-  }
-
   _isAuthorized (required, context = {}) {
     const role = context.role || null
 
@@ -248,6 +294,11 @@ export class Router extends EventEmitter {
    */
   routes () {
     return [...this._routes.keys()]
+  }
+
+  getRouteAccess (route) {
+    const entry = this._routes.get(route)
+    return entry ? entry.access : null
   }
 
   /**

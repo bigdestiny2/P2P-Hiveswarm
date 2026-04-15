@@ -29,8 +29,6 @@ const MSG_ERROR = 3
 const RESTRICTED_METHODS = new Set([
   'identity.sign',
   'identity.verify',
-  'compute.submit',
-  'compute.result',
   'ai.register-model',
   'ai.remove-model'
 ])
@@ -160,13 +158,8 @@ export class ServiceProtocol extends EventEmitter {
    */
   sendAppCatalog (remotePubkey) {
     const entry = this.channels.get(remotePubkey)
-    if (!entry || !this._getSeededApps) return
-
-    const apps = this._getSeededApps()
-    entry.msgHandler.send({
-      type: MSG_APP_CATALOG,
-      apps
-    })
+    if (!entry) return
+    entry.msgHandler.send(this._buildCatalogMessage())
   }
 
   /**
@@ -174,13 +167,27 @@ export class ServiceProtocol extends EventEmitter {
    * Called when apps are seeded or unseeded.
    */
   broadcastAppCatalog () {
-    if (!this._getSeededApps) return
-    const apps = this._getSeededApps()
-    const msg = { type: MSG_APP_CATALOG, apps }
+    const msg = this._buildCatalogMessage()
 
     for (const [, entry] of this.channels) {
       try { entry.msgHandler.send(msg) } catch {}
     }
+  }
+
+  _buildCatalogMessage () {
+    if (this._getCatalogEnvelope) {
+      const envelope = this._getCatalogEnvelope() || {}
+      return {
+        type: MSG_APP_CATALOG,
+        apps: Array.isArray(envelope.apps) ? envelope.apps : [],
+        relayPubkey: envelope.relayPubkey || null,
+        catalogTimestamp: envelope.catalogTimestamp || null,
+        signature: envelope.signature || null
+      }
+    }
+
+    const apps = this._getSeededApps ? this._getSeededApps() : []
+    return { type: MSG_APP_CATALOG, apps: Array.isArray(apps) ? apps : [] }
   }
 
   _onOpen (remotePubkey, channel) {
@@ -245,7 +252,13 @@ export class ServiceProtocol extends EventEmitter {
         break
 
       case MSG_APP_CATALOG:
-        this.emit('app-catalog', { remotePubkey, apps: msg.apps })
+        this.emit('app-catalog', {
+          remotePubkey,
+          apps: Array.isArray(msg.apps) ? msg.apps : [],
+          relayPubkey: msg.relayPubkey || null,
+          catalogTimestamp: msg.catalogTimestamp || null,
+          signature: msg.signature || null
+        })
         break
     }
   }

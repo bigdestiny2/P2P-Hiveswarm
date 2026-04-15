@@ -1,24 +1,51 @@
 /**
  * Seeding Registry
  *
- * A Hypercore-powered distributed registry of seed requests.
- * Publishers announce apps they want seeded, relays discover and accept them.
- *
- * Each node maintains its own append-only log of registry entries.
- * Nodes discover each other via a well-known DHT topic and replicate
- * their logs, building a merged view of all seed requests.
- *
- * Entry types: seed-request, seed-accept, seed-cancel
+ * Distributed multi-log registry of seed requests.
+ * Each relay has its own append-only local log; peers exchange log keys over
+ * a lightweight Protomux metadata channel and replicate/index each other's logs.
  */
 
-import Hypercore from 'hypercore'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
+import Protomux from 'protomux'
 import { EventEmitter } from 'events'
 
 // Well-known topic for registry discovery
 const REGISTRY_TOPIC = b4a.alloc(32)
 sodium.crypto_generichash(REGISTRY_TOPIC, b4a.from('hiverelay-seeding-registry-v1'))
+
+const MSG_ANNOUNCE_LOG = 0
+const REGISTRY_META_PROTOCOL = 'hiverelay-registry-meta'
+const REGISTRY_META_ID = b4a.from('registry-meta-v1')
+
+const META_ENCODING = {
+  preencode (state, msg) {
+    const json = JSON.stringify(msg)
+    state.end += 4 + b4a.byteLength(json)
+  },
+  encode (state, msg) {
+    const json = JSON.stringify(msg)
+    const buf = b4a.from(json)
+    state.buffer.writeUInt32BE(buf.length, state.start)
+    buf.copy(state.buffer, state.start + 4)
+    state.start += 4 + buf.length
+  },
+  decode (state) {
+    const len = state.buffer.readUInt32BE(state.start)
+    if (len > 64 * 1024) {
+      state.start += 4 + len
+      return { type: -1, error: 'message too large' }
+    }
+    const json = state.buffer.subarray(state.start + 4, state.start + 4 + len).toString()
+    state.start += 4 + len
+    try {
+      return JSON.parse(json)
+    } catch (_) {
+      return { type: -1, error: 'malformed JSON' }
+    }
+  }
+}
 
 export class SeedingRegistry extends EventEmitter {
   constructor (store, swarm, opts = {}) {
@@ -26,13 +53,19 @@ export class SeedingRegistry extends EventEmitter {
     this.store = store
     this.swarm = swarm
     this.localLog = null
-    this.peerLogs = new Map() // pubkey hex -> Hypercore
+    this.peerLogs = new Map() // logKey hex -> Hypercore
     this.running = false
 
     // In-memory indexes rebuilt from logs
-    this._requests = new Map() // appKey -> seed-request entry
+    this._requests = new Map() // appKey -> latest seed-request entry
     this._acceptances = new Map() // appKey -> [{ relayPubkey, region, timestamp }]
-    this._cancellations = new Set() // appKey:publisherPubkey
+    this._cancellations = new Map() // appKey:publisherPubkey -> cancellation timestamp
+
+    this._indexedOffsets = new Map() // logId -> indexed block count
+    this._peerLogMeta = new Map() // logKeyHex -> { log, onAppend }
+    this._metaChannels = new WeakMap() // conn -> { channel, msgHandler }
+    this._onSwarmConnection = null
+    this._onLocalAppend = null
   }
 
   async start () {
@@ -40,56 +73,194 @@ export class SeedingRegistry extends EventEmitter {
     this.localLog = this.store.get({ name: 'seeding-registry-local' })
     await this.localLog.ready()
 
+    const localLogKeyHex = b4a.toString(this.localLog.key, 'hex')
+
     // Rebuild index from local log
-    await this._indexLog(this.localLog)
+    await this._indexLog(this.localLog, localLogKeyHex)
+    this._onLocalAppend = () => {
+      this._indexLog(this.localLog, localLogKeyHex).catch((err) => {
+        this.emit('index-error', { context: 'local-append', error: err.message || String(err) })
+      })
+    }
+    this.localLog.on('append', this._onLocalAppend)
 
     // Join DHT topic to discover other registry peers
     this.swarm.join(REGISTRY_TOPIC, { server: true, client: true })
 
-    // Listen for new connections to replicate registry logs
-    this.swarm.on('connection', (conn) => this._onConnection(conn))
+    // Listen for new connections to exchange registry log keys and replicate logs
+    this._onSwarmConnection = (conn, info) => this._onConnection(conn, info)
+    this.swarm.on('connection', this._onSwarmConnection)
 
     this.running = true
     this.emit('started', {
-      key: b4a.toString(this.localLog.key, 'hex')
+      key: localLogKeyHex
     })
   }
 
-  _onConnection (conn) {
-    // Replicate our local log over this connection
+  _onConnection (conn, info) {
+    if (!this.localLog) return
+
+    // Always replicate our local log
     this.localLog.replicate(conn)
+
+    // Exchange log keys so peers can replicate/index each other's logs
+    this._attachMetaChannel(conn, info)
   }
 
-  async _indexLog (log) {
-    for (let i = 0; i < log.length; i++) {
+  _attachMetaChannel (conn, info) {
+    if (this._metaChannels.has(conn)) return
+
+    const mux = Protomux.from(conn)
+    const channel = mux.createChannel({
+      protocol: REGISTRY_META_PROTOCOL,
+      id: REGISTRY_META_ID,
+      onopen: () => {
+        if (!this.localLog) return
+        const entry = this._metaChannels.get(conn)
+        if (!entry) return
+        const localLogKeyHex = b4a.toString(this.localLog.key, 'hex')
+        entry.msgHandler.send({
+          type: MSG_ANNOUNCE_LOG,
+          logKey: localLogKeyHex,
+          peerPubkey: this.swarm?.keyPair?.publicKey
+            ? b4a.toString(this.swarm.keyPair.publicKey, 'hex')
+            : null
+        })
+      }
+    })
+
+    if (!channel) return
+
+    const msgHandler = channel.addMessage({
+      encoding: META_ENCODING,
+      onmessage: (msg) => this._onMetaMessage(conn, info, msg)
+    })
+
+    this._metaChannels.set(conn, { channel, msgHandler })
+    channel.open()
+  }
+
+  _onMetaMessage (conn, info, msg) {
+    if (!msg || msg.type === -1) return
+    if (msg.type !== MSG_ANNOUNCE_LOG) return
+    if (!msg.logKey || typeof msg.logKey !== 'string') return
+    if (!/^[0-9a-f]{64}$/i.test(msg.logKey)) return
+
+    const peerPubkey = msg.peerPubkey || (
+      info?.publicKey ? b4a.toString(info.publicKey, 'hex') : null
+    )
+
+    this._registerPeerLog(msg.logKey, peerPubkey, conn).catch((err) => {
+      this.emit('peer-log-error', {
+        logKey: msg.logKey,
+        peerPubkey,
+        error: err.message || String(err)
+      })
+    })
+  }
+
+  async _registerPeerLog (logKeyHex, peerPubkey, conn) {
+    if (!this.localLog) return
+
+    const localLogKeyHex = b4a.toString(this.localLog.key, 'hex')
+    if (logKeyHex === localLogKeyHex) return
+
+    // Already known: just ensure replication on this connection
+    const existing = this._peerLogMeta.get(logKeyHex)
+    if (existing) {
+      existing.log.replicate(conn)
+      return
+    }
+
+    const log = this.store.get(b4a.from(logKeyHex, 'hex'))
+    await log.ready()
+    log.replicate(conn)
+
+    await this._indexLog(log, logKeyHex)
+
+    const onAppend = () => {
+      this._indexLog(log, logKeyHex).catch((err) => {
+        this.emit('index-error', {
+          context: 'peer-append',
+          logKey: logKeyHex,
+          peerPubkey,
+          error: err.message || String(err)
+        })
+      })
+    }
+    log.on('append', onAppend)
+
+    this.peerLogs.set(logKeyHex, log)
+    this._peerLogMeta.set(logKeyHex, { log, onAppend, peerPubkey })
+
+    this.emit('peer-log-discovered', {
+      logKey: logKeyHex,
+      peerPubkey,
+      blocks: log.length
+    })
+  }
+
+  async _indexLog (log, logId = null) {
+    const id = logId || b4a.toString(log.key, 'hex')
+    let offset = this._indexedOffsets.get(id) || 0
+
+    for (let i = offset; i < log.length; i++) {
       try {
         const block = await log.get(i)
         if (!block) continue
         const entry = JSON.parse(b4a.toString(block))
         this._applyEntry(entry)
       } catch (err) {
-        this.emit('index-error', { context: 'indexLog', index: i, error: err })
-        continue
+        this.emit('index-error', { context: 'indexLog', logId: id, index: i, error: err.message || String(err) })
+      } finally {
+        offset = i + 1
+        this._indexedOffsets.set(id, offset)
       }
     }
   }
 
   _applyEntry (entry) {
     if (entry.type === 'seed-request') {
-      this._requests.set(entry.appKey, entry)
-    } else if (entry.type === 'seed-accept') {
+      const cancelKey = entry.appKey + ':' + entry.publisherPubkey
+      const canceledAt = this._cancellations.get(cancelKey)
+      if (canceledAt && canceledAt >= entry.timestamp) return
+
+      const current = this._requests.get(entry.appKey)
+      if (!current || current.timestamp <= entry.timestamp) {
+        this._requests.set(entry.appKey, entry)
+      }
+      return
+    }
+
+    if (entry.type === 'seed-accept') {
       if (!this._acceptances.has(entry.appKey)) {
         this._acceptances.set(entry.appKey, [])
       }
       const list = this._acceptances.get(entry.appKey)
-      // Deduplicate by relay pubkey
-      if (!list.some(a => a.relayPubkey === entry.relayPubkey)) {
+      const idx = list.findIndex(a => a.relayPubkey === entry.relayPubkey)
+      if (idx === -1) {
         list.push(entry)
+      } else if (list[idx].timestamp <= entry.timestamp) {
+        list[idx] = entry
       }
-    } else if (entry.type === 'seed-cancel') {
+      return
+    }
+
+    if (entry.type === 'seed-cancel') {
       const cancelKey = entry.appKey + ':' + entry.publisherPubkey
-      this._cancellations.add(cancelKey)
-      this._requests.delete(entry.appKey)
+      const existingCancelTs = this._cancellations.get(cancelKey) || 0
+      if (entry.timestamp > existingCancelTs) {
+        this._cancellations.set(cancelKey, entry.timestamp)
+      }
+
+      const current = this._requests.get(entry.appKey)
+      if (
+        current &&
+        current.publisherPubkey === entry.publisherPubkey &&
+        current.timestamp <= entry.timestamp
+      ) {
+        this._requests.delete(entry.appKey)
+      }
     }
   }
 
@@ -97,6 +268,7 @@ export class SeedingRegistry extends EventEmitter {
    * Publish a seed request to the registry
    */
   async publishRequest (request) {
+    const privacyTier = String(request.privacyTier || 'public').toLowerCase()
     const entry = {
       type: 'seed-request',
       timestamp: Date.now(),
@@ -107,6 +279,7 @@ export class SeedingRegistry extends EventEmitter {
       maxStorageBytes: request.maxStorageBytes || 0,
       bountyRate: request.bountyRate || 0,
       ttlSeconds: request.ttlSeconds || 30 * 24 * 3600, // 30 days default
+      privacyTier: ['public', 'local-first', 'p2p-only'].includes(privacyTier) ? privacyTier : 'public',
       publisherPubkey: b4a.toString(request.publisherPubkey, 'hex')
     }
 
@@ -161,7 +334,8 @@ export class SeedingRegistry extends EventEmitter {
     for (const [appKey, entry] of this._requests) {
       // Check if cancelled
       const cancelKey = appKey + ':' + entry.publisherPubkey
-      if (this._cancellations.has(cancelKey)) continue
+      const canceledAt = this._cancellations.get(cancelKey)
+      if (canceledAt && canceledAt >= entry.timestamp) continue
 
       // Check TTL
       const expiresAt = entry.timestamp + (entry.ttlSeconds * 1000)
@@ -195,6 +369,17 @@ export class SeedingRegistry extends EventEmitter {
     try { await this.swarm.leave(REGISTRY_TOPIC) } catch (err) {
       this.emit('stop-error', { operation: 'swarm.leave', error: err.message })
     }
+    if (this._onSwarmConnection) {
+      this.swarm.removeListener('connection', this._onSwarmConnection)
+      this._onSwarmConnection = null
+    }
+    if (this.localLog && this._onLocalAppend) {
+      this.localLog.removeListener('append', this._onLocalAppend)
+      this._onLocalAppend = null
+    }
+    for (const { log, onAppend } of this._peerLogMeta.values()) {
+      if (onAppend) log.removeListener('append', onAppend)
+    }
     if (this.localLog) {
       try { await this.localLog.close() } catch (err) {
         this.emit('stop-error', { operation: 'localLog.close', error: err.message })
@@ -206,6 +391,8 @@ export class SeedingRegistry extends EventEmitter {
       }
     }
     this.peerLogs.clear()
+    this._peerLogMeta.clear()
+    this._indexedOffsets.clear()
     this.emit('stopped')
   }
 }
