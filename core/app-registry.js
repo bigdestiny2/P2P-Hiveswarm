@@ -32,6 +32,7 @@ export class AppRegistry extends EventEmitter {
 
     this._saving = false
     this._savePending = false
+    this._saveDebounceTimer = null
   }
 
   // ─── Queries ───────────────────────────────────────────────
@@ -303,6 +304,22 @@ export class AppRegistry extends EventEmitter {
   }
 
   _scheduleSave () {
-    this.save().catch(() => {})
+    if (this._saveDebounceTimer) clearTimeout(this._saveDebounceTimer)
+    this._saveDebounceTimer = setTimeout(() => {
+      this._saveDebounceTimer = null
+      this.save().catch(() => {})
+    }, 5000)
+  }
+
+  /**
+   * Force an immediate save, bypassing the debounce timer.
+   * Call during shutdown to ensure state is persisted.
+   */
+  async flush () {
+    if (this._saveDebounceTimer) {
+      clearTimeout(this._saveDebounceTimer)
+      this._saveDebounceTimer = null
+    }
+    await this.save()
   }
 }

@@ -36,6 +36,8 @@ export class SeedProtocol extends EventEmitter {
     this._maxPendingRequests = opts.maxPendingRequests || 1000
     this._pendingTTL = opts.pendingTTL || 30 * 60 * 1000 // 30 min default
     this._pendingCleanup = setInterval(() => this._evictStalePending(), 60_000)
+    this._seenUnseedNonces = new Map() // dedup key -> timestamp
+    this._unseedNonceCleanup = setInterval(() => this._evictStaleNonces(), 60_000)
     this.rateLimiter = new TokenBucketRateLimiter({
       tokensPerMinute: opts.rateLimitTokens || RATE_LIMIT_TOKENS_PER_MIN,
       burstSize: opts.rateLimitBurst || RATE_LIMIT_BURST
@@ -181,6 +183,13 @@ export class SeedProtocol extends EventEmitter {
       return
     }
 
+    // Replay protection: use signature as unique nonce (unique per request)
+    const dedupKey = b4a.toString(msg.publisherSignature, 'hex')
+    if (this._seenUnseedNonces.has(dedupKey)) {
+      return // silently drop replay
+    }
+    this._seenUnseedNonces.set(dedupKey, Date.now())
+
     this.emit('unseed-request', msg)
   }
 
@@ -318,6 +327,15 @@ export class SeedProtocol extends EventEmitter {
     return b4a.concat(parts)
   }
 
+  _evictStaleNonces () {
+    const now = Date.now()
+    for (const [key, ts] of this._seenUnseedNonces) {
+      if (now - ts > 6 * 60 * 1000) {
+        this._seenUnseedNonces.delete(key)
+      }
+    }
+  }
+
   _evictStalePending () {
     const now = Date.now()
     for (const [key, req] of this.pendingRequests) {
@@ -328,6 +346,8 @@ export class SeedProtocol extends EventEmitter {
 
   destroy () {
     clearInterval(this._pendingCleanup)
+    clearInterval(this._unseedNonceCleanup)
+    this._seenUnseedNonces.clear()
     for (const channel of this.channels) {
       channel.close()
     }

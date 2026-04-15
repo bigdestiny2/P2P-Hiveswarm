@@ -18,6 +18,8 @@ export class DashboardFeed {
   constructor (opts = {}) {
     this.server = opts.server
     this.node = opts.node
+    this.corsOrigins = opts.corsOrigins || '*'
+    this._apiKey = opts.apiKey || null
     this.wss = null
     this._broadcastTimer = null
     this._eventDebounceTimer = null
@@ -34,6 +36,29 @@ export class DashboardFeed {
       if (url.pathname !== '/ws') {
         socket.destroy()
         return
+      }
+
+      // Validate Origin header when CORS is restricted
+      if (this.corsOrigins !== '*') {
+        const origin = req.headers.origin
+        const allowed = Array.isArray(this.corsOrigins)
+          ? this.corsOrigins
+          : [this.corsOrigins]
+        if (!origin || !allowed.includes(origin)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+          socket.destroy()
+          return
+        }
+      }
+
+      // Validate API key token when configured
+      if (this._apiKey) {
+        const token = url.searchParams.get('token')
+        if (token !== this._apiKey) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+          socket.destroy()
+          return
+        }
       }
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {

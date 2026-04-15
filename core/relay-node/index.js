@@ -103,6 +103,8 @@ export class RelayNode extends EventEmitter {
     this.serviceProtocol = null
     this.router = null
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
+    this._catalogBroadcastTimer = null
+    this._catalogPeerThrottle = new Map() // peerKey -> lastCatalogTime
     this.running = false
   }
 
@@ -335,16 +337,36 @@ export class RelayNode extends EventEmitter {
             this.on(evt, (data) => this.router?.pubsub?.publish(`events/${evt}`, data))
           }
 
-          // Broadcast app catalog to clients when apps change
-          this.on('seeding', () => this.serviceProtocol?.broadcastAppCatalog())
-          this.on('unseeded', () => this.serviceProtocol?.broadcastAppCatalog())
+          // Broadcast app catalog to clients when apps change (debounced)
+          this.on('seeding', () => this._scheduleCatalogBroadcast())
+          this.on('unseeded', () => this._scheduleCatalogBroadcast())
 
           // Handle incoming app catalogs from other relays — seed missing apps
-          this.serviceProtocol.on('app-catalog', ({ apps }) => {
+          this.serviceProtocol.on('app-catalog', ({ apps, peerKey }) => {
             if (!this.config.enableSeeding || !apps || !Array.isArray(apps)) return
+
+            // Per-peer throttle: max 1 catalog event per peer per 30 seconds
+            if (peerKey) {
+              const now = Date.now()
+              const lastTime = this._catalogPeerThrottle.get(peerKey)
+              if (lastTime && (now - lastTime) < 30_000) {
+                this.emit('debug', { msg: 'catalog-sync throttled for peer', peerKey })
+                return
+              }
+              this._catalogPeerThrottle.set(peerKey, now)
+            }
+
+            // Cap at max 10 new apps seeded per catalog event
+            const MAX_NEW_APPS = 10
+            let seeded = 0
             for (const app of apps) {
               const appKey = app.appKey || app.driveKey
               if (!appKey || this.appRegistry.has(appKey)) continue
+              if (seeded >= MAX_NEW_APPS) {
+                this.emit('debug', { msg: 'catalog-sync cap reached, skipping remaining apps', total: apps.length, seeded })
+                break
+              }
+              seeded++
               this.seedApp(appKey, {
                 appId: app.id || app.appId || null,
                 name: app.name || null,
@@ -707,13 +729,10 @@ export class RelayNode extends EventEmitter {
       return { ok: false, error: 'PUBLISHER_MISMATCH' }
     }
 
-    // If no publisher was stored (legacy app), accept any valid signature
-    // but log a warning — operators can tighten this later
+    // If no publisher was stored (legacy app), reject the unseed —
+    // operator must use /unseed with API key instead
     if (!entry.publisherPubkey) {
-      this.emit('unseed-warning', {
-        appKey: appKeyHex,
-        reason: 'No publisher pubkey on record — accepting any valid signature'
-      })
+      return { ok: false, error: 'NO_PUBLISHER_KEY: app has no recorded publisher — operator must unseed via /unseed with API key' }
     }
 
     // Check timestamp freshness (reject if older than 5 minutes)
@@ -1129,6 +1148,14 @@ export class RelayNode extends EventEmitter {
     }
   }
 
+  _scheduleCatalogBroadcast () {
+    if (this._catalogBroadcastTimer) clearTimeout(this._catalogBroadcastTimer)
+    this._catalogBroadcastTimer = setTimeout(() => {
+      this._catalogBroadcastTimer = null
+      this.serviceProtocol?.broadcastAppCatalog()
+    }, 5000)
+  }
+
   _startHealthChecks () {
     const HEALTH_CHECK_INTERVAL = 60_000
     const STALE_THRESHOLD = 5 * 60 * 1000
@@ -1146,6 +1173,13 @@ export class RelayNode extends EventEmitter {
 
   async stop () {
     if (!this.running) return
+
+    // Clean up catalog broadcast debounce timer and peer throttle map
+    if (this._catalogBroadcastTimer) {
+      clearTimeout(this._catalogBroadcastTimer)
+      this._catalogBroadcastTimer = null
+    }
+    this._catalogPeerThrottle.clear()
 
     const timeout = this.config.shutdownTimeoutMs
 
@@ -1203,6 +1237,10 @@ export class RelayNode extends EventEmitter {
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }
     if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
     if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
+    // Persist app registry before shutdown (flush debounced save)
+    if (this.appRegistry) {
+      try { await this.appRegistry.flush() } catch (_) {}
+    }
     // Persist reputation before shutdown
     if (this.reputation) {
       try { await this.reputation.save(join(this.config.storage, 'reputation.json')) } catch (_) {}

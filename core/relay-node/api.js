@@ -60,7 +60,7 @@ export class RelayAPI extends EventEmitter {
     this._networkHtml = null
     this._docsHtml = null
     this._dashboardFeed = null
-    this._gateway = new HyperGateway(relayNode)
+    this._gateway = new HyperGateway(relayNode, { store: relayNode.store })
   }
 
   async start () {
@@ -80,7 +80,9 @@ export class RelayAPI extends EventEmitter {
         // Start WebSocket live feed for dashboard clients
         this._dashboardFeed = new DashboardFeed({
           server: this.server,
-          node: this.node
+          node: this.node,
+          corsOrigins: this.corsOrigins,
+          apiKey: this._apiKey
         })
         this._dashboardFeed.start()
 
@@ -451,6 +453,19 @@ export class RelayAPI extends EventEmitter {
         })
       }
 
+      // ─── Content-Type validation for POST requests ─────────────────
+      if (req.method === 'POST') {
+        const contentType = req.headers['content-type'] || ''
+        const contentLength = req.headers['content-length']
+        const isEmptyBody = contentLength === '0' || contentLength === undefined
+        if (contentType && !contentType.includes('application/json')) {
+          return this._json(res, { error: 'Content-Type must be application/json' }, 400)
+        }
+        if (!contentType && !isEmptyBody) {
+          return this._json(res, { error: 'Content-Type must be application/json' }, 400)
+        }
+      }
+
       if (req.method === 'POST' && path === '/api/v1/dispatch') {
         if (!this.node.router) {
           return this._json(res, { error: 'Router not enabled' }, 503)
@@ -804,34 +819,63 @@ export class RelayAPI extends EventEmitter {
 
   // ─── Management Handlers ──────────────────────────────────────────
 
+  _validatePositiveInt (value, min, max, name) {
+    const parsed = parseInt(value, 10)
+    if (Number.isNaN(parsed) || !Number.isFinite(parsed)) {
+      return { ok: false, value: null, error: name + ' must be a valid integer' }
+    }
+    if (parsed < min || parsed > max) {
+      return { ok: false, value: null, error: name + ' must be between ' + min + ' and ' + max }
+    }
+    return { ok: true, value: parsed, error: null }
+  }
+
+  _validatePositiveNumber (value, min, max, name) {
+    const parsed = Number(value)
+    if (Number.isNaN(parsed) || !Number.isFinite(parsed)) {
+      return { ok: false, value: null, error: name + ' must be a valid number' }
+    }
+    if (parsed < min || parsed > max) {
+      return { ok: false, value: null, error: name + ' must be between ' + min + ' and ' + max }
+    }
+    return { ok: true, value: parsed, error: null }
+  }
+
   _handleConfigUpdate (res, body) {
     const applied = []
     const config = this.node.config
 
-    if (body.maxStorageBytes !== undefined) {
-      config.maxStorageBytes = parseInt(body.maxStorageBytes)
-      applied.push('maxStorageBytes')
+    // Bounds definitions for numeric config fields
+    const intFields = {
+      maxStorageBytes: { min: 1048576, max: 10e12 },
+      maxConnections: { min: 1, max: 100000 },
+      maxCircuitsPerPeer: { min: 1, max: 1000 },
+      maxCircuitDuration: { min: 1000, max: 86400000 },
+      maxCircuitBytes: { min: 1024, max: 10e12 },
+      announceInterval: { min: 1000, max: 3600000 },
+      shutdownTimeoutMs: { min: 1000, max: 300000 }
     }
-    if (body.maxConnections !== undefined) {
-      config.maxConnections = parseInt(body.maxConnections)
-      applied.push('maxConnections')
+
+    for (const [field, bounds] of Object.entries(intFields)) {
+      if (body[field] !== undefined) {
+        const result = this._validatePositiveInt(body[field], bounds.min, bounds.max, field)
+        if (!result.ok) {
+          return this._json(res, { error: result.error }, 400)
+        }
+        config[field] = result.value
+        applied.push(field)
+      }
     }
+
     if (body.maxRelayBandwidthMbps !== undefined) {
-      config.maxRelayBandwidthMbps = parseInt(body.maxRelayBandwidthMbps)
+      const result = this._validatePositiveNumber(body.maxRelayBandwidthMbps, 0.1, 100000, 'maxRelayBandwidthMbps')
+      if (!result.ok) {
+        return this._json(res, { error: result.error }, 400)
+      }
+      config.maxRelayBandwidthMbps = result.value
       applied.push('maxRelayBandwidthMbps')
     }
-    if (body.maxCircuitsPerPeer !== undefined) {
-      config.maxCircuitsPerPeer = parseInt(body.maxCircuitsPerPeer)
-      applied.push('maxCircuitsPerPeer')
-    }
-    if (body.maxCircuitDuration !== undefined) {
-      config.maxCircuitDuration = parseInt(body.maxCircuitDuration)
-      applied.push('maxCircuitDuration')
-    }
-    if (body.maxCircuitBytes !== undefined) {
-      config.maxCircuitBytes = parseInt(body.maxCircuitBytes)
-      applied.push('maxCircuitBytes')
-    }
+
     if (body.registryAutoAccept !== undefined) {
       config.registryAutoAccept = body.registryAutoAccept !== false
       applied.push('registryAutoAccept')
@@ -839,14 +883,6 @@ export class RelayAPI extends EventEmitter {
     if (body.regions !== undefined) {
       config.regions = Array.isArray(body.regions) ? body.regions : []
       applied.push('regions')
-    }
-    if (body.announceInterval !== undefined) {
-      config.announceInterval = parseInt(body.announceInterval)
-      applied.push('announceInterval')
-    }
-    if (body.shutdownTimeoutMs !== undefined) {
-      config.shutdownTimeoutMs = parseInt(body.shutdownTimeoutMs)
-      applied.push('shutdownTimeoutMs')
     }
 
     // Persist config changes to disk

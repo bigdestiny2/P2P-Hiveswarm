@@ -170,6 +170,15 @@ export class CircuitRelay extends EventEmitter {
       return
     }
 
+    // Enforce pending-connect queue bounds
+    let totalPending = 0
+    for (const reqs of this.pendingConnects.values()) totalPending += reqs.length
+    if (totalPending >= this._maxPendingConnects) {
+      this.emit('debug', 'Rejecting connect: pending connects at capacity (' + totalPending + ')')
+      this._sendStatus(channel, ERR.CAPACITY_FULL, 'Too many pending connects')
+      return
+    }
+
     const targetHex = b4a.toString(msg.targetPubkey, 'hex')
     const reservation = this.reservations.get(targetHex)
 

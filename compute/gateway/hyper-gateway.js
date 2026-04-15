@@ -4,14 +4,15 @@
  * Exposes seeded Hyperdrives over HTTP so mobile clients can fetch
  * content without a full P2P connection (fast-path).
  *
- * Uses its own dedicated Corestore + Hyperswarm for content replication,
- * separate from the relay node's protocol swarm. This ensures drive data
- * replicates reliably regardless of when drives are seeded.
+ * When a Corestore is provided via `opts.store`, the gateway creates a
+ * namespaced session instead of spinning up a separate P2P stack — halving
+ * memory usage. Falls back to a dedicated Corestore + Hyperswarm when no
+ * store is given (standalone / backward-compatible mode).
  *
  * Designed to be mounted on the existing RelayAPI server.
  *
  * Usage:
- *   const gateway = new HyperGateway(relayNode)
+ *   const gateway = new HyperGateway(relayNode, { store: relayNode.store })
  *   // Add routes to existing API server:
  *   // if (path.startsWith('/v1/hyper/')) return gateway.handle(req, res, path)
  */
@@ -61,9 +62,11 @@ function guessType (filePath) {
 /**
  * Simple LRU cache for Hyperdrive instances
  * Tracks access order and evicts least recently used when limit exceeded
+ *
+ * @param {number} [maxSize=20] — maximum number of cached drives
  */
 class DriveCache {
-  constructor (maxSize = 50) {
+  constructor (maxSize = 20) {
     this.maxSize = maxSize
     this.cache = new Map() // key → { drive, lastAccess }
   }
@@ -121,16 +124,18 @@ export class HyperGateway extends EventEmitter {
   constructor (relayNode, opts = {}) {
     super()
     this.node = relayNode
-    this._drives = new DriveCache(opts.maxCachedDrives || 50) // LRU cache
+    this._drives = new DriveCache(opts.maxCachedDrives || 20) // LRU cache
     this._totalRequests = 0
     this._totalBytesServed = 0
     this._driveOperationTimeout = opts.driveOperationTimeout || 30000 // 30s default
 
-    // Dedicated content delivery store + swarm
-    // Separate from the relay node's protocol swarm to ensure
-    // clean drive replication without connection deduplication issues
+    // If a Corestore is provided (e.g. the relay node's store), create a
+    // namespaced session instead of spinning up an entirely separate P2P stack.
+    // This halves memory usage by sharing storage and the existing swarm.
+    this._externalStore = opts.store || null
     this._store = null
     this._swarm = null
+    this._ownsSwarm = false
     this._ready = false
   }
 
@@ -153,15 +158,26 @@ export class HyperGateway extends EventEmitter {
   async _ensureReady () {
     if (this._ready) return
 
-    const storagePath = this.node.config
-      ? join(this.node.config.storage || './storage', 'gateway-store')
-      : './gateway-store'
+    if (this._externalStore) {
+      // Re-use the relay node's Corestore via a namespaced session —
+      // avoids creating a second Corestore + Hyperswarm (Fix 2.1).
+      this._store = this._externalStore.namespace('gateway')
+      await this._store.ready()
+      // The relay node's swarm already calls store.replicate(conn),
+      // which covers namespaced sessions, so no extra swarm is needed.
+    } else {
+      // Standalone / backward-compatible mode: own store + swarm
+      const storagePath = this.node.config
+        ? join(this.node.config.storage || './storage', 'gateway-store')
+        : './gateway-store'
 
-    this._store = new Corestore(storagePath)
-    await this._store.ready()
+      this._store = new Corestore(storagePath)
+      await this._store.ready()
 
-    this._swarm = new Hyperswarm()
-    this._swarm.on('connection', (conn) => this._store.replicate(conn))
+      this._swarm = new Hyperswarm()
+      this._swarm.on('connection', (conn) => this._store.replicate(conn))
+      this._ownsSwarm = true
+    }
 
     this._ready = true
     this.emit('ready')
@@ -192,7 +208,7 @@ export class HyperGateway extends EventEmitter {
     // Block: .. (parent dir), null bytes, absolute paths, URL-encoded variants
     const decodedPath = decodeURIComponent(filePath)
     const doubleDecodedPath = decodeURIComponent(decodedPath)
-    
+
     if (
       decodedPath.includes('..') ||
       doubleDecodedPath.includes('..') ||
@@ -255,41 +271,75 @@ export class HyperGateway extends EventEmitter {
         }
       }
 
-      const content = await this._withTimeout(
-        drive.get(filePath),
+      // Check that the file exists via entry() — also gives us byte length
+      const entry = await this._withTimeout(
+        drive.entry(filePath),
         this._driveOperationTimeout,
-        'drive.get()'
+        'drive.entry()'
       )
-      if (!content) {
+      if (!entry || !entry.value.blob) {
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'File not found', path: filePath }))
         return
       }
 
       const contentType = guessType(filePath)
-      this._totalBytesServed += content.length
+      const byteLength = entry.value.blob.byteLength
 
       res.setHeader('Content-Type', contentType)
       res.setHeader('X-Hyper-Key', keyHex)
       res.setHeader('X-Served-By', 'hiverelay-gateway')
       res.setHeader('Cache-Control', 'public, max-age=60')
 
-      // Rewrite absolute asset paths in HTML so Vite-built apps resolve
-      // through the gateway. /assets/foo.js → ./assets/foo.js
+      // HTML needs base-URL rewriting so Vite-built apps resolve assets
+      // through the gateway.  /assets/foo.js → ./assets/foo.js
+      // This requires buffering the full response (typically small).
       if (contentType.includes('text/html')) {
+        const content = await this._withTimeout(
+          drive.get(filePath),
+          this._driveOperationTimeout,
+          'drive.get()'
+        )
+        if (!content) {
+          res.writeHead(404)
+          res.end(JSON.stringify({ error: 'File not found', path: filePath }))
+          return
+        }
         let html = content.toString('utf-8')
         html = html.replace(/href="\//g, 'href="./')
           .replace(/src="\//g, 'src="./')
           .replace(/href='\//g, "href='./")
           .replace(/src='\//g, "src='./")
-        res.writeHead(200)
-        res.end(Buffer.from(html))
+        const buf = Buffer.from(html)
+        this._totalBytesServed += buf.length
+        res.writeHead(200, { 'Content-Length': buf.length })
+        res.end(buf)
+        this.emit('served', { keyHex, filePath, bytes: buf.length })
       } else {
+        // Stream non-HTML content directly — avoids buffering large
+        // binaries (images, WASM, video, etc.) in memory (Fix 2.2).
+        if (byteLength != null) {
+          res.setHeader('Content-Length', byteLength)
+        }
         res.writeHead(200)
-        res.end(content)
-      }
 
-      this.emit('served', { keyHex, filePath, bytes: content.length })
+        const stream = drive.createReadStream(filePath)
+        let bytes = 0
+
+        stream.on('data', (chunk) => { bytes += chunk.length })
+        stream.on('end', () => {
+          this._totalBytesServed += bytes
+          this.emit('served', { keyHex, filePath, bytes })
+        })
+        stream.on('error', (err) => {
+          if (!res.headersSent) {
+            res.writeHead(502)
+          }
+          res.end(JSON.stringify({ error: err.message }))
+          this.emit('drive-error', { context: 'stream', key: keyHex, path: filePath, error: err.message })
+        })
+        stream.pipe(res)
+      }
     } catch (err) {
       res.writeHead(502)
       res.end(JSON.stringify({ error: err.message }))
@@ -314,10 +364,12 @@ export class HyperGateway extends EventEmitter {
       const drive = new Hyperdrive(this._store, Buffer.from(keyHex, 'hex'))
       await drive.ready()
 
-      // Join the drive's discovery key on our dedicated swarm
-      const done = drive.findingPeers()
-      this._swarm.join(drive.discoveryKey, { server: true, client: true })
-      this._swarm.flush().then(done, done)
+      // Join the drive's discovery key on the swarm (only when we own it)
+      if (this._swarm) {
+        const done = drive.findingPeers()
+        this._swarm.join(drive.discoveryKey, { server: true, client: true })
+        this._swarm.flush().then(done, done)
+      }
 
       // Wait for drive data to arrive from peers
       if (drive.version === 0) {
@@ -402,7 +454,7 @@ export class HyperGateway extends EventEmitter {
     }
     this._drives.clear()
 
-    if (this._swarm) {
+    if (this._ownsSwarm && this._swarm) {
       try { await this._swarm.destroy() } catch (err) {
         this.emit('swarm-destroy-error', { error: err.message })
       }

@@ -76,9 +76,12 @@ export class BandwidthReceipt extends EventEmitter {
     this.issuedReceipts = new CircularBuffer(this.maxReceipts)
     this.collectedReceipts = new CircularBuffer(this.maxReceipts)
 
-    // Replay attack prevention: track seen receipt nonces
-    this._seenNonces = new Map() // nonce hex -> timestamp for time-based eviction
-    this._maxSeenNonces = opts.maxSeenNonces || 50_000 // Limit memory usage
+    // Replay attack prevention: time-bucketed nonce tracking
+    // Each bucket key is Math.floor(timestamp / 60000) (minute granularity)
+    // Each bucket value is a Set of nonce hex strings
+    this._nonceBuckets = new Map()
+    this._nonceReplayWindowMs = 3600_000 // 1 hour replay window
+    this._nonceBucketSpanMs = 60_000 // 1 minute per bucket
 
     // Maximum allowed bytes per receipt (100 TB - prevents integer overflow attacks)
     this._maxReceiptBytes = opts.maxReceiptBytes || 100 * 1024 * 1024 * 1024 * 1024
@@ -101,33 +104,44 @@ export class BandwidthReceipt extends EventEmitter {
   }
 
   /**
-   * Check if a nonce has been seen before (prevent replay attacks)
+   * Check if a nonce has been seen before (prevent replay attacks).
+   * Checks the current minute bucket and all buckets within the replay window.
    */
   _isNonceSeen (nonce) {
     const key = b4a.toString(nonce, 'hex')
-    return this._seenNonces.has(key)
+    const now = Date.now()
+    const currentBucket = Math.floor(now / this._nonceBucketSpanMs)
+    const bucketsToCheck = Math.ceil(this._nonceReplayWindowMs / this._nonceBucketSpanMs)
+
+    for (let i = 0; i <= bucketsToCheck; i++) {
+      const bucket = this._nonceBuckets.get(currentBucket - i)
+      if (bucket && bucket.has(key)) return true
+    }
+    return false
   }
 
   /**
-   * Mark a nonce as seen
+   * Mark a nonce as seen and evict stale buckets (O(1) per bucket eviction).
    */
   _markNonceSeen (nonce) {
     const key = b4a.toString(nonce, 'hex')
     const now = Date.now()
-    // Time-based eviction: remove nonces older than 1 hour
-    if (this._seenNonces.size >= this._maxSeenNonces) {
-      for (const [k, ts] of this._seenNonces) {
-        if (now - ts > 3600_000) {
-          this._seenNonces.delete(k)
-        }
-      }
-      // If still at capacity after time-based eviction, remove oldest
-      if (this._seenNonces.size >= this._maxSeenNonces) {
-        const oldest = this._seenNonces.keys().next().value
-        this._seenNonces.delete(oldest)
+    const currentBucket = Math.floor(now / this._nonceBucketSpanMs)
+
+    let bucket = this._nonceBuckets.get(currentBucket)
+    if (!bucket) {
+      bucket = new Set()
+      this._nonceBuckets.set(currentBucket, bucket)
+    }
+    bucket.add(key)
+
+    // Evict buckets older than the replay window
+    const oldestAllowed = currentBucket - Math.ceil(this._nonceReplayWindowMs / this._nonceBucketSpanMs)
+    for (const bucketKey of this._nonceBuckets.keys()) {
+      if (bucketKey < oldestAllowed) {
+        this._nonceBuckets.delete(bucketKey)
       }
     }
-    this._seenNonces.set(key, now)
   }
 
   /**

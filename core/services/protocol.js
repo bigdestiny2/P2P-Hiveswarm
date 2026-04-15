@@ -26,6 +26,13 @@ const MSG_REQUEST = 1
 const MSG_RESPONSE = 2
 const MSG_ERROR = 3
 
+const RESTRICTED_METHODS = new Set([
+  'identity.sign',
+  'identity.verify',
+  'compute.submit',
+  'compute.result'
+])
+
 const MSG_SUBSCRIBE = 4
 const MSG_UNSUBSCRIBE = 5
 const MSG_EVENT = 6
@@ -244,6 +251,16 @@ export class ServiceProtocol extends EventEmitter {
   async _handleRequest (remotePubkey, msg) {
     const entry = this.channels.get(remotePubkey)
     if (!entry) return
+
+    const qualifiedMethod = msg.service + '.' + msg.method
+    if (RESTRICTED_METHODS.has(qualifiedMethod)) {
+      entry.msgHandler.send({
+        type: MSG_ERROR,
+        id: msg.id,
+        error: 'ACCESS_DENIED: method requires local access'
+      })
+      return
+    }
 
     try {
       let result
