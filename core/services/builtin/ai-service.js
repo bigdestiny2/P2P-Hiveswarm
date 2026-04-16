@@ -24,6 +24,7 @@
 
 import { ServiceProvider } from '../provider.js'
 import { randomBytes } from 'crypto'
+import dns from 'node:dns/promises'
 
 const JOB_STATES = {
   PENDING: 'pending',
@@ -43,8 +44,10 @@ export class AIService extends ServiceProvider {
     this.maxInputBytes = opts.maxInputBytes ?? 256 * 1024
     this.maxOutputBytes = opts.maxOutputBytes ?? 512 * 1024
     this.allowRemoteModelRegistration = opts.allowRemoteModelRegistration === true
+    this.maxCompletedJobAge = opts.maxCompletedJobAge || 3600_000
     this._running = 0
     this._queue = []
+    this._cleanupTimer = null
   }
 
   manifest () {
@@ -57,6 +60,11 @@ export class AIService extends ServiceProvider {
         'remove-model', 'embed', 'status'
       ]
     }
+  }
+
+  async start () {
+    this._cleanupTimer = setInterval(() => this._cleanupCompletedJobs(), 60_000)
+    if (this._cleanupTimer.unref) this._cleanupTimer.unref()
   }
 
   /**
@@ -85,8 +93,21 @@ export class AIService extends ServiceProvider {
       const host = parsed.hostname
       if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
         // Allow localhost for local models (Ollama, etc.)
-      } else if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.)/.test(host) || host === '169.254') {
-        throw new Error('AI_INVALID_ENDPOINT: private/internal IPs not allowed for remote models')
+      } else {
+        // Check if the hostname is itself a private IP
+        if (this._isPrivateIP(host)) {
+          throw new Error('AI_INVALID_ENDPOINT: private/internal IPs not allowed for remote models')
+        }
+        // Resolve DNS and check resolved IPs for SSRF
+        try {
+          const { address } = await dns.lookup(host)
+          if (this._isPrivateIP(address)) {
+            throw new Error('AI_INVALID_ENDPOINT: hostname resolves to private/internal IP')
+          }
+        } catch (err) {
+          if (err.message.startsWith('AI_INVALID_ENDPOINT')) throw err
+          throw new Error('AI_INVALID_ENDPOINT: could not resolve hostname')
+        }
       }
     }
 
@@ -412,6 +433,10 @@ export class AIService extends ServiceProvider {
   }
 
   async stop () {
+    if (this._cleanupTimer) {
+      clearInterval(this._cleanupTimer)
+      this._cleanupTimer = null
+    }
     for (const [, job] of this.jobs) {
       if (job.state === JOB_STATES.PENDING) {
         job.state = JOB_STATES.FAILED
@@ -430,9 +455,41 @@ export class AIService extends ServiceProvider {
     return 'anonymous'
   }
 
-  _isAdminContext (context = {}) {
-    if (!context || Object.keys(context).length === 0) return true
+  _isAdminContext (context) {
+    if (!context) return false
     return context.role === 'relay-admin' || context.role === 'local' || context.caller === 'local'
+  }
+
+  _isPrivateIP (ip) {
+    if (!ip) return true
+    if (ip === '0.0.0.0' || ip === '::') return true
+    // 127.x.x.x
+    if (/^127\./.test(ip)) return true
+    // 10.x.x.x
+    if (/^10\./.test(ip)) return true
+    // 172.16-31.x.x
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true
+    // 192.168.x.x
+    if (/^192\.168\./.test(ip)) return true
+    // 169.254.x.x (link-local)
+    if (/^169\.254\./.test(ip)) return true
+    // IPv6 loopback
+    if (ip === '::1') return true
+    // IPv6 link-local
+    if (/^fe80:/i.test(ip)) return true
+    // IPv6 unique local
+    if (/^f[cd]/i.test(ip)) return true
+    return false
+  }
+
+  _cleanupCompletedJobs () {
+    const now = Date.now()
+    for (const [id, job] of this.jobs) {
+      if ((job.state === 'complete' || job.state === 'failed' || job.state === 'cancelled') &&
+          job.completedAt && (now - job.completedAt) > this.maxCompletedJobAge) {
+        this.jobs.delete(id)
+      }
+    }
   }
 
   _countActiveJobs (owner = null) {

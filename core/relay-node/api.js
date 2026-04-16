@@ -56,6 +56,7 @@ export class RelayAPI extends EventEmitter {
     this.port = opts.apiPort || DEFAULT_PORT
     this.host = opts.apiHost || '0.0.0.0'
     this.corsOrigins = opts.corsOrigins || []
+    this.trustProxy = opts.trustProxy || false
     this.server = null
 
     // API key for authenticated endpoints (manage, seed, unseed)
@@ -82,6 +83,18 @@ export class RelayAPI extends EventEmitter {
         if (now > entry.resetAt) this._rateLimits.delete(ip)
       }
     }, 120_000)
+
+    // Warn if binding to non-loopback without an API key — all requests
+    // will pass the localhost auth check when behind a reverse proxy.
+    if (!this._apiKey && this.host !== '127.0.0.1' && this.host !== '::1') {
+      const msg = `[SECURITY WARNING] API binding to ${this.host}:${this.port} without an API key. ` +
+        'Management endpoints are protected only by localhost check, which is ineffective behind a reverse proxy. ' +
+        'Set an API key via HIVERELAY_API_KEY or opts.apiKey.'
+      if (this.node && typeof this.node.emit === 'function') {
+        this.node.emit('security-warning', { message: msg })
+      }
+      console.warn(msg)
+    }
 
     return new Promise((resolve, reject) => {
       this.server.on('error', reject)
@@ -131,8 +144,27 @@ export class RelayAPI extends EventEmitter {
     return this._isLocalRequest(req)
   }
 
+  /**
+   * Extract the real client IP from the request.
+   * When trustProxy is enabled, reads X-Forwarded-For or X-Real-IP headers.
+   * Otherwise falls back to socket remoteAddress.
+   */
+  _getClientIP (req) {
+    if (this.trustProxy) {
+      const xff = req.headers['x-forwarded-for']
+      if (xff) {
+        // X-Forwarded-For may contain multiple IPs; the leftmost is the client
+        const first = xff.split(',')[0].trim()
+        if (first) return first
+      }
+      const realIP = req.headers['x-real-ip']
+      if (realIP) return realIP.trim()
+    }
+    return req.socket.remoteAddress || ''
+  }
+
   _isLocalRequest (req) {
-    const ip = req.socket.remoteAddress || ''
+    const ip = this._getClientIP(req)
     return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
   }
 
@@ -151,7 +183,7 @@ export class RelayAPI extends EventEmitter {
   }
 
   async _handle (req, res) {
-    const ip = req.socket.remoteAddress || '127.0.0.1'
+    const ip = this._getClientIP(req) || '127.0.0.1'
     const requestOrigin = req.headers.origin
 
     // CORS headers on all responses
@@ -306,69 +338,27 @@ export class RelayAPI extends EventEmitter {
         // --- Dashboard endpoints ---
 
         if (path === '/dashboard') {
-          if (!this._dashboardHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'index.html')
-            this._dashboardHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._dashboardHtml)
-          return
+          return this._serveDashboard(res, '_dashboardHtml', 'index.html')
         }
 
         if (path === '/network') {
-          if (!this._networkHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'network.html')
-            this._networkHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._networkHtml)
-          return
+          return this._serveDashboard(res, '_networkHtml', 'network.html')
         }
 
         if (path === '/docs') {
-          if (!this._docsHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'docs.html')
-            this._docsHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._docsHtml)
-          return
+          return this._serveDashboard(res, '_docsHtml', 'docs.html')
         }
 
         if (path === '/payments') {
-          if (!this._paymentsHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'payments.html')
-            this._paymentsHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._paymentsHtml)
-          return
+          return this._serveDashboard(res, '_paymentsHtml', 'payments.html')
         }
 
         if (path === '/calculator') {
-          if (!this._calculatorHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'calculator.html')
-            this._calculatorHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._calculatorHtml)
-          return
+          return this._serveDashboard(res, '_calculatorHtml', 'calculator.html')
         }
 
         if (path === '/leaderboard') {
-          if (!this._leaderboardHtml) {
-            const htmlPath = join(__dirname, '..', '..', 'dashboard', 'leaderboard.html')
-            this._leaderboardHtml = await readFile(htmlPath, 'utf-8')
-          }
-          res.setHeader('Content-Type', 'text/html')
-          res.writeHead(200)
-          res.end(this._leaderboardHtml)
-          return
+          return this._serveDashboard(res, '_leaderboardHtml', 'leaderboard.html')
         }
 
         if (path === '/api/health-detail') {
@@ -567,6 +557,9 @@ export class RelayAPI extends EventEmitter {
 
         if (path.startsWith('/api/reputation/')) {
           const pubkey = path.slice('/api/reputation/'.length)
+          if (!pubkey || !/^[0-9a-f]{64}$/.test(pubkey)) {
+            return this._json(res, { error: 'Invalid pubkey' }, 400)
+          }
           if (!this.node.reputation) return this._json(res, null)
           const record = this.node.reputation.getRecord(pubkey)
           return this._json(res, record)
@@ -895,9 +888,9 @@ export class RelayAPI extends EventEmitter {
           setTimeout(async () => {
             try {
               await this.node.stop()
-              process.exit(0)
-            } catch (_) {
-              process.exit(1)
+              this.node.emit('shutdown-complete', { clean: true })
+            } catch (err) {
+              this.node.emit('shutdown-complete', { clean: false, error: err })
             }
           }, 500)
           return
@@ -1083,34 +1076,45 @@ export class RelayAPI extends EventEmitter {
     return null
   }
 
+  async _serveDashboard (res, cacheKey, filename) {
+    if (!this[cacheKey]) {
+      const htmlPath = join(__dirname, '..', '..', 'dashboard', filename)
+      this[cacheKey] = await readFile(htmlPath, 'utf-8')
+    }
+    res.setHeader('Content-Type', 'text/html')
+    res.writeHead(200)
+    res.end(this[cacheKey])
+  }
+
   _json (res, data, status = 200) {
     res.writeHead(status)
     res.end(JSON.stringify(data) + '\n')
   }
 
-  _readBody (req) {
+  _readBody (req, maxBytes = 65536) {
     return new Promise((resolve, reject) => {
+      let settled = false
+      const done = (fn, val) => { if (!settled) { settled = true; fn(val) } }
       let data = ''
       let size = 0
-      const MAX_BODY = 64 * 1024 // 64 KB max body
 
       req.on('data', (chunk) => {
         size += chunk.length
-        if (size > MAX_BODY) {
+        if (size > maxBytes) {
           req.destroy()
-          reject(new Error('Request body too large'))
+          done(reject, new Error('Request body too large'))
           return
         }
         data += chunk
       })
       req.on('end', () => {
         try {
-          resolve(data ? JSON.parse(data) : {})
+          done(resolve, data ? JSON.parse(data) : {})
         } catch {
-          reject(new Error('Invalid JSON body'))
+          done(reject, new Error('Invalid JSON body'))
         }
       })
-      req.on('error', reject)
+      req.on('error', (err) => done(reject, err))
     })
   }
 
@@ -1237,7 +1241,7 @@ export class RelayAPI extends EventEmitter {
     })
   }
 
-  _handleServiceManagement (res, body) {
+  async _handleServiceManagement (res, body) {
     if (!this.node.serviceRegistry) {
       return this._json(res, { error: 'Services not enabled' }, 503)
     }
@@ -1255,11 +1259,12 @@ export class RelayAPI extends EventEmitter {
       if (!registry.services.has(service)) {
         return this._json(res, { error: `Service '${service}' not found` }, 404)
       }
-      registry.unregister(service).then(() => {
+      try {
+        await registry.unregister(service)
         this._json(res, { ok: true, action: 'disabled', service })
-      }).catch(err => {
+      } catch (err) {
         this._json(res, { error: err.message }, 500)
-      })
+      }
       return
     }
 
@@ -1269,11 +1274,13 @@ export class RelayAPI extends EventEmitter {
         return this._json(res, { error: `Service '${service}' not found` }, 404)
       }
       const ctx = { node: this.node, store: this.node.store, config: this.node.config }
-      provider.stop().then(() => provider.start(ctx)).then(() => {
+      try {
+        await provider.stop()
+        await provider.start(ctx)
         this._json(res, { ok: true, action: 'restarted', service })
-      }).catch(err => {
+      } catch (err) {
         this._json(res, { error: err.message }, 500)
-      })
+      }
       return
     }
 
@@ -1297,9 +1304,27 @@ export class RelayAPI extends EventEmitter {
 
     try {
       const overrides = {}
-      if (body.maxConnections !== undefined) overrides.maxConnections = body.maxConnections
-      if (body.maxRelayBandwidthMbps !== undefined) overrides.maxRelayBandwidthMbps = body.maxRelayBandwidthMbps
-      if (body.maxStorageBytes !== undefined) overrides.maxStorageBytes = body.maxStorageBytes
+      if (body.maxConnections !== undefined) {
+        const val = Number(body.maxConnections)
+        if (!Number.isFinite(val) || val < 0) {
+          return this._json(res, { error: 'maxConnections must be a non-negative number' }, 400)
+        }
+        overrides.maxConnections = val
+      }
+      if (body.maxRelayBandwidthMbps !== undefined) {
+        const val = Number(body.maxRelayBandwidthMbps)
+        if (!Number.isFinite(val) || val < 0) {
+          return this._json(res, { error: 'maxRelayBandwidthMbps must be a non-negative number' }, 400)
+        }
+        overrides.maxRelayBandwidthMbps = val
+      }
+      if (body.maxStorageBytes !== undefined) {
+        const val = Number(body.maxStorageBytes)
+        if (!Number.isFinite(val) || val < 0) {
+          return this._json(res, { error: 'maxStorageBytes must be a non-negative number' }, 400)
+        }
+        overrides.maxStorageBytes = val
+      }
       if (body.discovery && typeof body.discovery === 'object') overrides.discovery = body.discovery
       if (body.access && typeof body.access === 'object') overrides.access = body.access
       if (body.pairing && typeof body.pairing === 'object') overrides.pairing = body.pairing
@@ -1399,8 +1424,16 @@ export class RelayAPI extends EventEmitter {
 
   _handleTransportToggle (res, body) {
     const { transport, enabled } = body
-    if (!transport) {
+    if (!transport || typeof transport !== 'string') {
       return this._json(res, { error: 'transport required' }, 400)
+    }
+
+    if (transport === '__proto__' || transport === 'constructor' || transport === 'prototype') {
+      return this._json(res, { error: 'Invalid transport name' }, 400)
+    }
+
+    if (!/^[a-z0-9-]+$/.test(transport)) {
+      return this._json(res, { error: 'Invalid transport name' }, 400)
     }
 
     if (!this.node.config.transports) {

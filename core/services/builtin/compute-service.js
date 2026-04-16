@@ -39,8 +39,10 @@ export class ComputeService extends ServiceProvider {
     this.maxResultBytes = opts.maxResultBytes ?? 512 * 1024
     this.maxExecutionMs = opts.maxExecutionMs ?? 30_000
     this.handlers = new Map() // taskType -> handler function
+    this.maxCompletedJobAge = opts.maxCompletedJobAge || 3600_000
     this._running = 0
     this._queue = [] // pending job IDs
+    this._cleanupTimer = null
   }
 
   manifest () {
@@ -50,6 +52,11 @@ export class ComputeService extends ServiceProvider {
       description: 'Sandboxed compute execution for apps — task queue, future WASM/ZK/AI',
       capabilities: ['submit', 'status', 'result', 'cancel', 'list', 'capabilities']
     }
+  }
+
+  async start () {
+    this._cleanupTimer = setInterval(() => this._cleanupCompletedJobs(), 60_000)
+    if (this._cleanupTimer.unref) this._cleanupTimer.unref()
   }
 
   /**
@@ -208,6 +215,10 @@ export class ComputeService extends ServiceProvider {
   }
 
   async stop () {
+    if (this._cleanupTimer) {
+      clearInterval(this._cleanupTimer)
+      this._cleanupTimer = null
+    }
     // Cancel all pending jobs
     for (const jobId of this._queue) {
       const job = this.jobs.get(jobId)
@@ -227,8 +238,19 @@ export class ComputeService extends ServiceProvider {
     return 'anonymous'
   }
 
-  _isAdminContext (context = {}) {
+  _isAdminContext (context) {
+    if (!context) return false
     return context.role === 'relay-admin' || context.role === 'local' || context.caller === 'local'
+  }
+
+  _cleanupCompletedJobs () {
+    const now = Date.now()
+    for (const [id, job] of this.jobs) {
+      if ((job.state === 'complete' || job.state === 'failed' || job.state === 'cancelled') &&
+          job.completedAt && (now - job.completedAt) > this.maxCompletedJobAge) {
+        this.jobs.delete(id)
+      }
+    }
   }
 
   _assertCanAccess (job, context = {}) {

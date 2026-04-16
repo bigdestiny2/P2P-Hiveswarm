@@ -98,15 +98,30 @@ test('StorageService - _checkPolicy skips when no guard', (t) => {
   t.pass('no guard, no check')
 })
 
-test('StorageService - _checkPolicy skips when tier unknown', (t) => {
+test('StorageService - _checkPolicy denies when tier unknown (fail-closed)', (t) => {
   const guard = new PolicyGuard()
   const svc = new StorageService({
     policyGuard: guard,
     getAppTier: () => null // unknown app
   })
-  // Should not throw for unknown apps
-  svc._checkPolicy('aabb', 'store-on-relay')
-  t.pass('unknown tier passes')
+  // Should deny unknown apps (fail-closed)
+  try {
+    svc._checkPolicy('aabb', 'store-on-relay', { remotePubkey: 'peer-a' })
+    t.fail('should throw for unknown tier')
+  } catch (err) {
+    t.ok(err.message.includes('ACCESS_DENIED'), 'unknown tier denied')
+  }
+})
+
+test('StorageService - _checkPolicy allows unknown tier for admin context', (t) => {
+  const guard = new PolicyGuard()
+  const svc = new StorageService({
+    policyGuard: guard,
+    getAppTier: () => null
+  })
+  // Admin should pass even for unknown apps
+  svc._checkPolicy('aabb', 'store-on-relay', { role: 'local' })
+  t.pass('admin passes unknown tier')
 })
 
 test('StorageService - _checkPolicy suspends app permanently', (t) => {

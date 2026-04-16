@@ -36,7 +36,7 @@ import Protomux from 'protomux'
 import c from 'compact-encoding'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
-import { readdir, readFile, writeFile, stat, mkdir } from 'fs/promises'
+import { readdir, readFile, writeFile, lstat, mkdir } from 'fs/promises'
 import { join, relative, resolve } from 'path'
 import { BootstrapCache } from '../core/bootstrap-cache.js'
 import {
@@ -146,10 +146,11 @@ export class HiveRelayClient extends EventEmitter {
     }
 
     // Wire replication for all connections
-    this.swarm.on('connection', (conn, info) => {
+    this._connectionHandler = (conn, info) => {
       if (this.store) this.store.replicate(conn)
       this._onConnection(conn, info)
-    })
+    }
+    this.swarm.on('connection', this._connectionHandler)
 
     // Join discovery topic to find relay nodes
     if (this.autoDiscover) {
@@ -310,7 +311,8 @@ export class HiveRelayClient extends EventEmitter {
     const drive = new Hyperdrive(this.store, keyBuf, driveOpts)
     await drive.ready()
 
-    this.swarm.join(drive.discoveryKey, { server: true, client: true })
+    const isAuthor = drive.core?.writable || false
+    this.swarm.join(drive.discoveryKey, { server: isAuthor, client: true })
     await this.swarm.flush()
 
     const shouldWait = opts.wait !== false
@@ -951,6 +953,11 @@ export class HiveRelayClient extends EventEmitter {
 
     this.emit('reconnecting', { attempt: nextAttempt, delay })
 
+    // Destroy old discovery handle to prevent leaked DHT queries
+    if (this._discoveryTopic) {
+      try { this._discoveryTopic.destroy() } catch (_) {}
+    }
+
     this._discoveryTopic = this.swarm.join(RELAY_DISCOVERY_TOPIC, {
       server: false,
       client: true
@@ -998,15 +1005,20 @@ export class HiveRelayClient extends EventEmitter {
     const entry = this.seedRequests.get(appKeyHex)
 
     if (entry) {
-      // Verify relay signature before accepting
-      if (msg.relayPubkey && msg.relaySignature) {
-        const payload = b4a.concat([msg.appKey, msg.relayPubkey, b4a.from(msg.region || '')])
-        const valid = sodium.crypto_sign_verify_detached(msg.relaySignature, payload, msg.relayPubkey)
-        if (!valid) {
-          this.emit('invalid-accept', { appKey: appKeyHex, reason: 'bad relay signature' })
-          return
-        }
+      // Reject any seed-accept that lacks relay identity or signature
+      if (!msg.relayPubkey || !msg.relaySignature) {
+        this.emit('seed-unsigned-reject', { key: appKeyHex, msg })
+        return
       }
+
+      // Verify relay signature before accepting
+      const payload = b4a.concat([msg.appKey, msg.relayPubkey, b4a.from(msg.region || '')])
+      const valid = sodium.crypto_sign_verify_detached(msg.relaySignature, payload, msg.relayPubkey)
+      if (!valid) {
+        this.emit('invalid-accept', { appKey: appKeyHex, reason: 'bad relay signature' })
+        return
+      }
+
       entry.acceptances.push(msg)
     }
 
@@ -1031,6 +1043,11 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   _onServiceMessage (relayPubkey, msg) {
+    // Basic type validation on incoming messages
+    if (!msg || typeof msg.type !== 'number') return
+    // For response/error types, validate id is a number
+    if ((msg.type === 2 || msg.type === 3) && typeof msg.id !== 'number') return
+
     const relay = this.relays.get(relayPubkey)
     if (relay) relay.lastSeen = Date.now()
 
@@ -1126,18 +1143,24 @@ export class HiveRelayClient extends EventEmitter {
 
   // ─── Directory Reading (for publish('./my-app') sugar) ──────────
 
-  async _readDirectory (dirPath, rootDir) {
+  async _readDirectory (dirPath, rootDir, opts = {}) {
     if (!rootDir) rootDir = resolve(dirPath)
+    const maxFileSize = opts.maxFileSize || 100 * 1024 * 1024
     const files = []
     const entries = await readdir(dirPath, { withFileTypes: true })
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name)
+      // Skip symlinks entirely to avoid traversal attacks
+      const fileStat = await lstat(fullPath)
+      if (fileStat.isSymbolicLink()) continue
       if (entry.isDirectory()) {
         // Skip node_modules, .git, hidden dirs
         if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.')) continue
-        const subFiles = await this._readDirectory(fullPath, rootDir)
+        const subFiles = await this._readDirectory(fullPath, rootDir, opts)
         files.push(...subFiles)
       } else if (entry.isFile()) {
+        // Skip files larger than maxFileSize (default 100 MB)
+        if (fileStat.size > maxFileSize) continue
         const relPath = '/' + relative(rootDir, fullPath)
         const content = await readFile(fullPath)
         files.push({ path: relPath, content })
@@ -1190,6 +1213,12 @@ export class HiveRelayClient extends EventEmitter {
     }
     this._reconnect.delay = 5000
     this._reconnect.attempt = 0
+
+    // Remove swarm connection listener (important for shared swarms)
+    if (this._connectionHandler && this.swarm) {
+      this.swarm.removeListener('connection', this._connectionHandler)
+      this._connectionHandler = null
+    }
 
     // Close all drives
     for (const [keyHex, drive] of this.drives) {

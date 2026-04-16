@@ -26,7 +26,9 @@ export class StorageService extends ServiceProvider {
     super()
     this.store = null
     this.drives = new Map() // keyHex -> Hyperdrive
+    this._driveOwners = new Map() // keyHex -> callerKey
     this.maxDrives = 256
+    this.maxWriteBytes = opts.maxWriteBytes || 10 * 1024 * 1024
     this.policyGuard = opts.policyGuard || null
     this.getAppTier = opts.getAppTier || null // fn(keyHex) → tier string
   }
@@ -55,7 +57,7 @@ export class StorageService extends ServiceProvider {
     this.drives.clear()
   }
 
-  async 'drive-create' (params) {
+  async 'drive-create' (params, context = {}) {
     if (this.drives.size >= this.maxDrives) {
       throw new Error('DRIVE_LIMIT: max drives reached')
     }
@@ -64,7 +66,9 @@ export class StorageService extends ServiceProvider {
     await drive.ready()
 
     const keyHex = b4a.toString(drive.key, 'hex')
+    const callerKey = this._callerKey(context)
     this.drives.set(keyHex, drive)
+    this._driveOwners.set(keyHex, callerKey)
 
     return {
       key: keyHex,
@@ -95,16 +99,20 @@ export class StorageService extends ServiceProvider {
     }
   }
 
-  async 'drive-read' (params) {
-    this._checkPolicy(params.key, 'read-from-relay')
+  async 'drive-read' (params, context = {}) {
+    this._checkPolicy(params.key, 'read-from-relay', context)
     const drive = this._getDrive(params.key)
     const data = await drive.get(params.path)
     if (!data) throw new Error('FILE_NOT_FOUND: ' + params.path)
     return { path: params.path, data: b4a.toString(data, 'base64'), size: data.length }
   }
 
-  async 'drive-write' (params) {
-    this._checkPolicy(params.key, 'store-on-relay')
+  async 'drive-write' (params, context = {}) {
+    this._checkPolicy(params.key, 'store-on-relay', context)
+    this._assertDriveOwner(params.key, context)
+    if (params.data && Buffer.byteLength(String(params.data)) > this.maxWriteBytes) {
+      throw new Error('WRITE_TOO_LARGE: max write size exceeded')
+    }
     const drive = this._getDrive(params.key)
     if (!drive.writable) throw new Error('DRIVE_READONLY')
     const data = b4a.from(params.data, params.encoding || 'base64')
@@ -112,8 +120,9 @@ export class StorageService extends ServiceProvider {
     return { path: params.path, size: data.length }
   }
 
-  async 'drive-delete' (params) {
-    this._checkPolicy(params.key, 'delete-from-relay')
+  async 'drive-delete' (params, context = {}) {
+    this._checkPolicy(params.key, 'delete-from-relay', context)
+    this._assertDriveOwner(params.key, context)
     const drive = this._getDrive(params.key)
     if (!drive.writable) throw new Error('DRIVE_READONLY')
     await drive.del(params.path)
@@ -130,8 +139,8 @@ export class StorageService extends ServiceProvider {
     }
   }
 
-  async 'core-append' (params) {
-    this._checkPolicy(params.key, 'store-on-relay')
+  async 'core-append' (params, context = {}) {
+    this._checkPolicy(params.key, 'store-on-relay', context)
     const core = this.store.get(b4a.from(params.key, 'hex'))
     await core.ready()
     if (!core.writable) throw new Error('CORE_READONLY')
@@ -148,14 +157,39 @@ export class StorageService extends ServiceProvider {
     return { index: params.index, data: b4a.toString(block, 'base64') }
   }
 
-  _checkPolicy (keyHex, operation) {
+  _checkPolicy (keyHex, operation, context = {}) {
     if (!this.policyGuard || !this.getAppTier) return
     const tier = this.getAppTier(keyHex)
-    if (!tier) return // Unknown app — no tier info available
+    if (!tier) {
+      if (this._isAdminContext(context)) return
+      throw new Error('ACCESS_DENIED: unknown content - policy check failed')
+    }
     const check = this.policyGuard.check(keyHex, tier, operation)
     if (!check.allowed) {
       throw new Error(`POLICY_VIOLATION: ${check.reason}`)
     }
+  }
+
+  _assertDriveOwner (keyHex, context = {}) {
+    if (this._isAdminContext(context)) return
+    const owner = this._driveOwners.get(keyHex)
+    if (!owner) return // drive not tracked (e.g. pre-existing)
+    const caller = this._callerKey(context)
+    if (caller !== owner) {
+      throw new Error('ACCESS_DENIED: drive owned by another caller')
+    }
+  }
+
+  _callerKey (context = {}) {
+    if (context.remotePubkey) return context.remotePubkey
+    if (context.userId) return context.userId
+    if (context.caller === 'local' || context.role === 'local') return 'local'
+    return 'anonymous'
+  }
+
+  _isAdminContext (context) {
+    if (!context) return false
+    return context.role === 'relay-admin' || context.role === 'local' || context.caller === 'local'
   }
 
   _getDrive (keyHex) {

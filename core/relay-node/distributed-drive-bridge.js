@@ -122,6 +122,9 @@ export class DistributedDriveBridge extends EventEmitter {
       this.unregisterDrive(appKey)
     }
     this._registered.clear()
+    for (const [, peer] of this._peers) {
+      try { if (peer.destroy) peer.destroy(); else if (peer.end) peer.end() } catch (_) {}
+    }
     this._peers.clear()
     this.drive = null
     this.running = false

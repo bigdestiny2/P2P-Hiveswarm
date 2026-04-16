@@ -234,15 +234,15 @@ export class Router extends EventEmitter {
     if (!required || required === 'public') return true
 
     if (required === 'authenticated-user') {
-      return context.authenticated === true || role === 'authenticated-user' || role === 'relay-admin' || role === 'local'
+      return context.authenticated === true || role === 'authenticated-user' || role === 'relay-admin' || context.caller === 'local'
     }
 
     if (required === 'relay-admin') {
-      return role === 'relay-admin' || role === 'local'
+      return role === 'relay-admin' || context.caller === 'local'
     }
 
     if (required === 'local-only') {
-      return role === 'local' || context.caller === 'local'
+      return context.caller === 'local'
     }
 
     return false

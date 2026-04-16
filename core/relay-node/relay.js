@@ -45,9 +45,11 @@ export class Relay extends EventEmitter {
     this.totalCircuitsServed = 0
     this.running = false
 
-    // Bandwidth tracking
-    this._bandwidthWindow = [] // [{ bytes, timestamp }]
-    this._bandwidthWindowMs = 1000 // 1-second sliding window
+    // Bandwidth tracking — time-bucketed counters (second granularity)
+    this._bandwidthBuckets = new Map() // second-timestamp -> bytes
+    this._bandwidthTotal = 0
+    this._bandwidthWindowSec = 60 // 60-second sliding window
+    this.maxBandwidthBytes = Math.floor((this.maxBandwidthMbps * 1_000_000 / 8) * this._bandwidthWindowSec)
   }
 
   async start () {
@@ -154,19 +156,28 @@ export class Relay extends EventEmitter {
    * Check if current throughput exceeds the configured bandwidth cap.
    */
   _isOverBandwidthLimit () {
-    const now = Date.now()
-    const cutoff = now - this._bandwidthWindowMs
-    // Prune old entries
-    while (this._bandwidthWindow.length > 0 && this._bandwidthWindow[0].timestamp < cutoff) {
-      this._bandwidthWindow.shift()
+    const cutoff = Math.floor(Date.now() / 1000) - this._bandwidthWindowSec
+    for (const [ts] of this._bandwidthBuckets) {
+      if (ts < cutoff) {
+        this._bandwidthTotal -= this._bandwidthBuckets.get(ts)
+        this._bandwidthBuckets.delete(ts)
+      } else break // Map preserves insertion order
     }
-    const bytesInWindow = this._bandwidthWindow.reduce((sum, e) => sum + e.bytes, 0)
-    const mbps = (bytesInWindow * 8) / (this._bandwidthWindowMs / 1000) / 1_000_000
-    return mbps >= this.maxBandwidthMbps
+    return this._bandwidthTotal > this.maxBandwidthBytes
   }
 
   _recordBandwidth (bytes) {
-    this._bandwidthWindow.push({ bytes, timestamp: Date.now() })
+    const now = Math.floor(Date.now() / 1000)
+    this._bandwidthBuckets.set(now, (this._bandwidthBuckets.get(now) || 0) + bytes)
+    this._bandwidthTotal += bytes
+    // Prune old buckets
+    const cutoff = now - this._bandwidthWindowSec
+    for (const [ts] of this._bandwidthBuckets) {
+      if (ts < cutoff) {
+        this._bandwidthTotal -= this._bandwidthBuckets.get(ts)
+        this._bandwidthBuckets.delete(ts)
+      } else break // Map preserves insertion order
+    }
   }
 
   getStats () {

@@ -17,6 +17,7 @@ const MIN_ARBITRATOR_SCORE = 100
 const MIN_ARBITRATOR_RELIABILITY = 0.95
 const MIN_ARBITRATOR_CHALLENGES = 50
 const DEFAULT_MIN_VOTES = 3
+const MIN_VOTES_FLOOR = 3
 const VALID_DISPUTE_TYPES = ['sla-violation', 'proof-failure', 'receipt-dispute']
 
 export class ArbitrationService extends ServiceProvider {
@@ -85,10 +86,10 @@ export class ArbitrationService extends ServiceProvider {
       votes: new Map(),
       status: 'open',
       verdict: null,
-      penalty: params.penalty || 0,
+      penalty: Math.min(Math.max(0, params.penalty || 0), this.config?.maxPenalty || 1000000),
       createdAt: Date.now(),
       resolvedAt: null,
-      minVotes: params.minVotes || DEFAULT_MIN_VOTES
+      minVotes: Math.max(MIN_VOTES_FLOOR, params.minVotes || this.config?.minVotes || DEFAULT_MIN_VOTES)
     }
 
     this.disputes.set(id, dispute)

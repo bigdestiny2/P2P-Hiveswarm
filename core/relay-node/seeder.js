@@ -28,6 +28,10 @@ export class Seeder extends EventEmitter {
 
     // Download all blocks
     const range = core.download({ start: 0, end: -1 })
+    range.done().catch(err => {
+      // Log but don't throw — download will retry
+      if (this.node?.emit) this.node.emit('download-error', { key: publicKeyHex, error: err.message })
+    })
 
     // Periodically re-announce on the DHT
     const topic = core.discoveryKey
@@ -78,7 +82,7 @@ export class Seeder extends EventEmitter {
     entry.range.destroy()
     await entry.core.close()
 
-    this.totalBytesStored -= entry.bytesStored
+    this.totalBytesStored = Math.max(0, this.totalBytesStored - entry.bytesStored)
     this.cores.delete(publicKeyHex)
 
     this.emit('unseeded-core', { publicKeyHex })

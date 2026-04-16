@@ -15,6 +15,7 @@ import { WebSocketTransport } from '../../transports/websocket/index.js'
 import { TorTransport } from '../../transports/tor/index.js'
 import { HolesailTransport } from '../../transports/holesail/index.js'
 import http from 'http'
+import { Worker } from 'worker_threads'
 import { BootstrapCache } from '../bootstrap-cache.js'
 import { SeedProtocol } from '../protocol/seed-request.js'
 import { CircuitRelay } from '../protocol/relay-circuit.js'
@@ -157,11 +158,12 @@ function buildConfig (mode, opts) {
 }
 
 function withTimeout (promise, ms, label) {
+  let timer
   return Promise.race([
-    promise,
-    new Promise((_resolve, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-    )
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    })
   ])
 }
 
@@ -212,6 +214,8 @@ export class RelayNode extends EventEmitter {
     this._pendingRequests = new Map() // appKey -> registry entry (approval mode queue)
     this._catalogBroadcastTimer = null
     this._catalogPeerThrottle = new Map() // peerKey -> lastCatalogTime
+    this._catalogThrottleCleanup = null
+    this._seedMutex = false
     this._replicationCheckInterval = null
     this._replicationHealth = new Map() // appKey -> { state, current, target, missing }
     this._lastReplicationCheckAt = null
@@ -419,7 +423,8 @@ export class RelayNode extends EventEmitter {
           apiPort: this.config.apiPort,
           apiHost: this.config.apiHost,
           corsOrigins: this.config.corsOrigins,
-          apiKey: this.config.apiKey
+          apiKey: this.config.apiKey,
+          trustProxy: this.config.trustProxy || false
         })
         startups.push(this.api.start())
       }
@@ -531,7 +536,48 @@ export class RelayNode extends EventEmitter {
           const hardcoded = [
             storageService,
             new IdentityService(),
-            new ComputeService(this.config.compute || {}),
+            (() => {
+              const compute = new ComputeService(this.config.compute || {})
+              const workerScript = new URL('../services/builtin/js-sandbox-worker.js', import.meta.url).pathname
+              compute.registerHandler('js', async (input) => {
+                const timeout = input.timeout || 5000
+                return new Promise((resolve, reject) => {
+                  let worker
+                  try {
+                    worker = new Worker(workerScript, {
+                      workerData: { code: input.code, input: input.data || {}, timeout }
+                    })
+                  } catch (err) {
+                    return reject(err)
+                  }
+                  const killTimer = setTimeout(() => {
+                    worker.terminate().catch(() => {})
+                    reject(new Error('JS_EXECUTION_TIMEOUT'))
+                  }, timeout + 2000)
+
+                  worker.on('message', (msg) => {
+                    clearTimeout(killTimer)
+                    worker.terminate().catch(() => {})
+                    if (msg && msg.error) reject(new Error(msg.error))
+                    else resolve(msg && msg.result)
+                  })
+
+                  worker.on('error', (err) => {
+                    clearTimeout(killTimer)
+                    worker.terminate().catch(() => {})
+                    reject(err)
+                  })
+
+                  worker.on('exit', (code) => {
+                    clearTimeout(killTimer)
+                    if (code !== 0) {
+                      reject(new Error(`JS_SANDBOX_EXITED: ${code}`))
+                    }
+                  })
+                })
+              })
+              return compute
+            })(),
             new AIService(this.config.ai || {}),
             new ZKService(),
             new SLAService(),
@@ -669,6 +715,15 @@ export class RelayNode extends EventEmitter {
         }
       }
 
+      // Periodic cleanup of stale catalog peer throttle entries
+      this._catalogThrottleCleanup = setInterval(() => {
+        const cutoff = Date.now() - 300_000
+        for (const [key, time] of this._catalogPeerThrottle) {
+          if (time < cutoff) this._catalogPeerThrottle.delete(key)
+        }
+      }, 60_000)
+      if (this._catalogThrottleCleanup.unref) this._catalogThrottleCleanup.unref()
+
       this._startHealthChecks()
 
       // Start seeding registry
@@ -731,6 +786,7 @@ export class RelayNode extends EventEmitter {
     } catch (err) {
       // Rollback in reverse order
       this.bootstrapCache.stop()
+      if (this._catalogThrottleCleanup) { clearInterval(this._catalogThrottleCleanup); this._catalogThrottleCleanup = null }
       if (this._reputationSaveInterval) { clearInterval(this._reputationSaveInterval); this._reputationSaveInterval = null }
       if (this._reputationDecayInterval) { clearInterval(this._reputationDecayInterval); this._reputationDecayInterval = null }
       if (this._registryScanInterval) { clearInterval(this._registryScanInterval); this._registryScanInterval = null }
@@ -843,6 +899,25 @@ export class RelayNode extends EventEmitter {
     }
 
     // Already seeding this exact key — no-op
+    if (this.seededApps.has(appKeyHex)) {
+      const existing = this.seededApps.get(appKeyHex)
+      return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
+    }
+
+    // Acquire seed mutex to prevent concurrent eviction races
+    while (this._seedMutex) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    this._seedMutex = true
+    try {
+      return await this._seedAppInner(appKeyHex, opts, contentType, parentKey, mountPath, privacyTier)
+    } finally {
+      this._seedMutex = false
+    }
+  }
+
+  async _seedAppInner (appKeyHex, opts, contentType, parentKey, mountPath, privacyTier) {
+    // Re-check after acquiring mutex — another call may have seeded it
     if (this.seededApps.has(appKeyHex)) {
       const existing = this.seededApps.get(appKeyHex)
       return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
@@ -1783,6 +1858,10 @@ export class RelayNode extends EventEmitter {
     if (this._catalogBroadcastTimer) {
       clearTimeout(this._catalogBroadcastTimer)
       this._catalogBroadcastTimer = null
+    }
+    if (this._catalogThrottleCleanup) {
+      clearInterval(this._catalogThrottleCleanup)
+      this._catalogThrottleCleanup = null
     }
     this._catalogPeerThrottle.clear()
 

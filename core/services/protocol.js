@@ -39,7 +39,7 @@ const MSG_EVENT = 6
 const MSG_APP_CATALOG = 7
 
 export class ServiceProtocol extends EventEmitter {
-  constructor (registry) {
+  constructor (registry, opts = {}) {
     super()
     this.registry = registry
     this.router = null // Set by RelayNode after Router creation
@@ -48,6 +48,50 @@ export class ServiceProtocol extends EventEmitter {
     this._peerSubscriptions = new Map() // remotePubkey -> [subId]
     this._nextId = 1
     this.requestTimeout = 30_000
+
+    // Role-based authorization
+    this._peerRoles = new Map() // pubkey hex -> role string
+    this._defaultPeerRole = opts.defaultPeerRole || 'anonymous'
+
+    // Per-peer rate limiting
+    this._rateLimitMax = opts.rateLimitMax || 100 // requests per window
+    this._rateLimitWindow = opts.rateLimitWindow || 60_000 // 1 minute
+    this._peerRateState = new Map() // pubkey -> { tokens, lastRefill }
+  }
+
+  /**
+   * Assign a role to a peer by pubkey.
+   */
+  setPeerRole (pubkey, role) {
+    this._peerRoles.set(pubkey, role)
+  }
+
+  /**
+   * Check and consume a rate-limit token for a peer.
+   * Returns true if the request is allowed, false if rate-limited.
+   */
+  _checkRateLimit (pubkey) {
+    const now = Date.now()
+    let state = this._peerRateState.get(pubkey)
+
+    if (!state) {
+      state = { tokens: this._rateLimitMax, lastRefill: now }
+      this._peerRateState.set(pubkey, state)
+    }
+
+    // Refill tokens based on elapsed time
+    const elapsed = now - state.lastRefill
+    if (elapsed > 0) {
+      const refill = Math.floor((elapsed / this._rateLimitWindow) * this._rateLimitMax)
+      if (refill > 0) {
+        state.tokens = Math.min(this._rateLimitMax, state.tokens + refill)
+        state.lastRefill = now
+      }
+    }
+
+    if (state.tokens <= 0) return false
+    state.tokens--
+    return true
   }
 
   /**
@@ -127,7 +171,7 @@ export class ServiceProtocol extends EventEmitter {
         reject(new Error('REQUEST_TIMEOUT'))
       }, this.requestTimeout)
 
-      this._pendingRequests.set(id, { resolve, reject, timer })
+      this._pendingRequests.set(id, { resolve, reject, timer, remotePubkey })
 
       entry.msgHandler.send({
         type: MSG_REQUEST,
@@ -205,6 +249,19 @@ export class ServiceProtocol extends EventEmitter {
       for (const entry of subs) this.router.pubsub.unsubscribe(entry.subId)
     }
     this._peerSubscriptions.delete(remotePubkey)
+
+    // Clean up rate limiter state for this peer
+    this._peerRateState.delete(remotePubkey)
+
+    // Reject any pending requests for this peer
+    for (const [id, pending] of this._pendingRequests) {
+      if (pending.remotePubkey === remotePubkey) {
+        clearTimeout(pending.timer)
+        this._pendingRequests.delete(id)
+        pending.reject(new Error('PEER_DISCONNECTED'))
+      }
+    }
+
     this.emit('channel-close', { remotePubkey })
   }
 
@@ -267,6 +324,16 @@ export class ServiceProtocol extends EventEmitter {
     const entry = this.channels.get(remotePubkey)
     if (!entry) return
 
+    // Per-peer rate limiting
+    if (!this._checkRateLimit(remotePubkey)) {
+      entry.msgHandler.send({
+        type: MSG_ERROR,
+        id: msg.id,
+        error: 'RATE_LIMITED'
+      })
+      return
+    }
+
     const qualifiedMethod = msg.service + '.' + msg.method
     if (RESTRICTED_METHODS.has(qualifiedMethod)) {
       entry.msgHandler.send({
@@ -277,6 +344,10 @@ export class ServiceProtocol extends EventEmitter {
       return
     }
 
+    // Role-based authorization
+    const role = this._peerRoles.get(remotePubkey) || this._defaultPeerRole
+    const authenticated = this._peerRoles.has(remotePubkey)
+
     try {
       let result
       if (this.router) {
@@ -285,15 +356,15 @@ export class ServiceProtocol extends EventEmitter {
           transport: 'p2p',
           remotePubkey,
           caller: 'remote',
-          role: 'authenticated-user',
-          authenticated: true
+          role,
+          authenticated
         })
       } else {
         result = await this.registry.handleRequest(
           msg.service,
           msg.method,
           msg.params,
-          { remotePubkey }
+          { remotePubkey, role, authenticated }
         )
       }
       entry.msgHandler.send({

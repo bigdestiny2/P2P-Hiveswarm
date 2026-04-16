@@ -44,6 +44,9 @@ export class PluginLoader {
       let provider
 
       if (typeof entry === 'string') {
+        if (entry === '__proto__' || entry === 'constructor' || entry === 'prototype') {
+          throw new Error('PluginLoader: invalid plugin name')
+        }
         if (BUILTIN_MAP[entry]) {
           provider = await this.loadBuiltin(entry, context)
         } else {
@@ -97,9 +100,26 @@ export class PluginLoader {
    * Expects the module to have a default export (class or factory).
    */
   async _loadFromPath (modulePath, options = {}) {
+    if (typeof modulePath !== 'string') {
+      throw new Error('PluginLoader: modulePath must be a string')
+    }
+    if (modulePath.includes('\0')) {
+      throw new Error('PluginLoader: modulePath contains invalid characters')
+    }
+    if (modulePath === '__proto__' || modulePath === 'constructor' || modulePath === 'prototype') {
+      throw new Error('PluginLoader: invalid modulePath')
+    }
+    if (modulePath.includes('..')) {
+      throw new Error('PluginLoader: modulePath cannot contain ".."')
+    }
+
     let resolved = modulePath
     if (!modulePath.startsWith('file://')) {
       if (modulePath.startsWith('/')) {
+        const cwd = process.cwd()
+        if (!modulePath.startsWith(cwd)) {
+          throw new Error('PluginLoader: absolute paths outside of working directory are not allowed')
+        }
         resolved = pathToFileURL(modulePath).href
       } else {
         resolved = pathToFileURL(join(process.cwd(), modulePath)).href

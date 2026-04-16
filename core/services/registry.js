@@ -16,6 +16,12 @@
 import { EventEmitter } from 'events'
 import { compareVersions } from '../constants.js'
 
+const BLOCKED_METHODS = new Set([
+  'constructor', 'start', 'stop', 'manifest',
+  'toString', 'valueOf', 'toJSON',
+  'hasOwnProperty', 'isPrototypeOf'
+])
+
 export class ServiceRegistry extends EventEmitter {
   constructor (opts = {}) {
     super()
@@ -88,11 +94,16 @@ export class ServiceRegistry extends EventEmitter {
       throw new Error(`SERVICE_NOT_FOUND: ${serviceName}`)
     }
 
+    // Block dangerous/internal methods from RPC access
+    if (BLOCKED_METHODS.has(method)) {
+      throw new Error(`METHOD_BLOCKED: ${method}`)
+    }
+
     if (!entry.provider[method] || typeof entry.provider[method] !== 'function') {
       throw new Error(`METHOD_NOT_FOUND: ${serviceName}.${method}`)
     }
 
-    // Check capability
+    // Enforce capabilities: if the service defines them, only listed methods are callable
     if (entry.capabilities.length > 0 && !entry.capabilities.includes(method)) {
       throw new Error(`METHOD_NOT_ALLOWED: ${method} not in capabilities`)
     }

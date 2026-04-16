@@ -10,3 +10,8 @@ coverage/
 dist/
 .publisher-storage/
 .pos-publisher-storage/
+test-zk-storage/
+ghost-seed-demo.mjs
+*.jpg
+*.jpeg
+*.png

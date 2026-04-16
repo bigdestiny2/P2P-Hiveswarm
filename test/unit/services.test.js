@@ -665,8 +665,9 @@ test('AIService - manifest', async (t) => {
 
 test('AIService - register and list models', async (t) => {
   const svc = new AIService()
-  await svc['register-model']({ modelId: 'test-llm', type: 'llm' })
-  await svc['register-model']({ modelId: 'test-embed', type: 'embedding' })
+  const adminCtx = { role: 'local' }
+  await svc['register-model']({ modelId: 'test-llm', type: 'llm' }, adminCtx)
+  await svc['register-model']({ modelId: 'test-embed', type: 'embedding' }, adminCtx)
 
   const list = await svc['list-models']()
   t.is(list.length, 2)
@@ -676,8 +677,9 @@ test('AIService - register and list models', async (t) => {
 
 test('AIService - remove model', async (t) => {
   const svc = new AIService()
-  await svc['register-model']({ modelId: 'tmp', type: 'llm' })
-  const result = await svc['remove-model']({ modelId: 'tmp' })
+  const adminCtx = { role: 'local' }
+  await svc['register-model']({ modelId: 'tmp', type: 'llm' }, adminCtx)
+  const result = await svc['remove-model']({ modelId: 'tmp' }, adminCtx)
   t.is(result.removed, true)
 
   const list = await svc['list-models']()
@@ -686,7 +688,7 @@ test('AIService - remove model', async (t) => {
 
 test('AIService - infer with handler', async (t) => {
   const svc = new AIService()
-  await svc['register-model']({ modelId: 'echo-model', type: 'llm' })
+  await svc['register-model']({ modelId: 'echo-model', type: 'llm' }, { role: 'local' })
   svc.registerHandler('echo-model', async (req) => {
     return { output: 'echoed: ' + req.input, tokens: 5 }
   })
@@ -710,7 +712,7 @@ test('AIService - infer unknown model', async (t) => {
 
 test('AIService - status', async (t) => {
   const svc = new AIService({ maxConcurrent: 4 })
-  await svc['register-model']({ modelId: 'm1', type: 'llm' })
+  await svc['register-model']({ modelId: 'm1', type: 'llm' }, { role: 'local' })
 
   const s = await svc.status()
   t.is(s.models, 1)
@@ -720,7 +722,7 @@ test('AIService - status', async (t) => {
 
 test('AIService - queue full', async (t) => {
   const svc = new AIService({ maxQueue: 1, maxConcurrent: 0 })
-  await svc['register-model']({ modelId: 'slow', type: 'llm' })
+  await svc['register-model']({ modelId: 'slow', type: 'llm' }, { role: 'local' })
   svc.registerHandler('slow', async () => {
     await new Promise(resolve => setTimeout(resolve, 10000))
   })
