@@ -165,11 +165,14 @@ test('ArbitrationService - resolves respondent wins (no slash)', async (t) => {
 
 test('ArbitrationService - vote rejects on resolved dispute', async (t) => {
   const { svc } = createService()
-  const d = await svc.submit({ type: 'proof-failure', respondent: 'relayA', minVotes: 1 }, { remotePubkey: 'claimantX' })
+  // minVotes is enforced at MIN_VOTES_FLOOR=3 (security fix) — need 3 votes to resolve
+  const d = await svc.submit({ type: 'proof-failure', respondent: 'relayA', minVotes: 3 }, { remotePubkey: 'claimantX' })
   await svc.vote({ id: d.id, verdict: 'claimant' }, { remotePubkey: 'eligible1' })
+  await svc.vote({ id: d.id, verdict: 'claimant' }, { remotePubkey: 'eligible2' })
+  await svc.vote({ id: d.id, verdict: 'claimant' }, { remotePubkey: 'eligible3' })
 
   try {
-    await svc.vote({ id: d.id, verdict: 'respondent' }, { remotePubkey: 'eligible2' })
+    await svc.vote({ id: d.id, verdict: 'respondent' }, { remotePubkey: 'eligible4' })
     t.fail()
   } catch (e) { t.ok(e.message.includes('DISPUTE_ALREADY_RESOLVED')) }
 })
@@ -197,12 +200,14 @@ test('ArbitrationService - get not found', async (t) => {
 
 test('ArbitrationService - pubsub events emitted', async (t) => {
   const { svc, node } = createService()
-  await svc.submit({ type: 'proof-failure', respondent: 'relayA', minVotes: 1, penalty: 100 }, { remotePubkey: 'claimantX' })
+  await svc.submit({ type: 'proof-failure', respondent: 'relayA', minVotes: 3, penalty: 100 }, { remotePubkey: 'claimantX' })
 
   t.ok(node._published.some(p => p.topic === 'arbitration/submitted'))
 
   const disputes = await svc.list()
   await svc.vote({ id: disputes[0].id, verdict: 'claimant' }, { remotePubkey: 'eligible1' })
+  await svc.vote({ id: disputes[0].id, verdict: 'claimant' }, { remotePubkey: 'eligible2' })
+  await svc.vote({ id: disputes[0].id, verdict: 'claimant' }, { remotePubkey: 'eligible3' })
 
   t.ok(node._published.some(p => p.topic === 'arbitration/resolved'))
 })

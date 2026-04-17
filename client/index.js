@@ -169,7 +169,14 @@ export class HiveRelayClient extends EventEmitter {
         server: false,
         client: true
       })
-      await this.swarm.flush()
+      // Bound the flush — in test environments or offline startup there may
+      // be no peers to flush to. Proceed after a short wait; the reconnect
+      // loop will keep trying to connect in the background.
+      const flushTimeout = new Promise(resolve => {
+        const t = setTimeout(resolve, 500)
+        if (t.unref) t.unref()
+      })
+      await Promise.race([this.swarm.flush().catch(() => {}), flushTimeout])
     }
 
     // Start seeding registry for persistent seed request discovery
@@ -379,8 +386,15 @@ export class HiveRelayClient extends EventEmitter {
     if (!drive) throw new Error('Drive not open: ' + keyHex.slice(0, 12) + '...')
     const entries = []
     const folder = dir || '/'
-    for await (const entry of drive.list(folder)) {
-      entries.push(entry.key)
+    try {
+      for await (const entry of drive.list(folder)) {
+        entries.push(entry.key)
+      }
+    } catch (err) {
+      // Hypercore lifecycle errors during iteration (SESSION_CLOSED,
+      // DECODING_ERROR, SNAPSHOT_NOT_AVAILABLE) are recoverable — the drive
+      // closed mid-listing or a block was corrupted. Return what we have.
+      this.emit('drive-list-error', { key: keyHex, dir: folder, error: err.message, code: err.code })
     }
     return entries
   }

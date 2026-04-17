@@ -8,13 +8,15 @@ import sodium from 'sodium-universal'
  */
 function mockNode (apps = []) {
   const map = new Map(apps)
-  return {
+  const node = {
     appRegistry: {
       get (key) { return map.get(key) },
       has (key) { return map.has(key) }
     },
-    seededApps: map
+    seededApps: map,
+    config: {}
   }
+  return node
 }
 
 /**
@@ -47,13 +49,13 @@ function signUnseed (appKeyHex, timestamp, sk) {
  * and calling the method on a crafted instance (avoiding full node startup).
  */
 async function loadVerify () {
-  const mod = await import('../../core/relay-node/index.js')
-  const RelayNodeClass = mod.RelayNode
+  // verifyUnseedRequest now lives on AppLifecycle (extracted from RelayNode
+  // during the god-object refactor). Call it directly against the mock node.
+  const mod = await import('../../core/relay-node/app-lifecycle.js')
+  const AppLifecycleClass = mod.AppLifecycle
   return function verifyUnseedRequest (node, appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
-    // Bind the method to work with our mock node's appRegistry
-    return RelayNodeClass.prototype.verifyUnseedRequest.call(
-      node, appKeyHex, publisherPubkeyHex, signatureHex, timestamp
-    )
+    const lifecycle = new AppLifecycleClass(node)
+    return lifecycle.verifyUnseedRequest(appKeyHex, publisherPubkeyHex, signatureHex, timestamp)
   }
 }
 

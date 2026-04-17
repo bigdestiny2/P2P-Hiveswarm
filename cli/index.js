@@ -49,10 +49,31 @@ function isBenignExit (err) {
   return name === 'ExitPromptError' || name === 'AbortError'
 }
 
+// Hypercore / Hyperbee lifecycle errors during async iteration — the
+// underlying core closed mid-read, or a block was corrupted. These should
+// NOT kill a long-running relay; log and continue.
+function isRecoverableHypercoreError (err) {
+  if (!err) return false
+  const code = err.code || ''
+  const type = err.type || (err.constructor && err.constructor.name) || ''
+  if (type !== 'HypercoreError') return false
+  return (
+    code === 'SESSION_CLOSED' ||
+    code === 'DECODING_ERROR' ||
+    code === 'SNAPSHOT_NOT_AVAILABLE' ||
+    code === 'REQUEST_CANCELLED' ||
+    code === 'CLOSED'
+  )
+}
+
 process.on('uncaughtException', (err) => {
   if (isBenignExit(err)) {
     console.log()
     process.exit(0)
+  }
+  if (isRecoverableHypercoreError(err)) {
+    log.warn({ err: { code: err.code, message: err.message } }, 'recoverable hypercore error — continuing')
+    return // do NOT exit
   }
   log.fatal({ err }, 'uncaught exception — shutting down')
   process.exit(1)
@@ -62,6 +83,10 @@ process.on('unhandledRejection', (reason) => {
   if (isBenignExit(reason)) {
     console.log()
     process.exit(0)
+  }
+  if (isRecoverableHypercoreError(reason)) {
+    log.warn({ err: { code: reason.code, message: reason.message } }, 'recoverable hypercore rejection — continuing')
+    return // do NOT exit
   }
   log.fatal({ err: reason }, 'unhandled rejection — shutting down')
   process.exit(1)
