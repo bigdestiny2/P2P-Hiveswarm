@@ -29,7 +29,19 @@ function paint (color, text) {
   return color + text + RESET
 }
 
-// ─── The big boy — shown on `start` ───────────────────────────────
+// ─── The big boy — 3D extruded, shown on `start` ──────────────────
+//
+// Layers (front-to-back):
+//   1. Top highlight  — bright white bevel above each letter (▁ chars)
+//   2. Main face      — gradient-colored solid block letters
+//   3. Depth wall     — dim colored extrusion to lower-right (╲ diagonals)
+//   4. Floor shadow   — dim offset ghost below (▀ half-blocks, -2 opacity)
+//
+// The result simulates a 3D-extruded logo lit from the upper-left, with the
+// letters floating slightly above a reflective floor.
+
+// Top highlight — thin bright bevel sitting on top of each letter's face
+const MAIN_TOP_BEVEL = '    ▁▁   ▁▁ ▁▁ ▁▁   ▁▁ ▁▁▁▁▁▁ ▁▁▁▁▁▁  ▁▁▁▁▁▁ ▁▁      ▁▁▁▁▁  ▁▁   ▁▁ '
 
 const MAIN_LOGO = [
   '    ██╗  ██╗██╗██╗   ██╗███████╗██████╗ ███████╗██╗      █████╗ ██╗   ██╗',
@@ -39,6 +51,14 @@ const MAIN_LOGO = [
   '    ██║  ██║██║ ╚████╔╝ ███████╗██║  ██║███████╗███████╗██║  ██║   ██║   ',
   '    ╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   '
 ]
+
+// Depth-wall — a single row of slim diagonal strokes under the logo,
+// offset slightly right to simulate the extrusion casting downward. The
+// characters match the column positions of the bottom of each letter.
+const MAIN_DEPTH_WALL = '     ▝▘  ▝▘▝▘  ▝▘   ▝▘▝▘▝▘▝▘ ▝▘▝▘▝▘  ▝▘▝▘▝▘▝▘ ▝▘     ▝▘▝▘▝▘  ▝▘   ▝▘  '
+
+// Floor reflection — half-block ▀ under the main logo, slightly offset
+const MAIN_FLOOR = '      ▀▀  ▀▀▀▀  ▀▀   ▀▀▀▀▀▀▀ ▀▀▀▀▀▀  ▀▀▀▀▀▀ ▀▀      ▀▀▀▀▀  ▀▀   ▀▀  '
 
 // Honeycomb hive glyph — three interlocking hexagons
 const HIVE_GLYPH = [
@@ -82,24 +102,44 @@ function rainbowLine (line) {
   return out + RESET
 }
 
-function gradientLogo () {
-  const palette = [C.cyan, C.blue, C.purple, C.magenta, C.pink, C.magenta]
-  return MAIN_LOGO.map((line, i) => paint(palette[i % palette.length] + BOLD, line)).join('\n')
+// 3D-extruded logo: top bevel + gradient face + depth wall + floor shadow.
+// Drawn as stacked rows. In monochrome terminals it falls back to the flat
+// gradient, because the depth effect relies entirely on color contrast.
+function logo3D () {
+  if (!useColor()) return MAIN_LOGO.join('\n')
+  const faceGradient = [C.cyan, C.blue, C.purple, C.magenta, C.pink, C.magenta]
+  const depthGradient = [C.dim, C.dim, C.grey, C.grey, C.dim, C.dim]
+
+  const lines = []
+  // Top highlight bevel — one row of bright ▁ above the logo
+  lines.push(paint(C.white + BOLD, MAIN_TOP_BEVEL))
+  // Main face with vertical gradient (cyan → blue → purple → magenta → pink)
+  for (let i = 0; i < MAIN_LOGO.length; i++) {
+    lines.push(paint(faceGradient[i % faceGradient.length] + BOLD, MAIN_LOGO[i]))
+  }
+  // Depth wall — single row of diagonal extrusion marks below the logo
+  lines.push(paint(depthGradient[0], MAIN_DEPTH_WALL))
+  // Floor shadow — dim half-block reflection
+  lines.push(paint(C.grey, MAIN_FLOOR))
+  return lines.join('\n')
 }
 
 // ─── Public banners ──────────────────────────────────────────────
 
 export function mainBanner (version) {
   const tagline = pick(TAGLINES)
-  const border = paint(C.dim, '═'.repeat(74))
+  // Cyberpunk frame corners — looks like an old CRT / oscilloscope
+  const topFrame = paint(C.cyan, '   ╱═══') + paint(C.dim, '╾──────────────────────────────────────────────────────────╼') + paint(C.cyan, '═══╲')
+  const botFrame = paint(C.cyan, '   ╲═══') + paint(C.dim, '╾──────────────────────────────────────────────────────────╼') + paint(C.cyan, '═══╱')
   const lines = [
     '',
-    gradientLogo(),
+    topFrame,
+    logo3D(),
     '',
     '         ' + rainbowLine('▚▞▚▞▚▞▚▞  p2p relay infrastructure  ▚▞▚▞▚▞▚▞'),
     '',
     '   ' + paint(C.green, 'v' + version) + '  ' + paint(C.dim, tagline),
-    '   ' + border,
+    botFrame,
     ''
   ]
   return lines.join('\n')
