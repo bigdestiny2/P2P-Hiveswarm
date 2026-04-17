@@ -4,13 +4,13 @@
  * HiveRelay CLI
  *
  * Usage:
- *   hiverelay setup               Interactive setup wizard (TUI)
- *   hiverelay init                Initialize HiveRelay + install agent skills
- *   hiverelay start [options]     Start a relay node
- *   hiverelay seed <key>          Request seeding for a Pear app
- *   hiverelay ghostdrive ...      Ghost Drive relay workflows
- *   hiverelay status              Show node status
- *   hiverelay help                Show this help
+ *   p2p-hiverelay setup               Interactive setup wizard (TUI)
+ *   p2p-hiverelay init                Initialize HiveRelay + install agent skills
+ *   p2p-hiverelay start [options]     Start a relay node
+ *   p2p-hiverelay seed <key>          Request seeding for a Pear app
+ *   p2p-hiverelay ghostdrive ...      Ghost Drive relay workflows
+ *   p2p-hiverelay status              Show node status
+ *   p2p-hiverelay help                Show this help
  */
 
 import minimist from 'minimist'
@@ -160,7 +160,7 @@ async function init () {
   console.log('  ' + divider('═', C.green))
   console.log()
   console.log('  ' + paint(C.cyan + '\x1b[1m', '▶ quick start'))
-  console.log('    ' + paint(C.magenta, 'hiverelay start') + '                 ' + paint(C.dim, '# start relay node'))
+  console.log('    ' + paint(C.magenta, 'p2p-hiverelay start') + '                 ' + paint(C.dim, '# start relay node'))
   console.log('    ' + paint(C.magenta, 'curl localhost:9100/health') + '      ' + paint(C.dim, '# liveness check'))
   console.log('    ' + paint(C.magenta, 'curl localhost:9100/status') + '      ' + paint(C.dim, '# live stats'))
   if (installed.length > 0) {
@@ -566,7 +566,7 @@ const GHOSTDRIVE_DEFAULT_CATEGORIES = ['ghost-drive', 'files']
 async function seed () {
   const appKey = args._[1]
   if (!isValidHexKey(appKey, 64)) {
-    console.error('Usage: hiverelay seed <app-key> [options]')
+    console.error('Usage: p2p-hiverelay seed <app-key> [options]')
     console.error('  app-key must be 64 hex characters')
     process.exit(1)
   }
@@ -617,7 +617,7 @@ async function ghostdrive () {
 
   const driveKey = args._[2]
   if (!isValidHexKey(driveKey, 64)) {
-    console.error('Usage: hiverelay ghostdrive <pin|publish> <drive-key> [options]')
+    console.error('Usage: p2p-hiverelay ghostdrive <pin|publish> <drive-key> [options]')
     console.error('  drive-key must be 64 hex characters')
     process.exit(1)
   }
@@ -707,9 +707,9 @@ function printGhostDriveHelp () {
 Ghost Drive Workflow
 
 Usage:
-  hiverelay ghostdrive pin <drive-key> [options]
-  hiverelay ghostdrive publish <drive-key> [options]
-  hiverelay ghostdrive discover [options]
+  p2p-hiverelay ghostdrive pin <drive-key> [options]
+  p2p-hiverelay ghostdrive publish <drive-key> [options]
+  p2p-hiverelay ghostdrive discover [options]
 
 Subcommands:
   pin       Seed/pin a Ghost Drive key on a relay and add discovery metadata
@@ -999,7 +999,7 @@ async function status () {
     console.log()
   } catch {
     console.log('  ' + paint(C.red, '✗') + ' ' + paint(C.dim, `Cannot reach relay node at http://127.0.0.1:${port}`))
-    console.log('  ' + paint(C.dim, '// is the node running? start it with: ') + paint(C.cyan, 'hiverelay start'))
+    console.log('  ' + paint(C.dim, '// is the node running? start it with: ') + paint(C.cyan, 'p2p-hiverelay start'))
     console.log()
   }
 }
@@ -1010,15 +1010,16 @@ function help () {
   console.log(helpBanner(VERSION))
   console.log(`
 Usage:
-  hiverelay setup               Interactive setup wizard (first-time config)
-  hiverelay manage [options]    Live management console (connect to running node)
-  hiverelay init [options]      Initialize config + install agent skills
-  hiverelay start [options]     Start a relay node
-  hiverelay testnet [options]   Spin up a local testnet (DHT + relays + client)
-  hiverelay seed <key>          Seed a key on a relay (optional registry publish)
-  hiverelay ghostdrive ...      Ghost Drive pin/publish/discover workflows
-  hiverelay status              Show node status (queries running node)
-  hiverelay help                Show this help
+  p2p-hiverelay setup               Interactive setup wizard (first-time config)
+  p2p-hiverelay tui [options]       Live management TUI (alias: manage)
+  p2p-hiverelay manage [options]    Live management console (same as tui)
+  p2p-hiverelay init [options]      Initialize config + install agent skills
+  p2p-hiverelay start [options]     Start a relay node
+  p2p-hiverelay testnet [options]   Spin up a local testnet (DHT + relays + client)
+  p2p-hiverelay seed <key>          Seed a key on a relay (optional registry publish)
+  p2p-hiverelay ghostdrive ...      Ghost Drive pin/publish/discover workflows
+  p2p-hiverelay status              Show node status (queries running node)
+  p2p-hiverelay help                Show this help
 
 Init Options:
   --region <code>               Set default region (NA, EU, AS, SA, AF, OC)
@@ -1074,16 +1075,16 @@ Environment:
   HIVERELAY_LOG_LEVEL           Log level: fatal, error, warn, info, debug, trace
 
 Examples:
-  npx hiverelay setup                              # Interactive setup wizard
-  hiverelay start --region NA --max-storage 100GB   # Start relay
-  hiverelay manage                                  # Live management console
-  hiverelay manage --port 9200                      # Manage node on custom port
-  hiverelay testnet                                 # Local testnet (3 relays + client)
-  hiverelay seed <key> --publish --replicas 3       # Seed + publish registry request
-  hiverelay ghostdrive pin <driveKey>               # Pin Ghost Drive key on relay
-  hiverelay ghostdrive publish <driveKey>           # Pin + registry publish
-  hiverelay ghostdrive discover --relay http://...  # Query catalog for Ghost Drive entries
-  hiverelay status                                  # Check running node
+  npx p2p-hiverelay setup                              # Interactive setup wizard
+  p2p-hiverelay start --region NA --max-storage 100GB   # Start relay
+  p2p-hiverelay tui                                     # Live management TUI
+  p2p-hiverelay tui --port 9200                         # Manage node on custom port
+  p2p-hiverelay testnet                                 # Local testnet (3 relays + client)
+  p2p-hiverelay seed <key> --publish --replicas 3       # Seed + publish registry request
+  p2p-hiverelay ghostdrive pin <driveKey>               # Pin Ghost Drive key on relay
+  p2p-hiverelay ghostdrive publish <driveKey>           # Pin + registry publish
+  p2p-hiverelay ghostdrive discover --relay http://...  # Query catalog for Ghost Drive entries
+  p2p-hiverelay status                                  # Check running node
 `)
 }
 

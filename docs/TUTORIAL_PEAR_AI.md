@@ -252,5 +252,5 @@ No API keys. No accounts. No cloud. Just P2P.
 
 - **Explore models**: Relay operators choose which models to serve. Check `callService('ai', 'list-models')` to see what's available.
 - **Add payments**: Use the SLA service to create paid contracts with relay operators for guaranteed uptime and performance.
-- **Go private**: Run your own relay with `hiverelay start --mode private --ai --ai-model gemma4:latest` for a personal AI server.
+- **Go private**: Run your own relay with `p2p-hiverelay start --mode private --ai --ai-model gemma4:latest` for a personal AI server.
 - **Read the docs**: See [SERVICES.md](./SERVICES.md) for the full services API and [DEVELOPER.md](./DEVELOPER.md) for the protocol spec.

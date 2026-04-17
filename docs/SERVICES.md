@@ -192,7 +192,7 @@ Services are enabled automatically when the relay node starts. Individual servic
 Services can be managed at runtime via the management console or API:
 
 ```bash
-hiverelay manage    # Interactive TUI — Services menu
+p2p-hiverelay manage    # Interactive TUI — Services menu
 ```
 
 Or programmatically via the HTTP management API:
@@ -214,7 +214,7 @@ curl -X POST http://localhost:9100/api/manage/services \
 
 ### Service Selection During Setup
 
-The `hiverelay setup` wizard provides checkbox selection of services based on node profile:
+The `p2p-hiverelay setup` wizard provides checkbox selection of services based on node profile:
 
 | Profile | Default Services |
 |---------|-----------------|

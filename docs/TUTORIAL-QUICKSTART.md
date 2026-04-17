@@ -237,10 +237,43 @@ Your relay joins the public DHT, announces itself, syncs the content
 catalog from peers, and starts earning reputation for every verified
 replication.
 
+### Manage your relay with the TUI
+
+Once the node is running, open the cypherpunk management TUI in another
+terminal to live-edit any setting — no restart needed:
+
+```bash
+p2p-hiverelay tui
+# or the longer form: p2p-hiverelay manage
+```
+
+You'll see a 3D gradient `HIVERELAY` banner, a link/version strip, and an
+interactive menu to configure:
+
+- **Dashboard** — live node status & metrics
+- **Services** — enable/disable/restart any of the 8 built-in services
+- **Resources** — storage, connections, bandwidth limits (hot-applied)
+- **Transports** — Holesail, Tor, WebSocket toggles
+- **Seeding & Apps** — manage seeded content, view the catalog
+- **Operating Mode** — switch between Standard / HomeHive / Stealth / Gateway
+- **Network** — regions, peers, bootstrap nodes
+- **Security** — access control, rate limits, pending approvals
+- **Payments** — Lightning, credits, settlement
+- **Advanced** — shutdown timeout, intervals, bootstrap
+- **Update Software** — check npm for new versions
+- **Restart Node** — graceful restart
+
+Every change is persisted to `~/.hiverelay/config.json` and applied live.
+
 ### Watch the dashboard
 
 `http://<your-relay>:9100/dashboard` shows real-time connections, seeded
 apps, bandwidth, reputation, and health. It updates live over WebSocket.
+
+Also visit:
+- `http://<your-relay>:9100/catalog` — browse seeded apps, drives, datasets
+- `http://<your-relay>:9100/network` — live network topology
+- `http://<your-relay>:9100/leaderboard` — top relays by reputation
 
 ---
 

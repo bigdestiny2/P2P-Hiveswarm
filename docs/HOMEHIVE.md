@@ -15,11 +15,11 @@ Use it for: home NAS, family photo sharing, personal app hosting, private Pear a
 
 ```bash
 # Option 1: Interactive setup — select HomeHive mode in the wizard
-hiverelay setup
+p2p-hiverelay setup
 
 # Option 2: Start normally, then switch mode via management console
-hiverelay start
-hiverelay manage    # Select "Operating Mode" → "HomeHive"
+p2p-hiverelay start
+p2p-hiverelay manage    # Select "Operating Mode" → "HomeHive"
 
 # Option 3: Switch mode via API
 curl -X POST http://localhost:9100/api/manage/mode \
@@ -31,7 +31,7 @@ HomeHive mode automatically configures low resource limits (32 connections, 25 M
 
 ## Operating Modes
 
-HiveRelay v0.3.0 has 6 operating modes, switchable live via `hiverelay manage` or the management API:
+HiveRelay v0.3.0 has 6 operating modes, switchable live via `p2p-hiverelay manage` or the management API:
 
 | Mode | Relay | Seeding | Connections | Bandwidth | Use Case |
 |------|-------|---------|-------------|-----------|----------|
@@ -58,7 +58,7 @@ The simplest approach -- specify device public keys in `config.json`:
 }
 ```
 
-Or configure via the setup wizard (`hiverelay setup`) which writes the config for you.
+Or configure via the setup wizard (`p2p-hiverelay setup`) which writes the config for you.
 
 ### Interactive Pairing
 
@@ -143,8 +143,8 @@ Additional security properties:
 ## Remote Access Without a Relay Tunnel
 
 If you want remote access without tunneling through a public relay:
-- Start your node normally with `hiverelay start`
-- Enable Holesail transport via `hiverelay manage` (Transports menu) for NAT traversal
+- Start your node normally with `p2p-hiverelay start`
+- Enable Holesail transport via `p2p-hiverelay manage` (Transports menu) for NAT traversal
 - Use the device allowlist to restrict who can connect
 - Your node joins the DHT for connectivity but the allowlist enforces access control
 

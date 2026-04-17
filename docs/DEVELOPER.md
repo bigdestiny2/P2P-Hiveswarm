@@ -75,7 +75,7 @@ const html = await app.get(key, '/index.html')
 npx p2p-hiverelay init --region NA --max-storage 50GB
 
 # Start the relay node
-hiverelay start --port 9100
+p2p-hiverelay start --port 9100
 
 # Verify it's running
 curl http://localhost:9100/health
@@ -1436,7 +1436,7 @@ curl -X POST http://relay:9100/api/v1/unseed \
 
 ### Management API
 
-Live management endpoints used by `hiverelay manage` TUI. All changes are hot-applied and persisted to disk.
+Live management endpoints used by `p2p-hiverelay manage` TUI. All changes are hot-applied and persisted to disk.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -1521,12 +1521,12 @@ scrape_configs:
 **File:** `cli/index.js`
 **Binary:** `hiverelay` or `p2p-hiverelay` (via package.json `bin` field)
 
-### `hiverelay setup`
+### `p2p-hiverelay setup`
 
 Interactive setup wizard (TUI). Guides new operators through full node configuration.
 
 ```bash
-hiverelay setup
+p2p-hiverelay setup
 ```
 
 **What it configures:**
@@ -1541,12 +1541,12 @@ hiverelay setup
 
 Saves to `~/.hiverelay/config.json` and optionally starts the node immediately.
 
-### `hiverelay manage`
+### `p2p-hiverelay manage`
 
 Live management console (TUI). Connects to a running node's HTTP API for interactive control.
 
 ```bash
-hiverelay manage [--host <ip>] [--port <n>]
+p2p-hiverelay manage [--host <ip>] [--port <n>]
 ```
 
 | Option | Description | Default |
@@ -1573,12 +1573,12 @@ hiverelay manage [--host <ip>] [--port <n>]
 
 All changes are applied immediately to the running node and persisted to `~/.hiverelay/config.json`.
 
-### `hiverelay init`
+### `p2p-hiverelay init`
 
-Lightweight first-time setup. Creates config directory, generates defaults, and auto-installs agent skills. For full interactive configuration, use `hiverelay setup` instead.
+Lightweight first-time setup. Creates config directory, generates defaults, and auto-installs agent skills. For full interactive configuration, use `p2p-hiverelay setup` instead.
 
 ```bash
-hiverelay init [--region <code>] [--max-storage <size>]
+p2p-hiverelay init [--region <code>] [--max-storage <size>]
 ```
 
 **What it does:**
@@ -1588,12 +1588,12 @@ hiverelay init [--region <code>] [--max-storage <size>]
 4. Copies `SKILL.md` to detected agent frameworks
 5. Copies OpenClaw TypeScript plugin if applicable
 
-### `hiverelay start`
+### `p2p-hiverelay start`
 
 Start a relay node with full configuration.
 
 ```bash
-hiverelay start [options]
+p2p-hiverelay start [options]
 ```
 
 | Option | Description | Default |
@@ -1623,12 +1623,12 @@ hiverelay start [options]
 
 **Shutdown:** Ctrl+C triggers graceful shutdown via `graceful-goodbye`.
 
-### `hiverelay seed <key>`
+### `p2p-hiverelay seed <key>`
 
 Request seeding for a Pear app key.
 
 ```bash
-hiverelay seed a1b2c3d4e5f6... [options]
+p2p-hiverelay seed a1b2c3d4e5f6... [options]
 ```
 
 | Option | Description | Default |
@@ -1638,15 +1638,15 @@ hiverelay seed a1b2c3d4e5f6... [options]
 | `--max-storage <size>` | Max storage for this app | `500MB` |
 | `--ttl <days>` | Seed request TTL | `30` |
 
-### `hiverelay status`
+### `p2p-hiverelay status`
 
 Query a running node's status via the HTTP API.
 
 ```bash
-hiverelay status [--port <n>]
+p2p-hiverelay status [--port <n>]
 ```
 
-### `hiverelay help`
+### `p2p-hiverelay help`
 
 Show help text with all commands and options.
 
@@ -1780,7 +1780,7 @@ The skill definition follows the agentskills.io specification. It provides:
 | `/hiverelay seed <key>` | Seed a Pear app |
 | `/hiverelay health` | Quick health check |
 
-The `hiverelay init` command auto-detects installed agent frameworks and installs the skill:
+The `p2p-hiverelay init` command auto-detects installed agent frameworks and installs the skill:
 - **Hermes:** `~/.hermes/skills/hiverelay/SKILL.md`
 - **OpenClaw:** `~/.openclaw/skills/hiverelay/SKILL.md`
 
@@ -2130,7 +2130,7 @@ cd hiverelay
 npm install --production
 
 # 2. Initialize
-hiverelay init --region EU --max-storage 100GB
+p2p-hiverelay init --region EU --max-storage 100GB
 
 # 3. Configure (edit ~/.hiverelay/config.json as needed)
 

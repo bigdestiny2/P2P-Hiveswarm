@@ -381,7 +381,7 @@ A decentralized network with no nodes has no value. The following strategies boo
 
 **3. Public API Specification.** Formalize the router's dispatch interface as an OpenAPI spec. This makes the API -- not the underlying Hyperswarm protocol -- the stable contract. Protocol internals can evolve; the API surface remains constant. Third-party tools, dashboards, and integrations can build against the spec without coupling to implementation details.
 
-**4. Testnet-to-Mainnet Pipeline.** The existing `hiverelay testnet` command creates isolated local networks for development. Extend this with a public testnet where developers can experiment with seed requests, circuit relay, and service calls against real relay nodes before committing to production deployment.
+**4. Testnet-to-Mainnet Pipeline.** The existing `p2p-hiverelay testnet` command creates isolated local networks for development. Extend this with a public testnet where developers can experiment with seed requests, circuit relay, and service calls against real relay nodes before committing to production deployment.
 
 ---
 

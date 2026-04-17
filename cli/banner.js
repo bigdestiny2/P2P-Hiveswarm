@@ -138,7 +138,7 @@ export function mainBanner (version) {
     '',
     '         ' + rainbowLine('▚▞▚▞▚▞▚▞  p2p relay infrastructure  ▚▞▚▞▚▞▚▞'),
     '',
-    '   ' + paint(C.green, 'v' + version) + '  ' + paint(C.dim, tagline),
+    '   ' + paint(C.green, 'p2p-hiverelay v' + version) + '  ' + paint(C.dim, tagline),
     botFrame,
     ''
   ]
@@ -153,7 +153,7 @@ export function setupBanner (version) {
     paint(C.cyan + BOLD, '  ║') + paint(C.dim, '              [ cypherpunk p2p infrastructure ]               ') + paint(C.cyan + BOLD, '║'),
     paint(C.cyan + BOLD, '  ╚══════════════════════════════════════════════════════════════╝'),
     '',
-    '  ' + paint(C.green, '>') + ' ' + paint(C.white, 'hiverelay ') + paint(C.dim, 'v' + version) + '  ' + paint(C.cyan, '// no gods. no masters. just peers.'),
+    '  ' + paint(C.green, '>') + ' ' + paint(C.white, 'p2p-hiverelay ') + paint(C.dim, 'v' + version) + '  ' + paint(C.cyan, '// no gods. no masters. just peers.'),
     ''
   ]
   return lines.join('\n')

@@ -187,19 +187,25 @@ npm install p2p-hiverelay
 
 You have hardware — a VPS, a Mac Mini, a Raspberry Pi, a spare laptop. HiveRelay turns it into income. **Runs behind NAT** — no port forwarding or public IP required thanks to Holesail transport.
 
-### Interactive Setup
+### Interactive Setup (first-time config)
 
 ```bash
 npm install -g p2p-hiverelay
-hiverelay setup
+p2p-hiverelay setup
 ```
 
 The setup wizard walks you through everything: node profile (light/standard/heavy), resource limits, services, transports, and payments. Saves to `~/.hiverelay/config.json` and optionally starts the node.
 
-Or skip the wizard and start directly:
+Once your node is running, open the **live TUI** any time to change settings without restarting:
 
 ```bash
-hiverelay start --region NA --max-storage 50GB --holesail  # --holesail for NAT traversal
+p2p-hiverelay tui
+```
+
+Or skip both and start directly:
+
+```bash
+p2p-hiverelay start --region NA --max-storage 50GB --holesail  # --holesail for NAT traversal
 ```
 
 ### Running Behind NAT (Home Relay)
@@ -207,7 +213,7 @@ hiverelay start --region NA --max-storage 50GB --holesail  # --holesail for NAT 
 Most operators will run on home hardware behind a router. Holesail transport solves this automatically:
 
 ```bash
-hiverelay start --holesail   # Tunnels your API through the DHT
+p2p-hiverelay start --holesail   # Tunnels your API through the DHT
 ```
 
 What happens:
@@ -219,11 +225,26 @@ What happens:
 
 No port forwarding. No dynamic DNS. No VPS required. Just run the command and you're part of the network.
 
-### Live Management Console
+### Live Management TUI
+
+A cypherpunk-styled terminal UI for configuring every aspect of your running node — no restarts, no config-file editing, all changes hot-applied and persisted.
 
 ```bash
-hiverelay manage              # Connect to running node
-hiverelay manage --port 9200  # Custom port
+p2p-hiverelay tui                 # Connect to running node on default port
+p2p-hiverelay tui --port 9200     # Custom port
+p2p-hiverelay manage              # `manage` is an alias for `tui`
+```
+
+What you see when you open it:
+
+```
+  ╭─────────────────────────────────────────────────────────╮
+  │ █ █  █  █ █ ███ ██▖ ███ █   ▗█▖ █ █    MANAGEMENT CONSOLE      │
+  │ ███  █  █ █ ██  ██▘ ██  █   ███ ▝█▘    // operator control plane│
+  │ █ █  █   █  ███ █ █ ███ ███ █ █  █     // ctrl+c to exit · q to back│
+  ╰─────────────────────────────────────────────────────────╯
+
+  ⬢ link 127.0.0.1:9100   ⬢ version v0.4.0   ⬢ // no backend. no account. just keys and peers.
 ```
 
 Full interactive control of your running node — no restart needed:
@@ -244,7 +265,7 @@ Full interactive control of your running node — no restart needed:
 
 ### Operating Modes
 
-Switch modes live via `hiverelay manage` or the management API:
+Switch modes live via `p2p-hiverelay manage` or the management API:
 
 | Mode | Description |
 |------|-------------|
@@ -375,6 +396,16 @@ Developer App
 
 > **Requirements**: Node.js 20+
 
+### Install
+
+```bash
+npm install -g p2p-hiverelay           # operator CLI + TUI
+# or, for apps only (no global CLI needed):
+npm install p2p-hiverelay               # library
+```
+
+> **On the name:** the npm package is `p2p-hiverelay` (the `hiverelay` name was already taken). The CLI installs as `p2p-hiverelay`, with a shorter `hiverelay` alias for convenience. Docs use `p2p-hiverelay` as the canonical form.
+
 ### For Developers
 
 ```bash
@@ -402,9 +433,9 @@ await app.unseed(drive.key)
 
 ```bash
 npm install -g p2p-hiverelay
-hiverelay setup                                          # Interactive setup wizard
-# or: hiverelay start --region NA --max-storage 50GB     # VPS quick start
-# or: hiverelay start --holesail                         # Home relay behind NAT
+p2p-hiverelay setup                                          # Interactive setup wizard
+# or: p2p-hiverelay start --region NA --max-storage 50GB     # VPS quick start
+# or: p2p-hiverelay start --holesail                         # Home relay behind NAT
 ```
 
 ### Seeding Pear Apps
@@ -431,7 +462,7 @@ npx p2p-hiverelay testnet --nodes 5  # 5 relays
 
 ## Management API
 
-All management operations available programmatically (used by `hiverelay manage` TUI):
+All management operations available programmatically (used by `p2p-hiverelay manage` TUI):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

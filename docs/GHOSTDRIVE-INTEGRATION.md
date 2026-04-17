@@ -19,13 +19,13 @@ export HIVERELAY_API_KEY=your-relay-api-key
 Enable the Ghost Drive peer bridge when starting your relay:
 
 ```bash
-hiverelay start --distributed-drive
+p2p-hiverelay start --distributed-drive
 ```
 
 ### 1) Pin a Ghost Drive key on a relay
 
 ```bash
-hiverelay ghostdrive pin <64-hex-drive-key> \
+p2p-hiverelay ghostdrive pin <64-hex-drive-key> \
   --relay http://127.0.0.1:9100 \
   --name "Tom's Shared Files" \
   --description "Public demo folder" \
@@ -38,7 +38,7 @@ This calls `POST /seed` and stores metadata used by `GET /catalog.json`.
 ### 2) Pin + publish replication intent to registry
 
 ```bash
-hiverelay ghostdrive publish <64-hex-drive-key> \
+p2p-hiverelay ghostdrive publish <64-hex-drive-key> \
   --relay http://127.0.0.1:9100 \
   --replicas 3 \
   --geo NA,EU \
@@ -53,7 +53,7 @@ This calls:
 ### 3) Discover Ghost Drive entries
 
 ```bash
-hiverelay ghostdrive discover \
+p2p-hiverelay ghostdrive discover \
   --relay http://127.0.0.1:9100 \
   --relay http://utah-relay.example.com:9100 \
   --relay http://singapore-relay.example.com:9100
@@ -67,10 +67,10 @@ The CLI filters catalog entries by Ghost Drive signals:
 
 ## Generic seeding workflow (non-Ghost Drive)
 
-`hiverelay seed` now performs a real API call instead of printing placeholders.
+`p2p-hiverelay seed` now performs a real API call instead of printing placeholders.
 
 ```bash
-hiverelay seed <64-hex-key> \
+p2p-hiverelay seed <64-hex-key> \
   --relay http://127.0.0.1:9100 \
   --app-id my-app \
   --name "My App" \
