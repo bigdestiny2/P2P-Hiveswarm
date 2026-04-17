@@ -438,6 +438,30 @@ p2p-hiverelay setup                                          # Interactive setup
 # or: p2p-hiverelay start --holesail                         # Home relay behind NAT
 ```
 
+### Docker
+
+Prefer containers? A production-ready image is published to GitHub Container Registry for every release:
+
+```bash
+# Pull and run
+docker run -d --name hiverelay \
+  -v hiverelay-data:/data \
+  -v hiverelay-config:/config \
+  -p 9100:9100 \
+  ghcr.io/bigdestiny2/p2p-hiverelay:latest
+
+# Open the cypherpunk TUI against the running container
+docker exec -it hiverelay p2p-hiverelay tui
+
+# Or use Compose (single relay or 3-region mesh):
+docker compose up -d                       # single relay
+docker compose --profile mesh up -d        # NA + EU + AS mesh
+```
+
+**Environment overrides:** `HIVERELAY_REGION`, `HIVERELAY_MAX_STORAGE`, `HIVERELAY_API_KEY`, `HIVERELAY_PORT`, `HIVERELAY_HOLESAIL`.
+
+The image runs as a non-root user, uses `tini` for graceful signal handling, exposes a health check, and is multi-arch (`linux/amd64` + `linux/arm64` — works on Apple Silicon and Raspberry Pi).
+
 ### Seeding Pear Apps
 
 ```bash

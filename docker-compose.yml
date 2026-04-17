@@ -1,21 +1,108 @@
-version: "3.8"
+# p2p-hiverelay — Docker Compose orchestration
+#
+# Quick start:
+#   docker compose up -d          # single relay, default config
+#   docker compose logs -f relay  # tail logs
+#   docker compose exec relay p2p-hiverelay tui   # open management TUI
+#   docker compose down           # stop (data persists in the named volume)
+#
+# Multi-region mesh:
+#   docker compose --profile mesh up -d
+#   (runs 3 relays — NA, EU, AS — that discover each other via DHT)
+#
+# Home-relay mode (behind NAT, no port forwarding needed):
+#   HIVERELAY_HOLESAIL=1 docker compose up -d
+#
+# Switch to host networking for maximal DHT reachability (Linux only):
+#   uncomment the `network_mode: host` line below and comment out `ports:`
+
+name: hiverelay
 
 services:
   relay:
+    image: ghcr.io/bigdestiny2/p2p-hiverelay:latest
     build: .
     container_name: hiverelay
     restart: unless-stopped
     volumes:
-      - hiverelay-data:/data
+      - hiverelay-data:/data       # Hypercore storage, seeded content
+      - hiverelay-config:/config   # ~/.hiverelay → persistent config + identity
     ports:
-      - "9100:9100"   # API (health checks, metrics)
+      - "${HIVERELAY_PORT:-9100}:9100"   # management API + dashboard
+    environment:
+      - NODE_ENV=production
+      - HIVERELAY_LOG_LEVEL=${HIVERELAY_LOG_LEVEL:-info}
+      - HIVERELAY_REGION=${HIVERELAY_REGION:-NA}
+      - HIVERELAY_MAX_STORAGE=${HIVERELAY_MAX_STORAGE:-50GB}
+      - HIVERELAY_API_KEY=${HIVERELAY_API_KEY:-}
+      # Uncomment to enable Holesail transport for home relays behind NAT
+      # - HIVERELAY_HOLESAIL=1
+    command: >
+      start
+      --storage /data
+      --region ${HIVERELAY_REGION:-NA}
+      --max-storage ${HIVERELAY_MAX_STORAGE:-50GB}
+    # Linux hosts only — gives direct UDP/DHT reachability.
+    # network_mode: host
+
+  # ─── Multi-region mesh profile ──────────────────────────────────────
+  # Spin up three relays in NA / EU / AS that discover each other via DHT.
+  # Run with:  docker compose --profile mesh up -d
+
+  relay-na:
+    image: ghcr.io/bigdestiny2/p2p-hiverelay:latest
+    build: .
+    container_name: hiverelay-na
+    profiles: ["mesh"]
+    restart: unless-stopped
+    volumes:
+      - hiverelay-na-data:/data
+      - hiverelay-na-config:/config
+    ports:
+      - "9100:9100"
     environment:
       - NODE_ENV=production
       - HIVERELAY_LOG_LEVEL=info
-    command: ["start", "--storage", "/data", "--region", "NA"]
-    # Network mode host gives direct UDP access for HyperDHT
-    # Comment out 'ports' above if using host networking
-    # network_mode: host
+    command: ["start", "--storage", "/data", "--region", "NA", "--max-storage", "50GB"]
+
+  relay-eu:
+    image: ghcr.io/bigdestiny2/p2p-hiverelay:latest
+    build: .
+    container_name: hiverelay-eu
+    profiles: ["mesh"]
+    restart: unless-stopped
+    volumes:
+      - hiverelay-eu-data:/data
+      - hiverelay-eu-config:/config
+    ports:
+      - "9101:9100"
+    environment:
+      - NODE_ENV=production
+      - HIVERELAY_LOG_LEVEL=info
+    command: ["start", "--storage", "/data", "--region", "EU", "--max-storage", "50GB"]
+
+  relay-as:
+    image: ghcr.io/bigdestiny2/p2p-hiverelay:latest
+    build: .
+    container_name: hiverelay-as
+    profiles: ["mesh"]
+    restart: unless-stopped
+    volumes:
+      - hiverelay-as-data:/data
+      - hiverelay-as-config:/config
+    ports:
+      - "9102:9100"
+    environment:
+      - NODE_ENV=production
+      - HIVERELAY_LOG_LEVEL=info
+    command: ["start", "--storage", "/data", "--region", "AS", "--max-storage", "50GB"]
 
 volumes:
   hiverelay-data:
+  hiverelay-config:
+  hiverelay-na-data:
+  hiverelay-na-config:
+  hiverelay-eu-data:
+  hiverelay-eu-config:
+  hiverelay-as-data:
+  hiverelay-as-config:
