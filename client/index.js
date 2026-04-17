@@ -36,8 +36,8 @@ import Protomux from 'protomux'
 import c from 'compact-encoding'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
-import { readdir, readFile, writeFile, lstat, mkdir } from 'fs/promises'
-import { join, relative, resolve } from 'path'
+import { readdir, readFile, writeFile, lstat, mkdir, rename } from 'fs/promises'
+import { join, relative, resolve, dirname } from 'path'
 import { BootstrapCache } from '../core/bootstrap-cache.js'
 import {
   seedRequestEncoding,
@@ -111,6 +111,17 @@ export class HiveRelayClient extends EventEmitter {
     // Service RPC state
     this._pendingServiceRequests = new Map() // requestId -> { resolve, reject, timer }
     this._serviceRequestId = 1
+
+    // Persistent seed retry queue
+    // Stored at {storagePath}/pending-seeds.json; survives process restart.
+    this._pendingSeeds = new Map() // appKey hex -> { appKey, opts, enqueuedAt, attempts, lastAttempt, nextRetryAt, reason }
+    this._pendingSeedTimers = new Map() // appKey hex -> setTimeout handle
+    this._pendingSeedsLoaded = false
+    this._pendingSeedConfig = {
+      baseDelay: 30_000, // 30s
+      maxDelay: 3_600_000, // 1h
+      maxAttempts: 50
+    }
   }
 
   /**
@@ -176,6 +187,11 @@ export class HiveRelayClient extends EventEmitter {
     this._started = true
     this._startReconnectLoop()
     this._startRelayHealthChecks()
+
+    // Load persistent seed retry queue and schedule retries
+    await this._loadPendingSeeds()
+    this._schedulePendingSeeds()
+
     this.emit('ready')
     this.emit('started')
     return this
@@ -473,7 +489,153 @@ export class HiveRelayClient extends EventEmitter {
     })
 
     this.removeListener('relay-connected', onNewRelay)
+
+    // Persistent retry: if we didn't get enough acceptances and the caller
+    // didn't explicitly disable persistence, enqueue for retry across restarts.
+    if (opts.retryPersistent !== false && entry.acceptances.length < targetReplicas) {
+      this._enqueuePendingSeed(keyHex, opts, `insufficient-acceptances:${entry.acceptances.length}/${targetReplicas}`)
+    } else if (opts.retryPersistent !== false && entry.acceptances.length >= targetReplicas) {
+      // Success — clear any existing pending retry for this key
+      this._clearPendingSeed(keyHex, 'success')
+    }
+
     return entry.acceptances
+  }
+
+  // ─── Persistent seed retry queue ──────────────────────────────────
+
+  _pendingSeedsFile () {
+    if (!this._storagePath) return null
+    return join(this._storagePath, 'pending-seeds.json')
+  }
+
+  async _loadPendingSeeds () {
+    const file = this._pendingSeedsFile()
+    if (!file) { this._pendingSeedsLoaded = true; return }
+    try {
+      const raw = await readFile(file, 'utf-8')
+      const list = JSON.parse(raw)
+      if (Array.isArray(list)) {
+        for (const entry of list) {
+          if (entry && entry.appKey) this._pendingSeeds.set(entry.appKey, entry)
+        }
+      }
+    } catch (_) {
+      // Missing file or parse error — start with empty queue
+    }
+    this._pendingSeedsLoaded = true
+  }
+
+  async _savePendingSeeds () {
+    const file = this._pendingSeedsFile()
+    if (!file) return
+    try {
+      await mkdir(dirname(file), { recursive: true })
+      const tmp = file + '.tmp'
+      const data = JSON.stringify([...this._pendingSeeds.values()], null, 2)
+      await writeFile(tmp, data, 'utf-8')
+      await rename(tmp, file)
+    } catch (err) {
+      this.emit('pending-seeds-save-error', { error: err.message })
+    }
+  }
+
+  _enqueuePendingSeed (appKey, opts, reason) {
+    const existing = this._pendingSeeds.get(appKey)
+    const attempts = existing ? existing.attempts + 1 : 1
+    const delay = Math.min(
+      this._pendingSeedConfig.baseDelay * Math.pow(2, attempts - 1),
+      this._pendingSeedConfig.maxDelay
+    )
+
+    if (attempts > this._pendingSeedConfig.maxAttempts) {
+      this._clearPendingSeed(appKey, 'max-attempts')
+      this.emit('seed-pending-failed', { appKey, attempts, reason })
+      return
+    }
+
+    const entry = {
+      appKey,
+      opts: { ...opts, retryPersistent: true },
+      enqueuedAt: existing ? existing.enqueuedAt : Date.now(),
+      attempts,
+      lastAttempt: Date.now(),
+      nextRetryAt: Date.now() + delay,
+      reason
+    }
+    this._pendingSeeds.set(appKey, entry)
+    this._savePendingSeeds().catch(() => {})
+    this._scheduleSinglePendingSeed(appKey)
+    this.emit('seed-pending-enqueued', { appKey, attempts, nextRetryAt: entry.nextRetryAt })
+  }
+
+  _clearPendingSeed (appKey, reason = 'cleared') {
+    if (this._pendingSeedTimers.has(appKey)) {
+      clearTimeout(this._pendingSeedTimers.get(appKey))
+      this._pendingSeedTimers.delete(appKey)
+    }
+    if (this._pendingSeeds.delete(appKey)) {
+      this._savePendingSeeds().catch(() => {})
+      if (reason === 'cancelled') this.emit('seed-pending-cancelled', { appKey })
+      else if (reason === 'success') this.emit('seed-pending-success', { appKey })
+    }
+  }
+
+  _schedulePendingSeeds () {
+    for (const appKey of this._pendingSeeds.keys()) {
+      this._scheduleSinglePendingSeed(appKey)
+    }
+  }
+
+  _scheduleSinglePendingSeed (appKey) {
+    if (this._pendingSeedTimers.has(appKey)) {
+      clearTimeout(this._pendingSeedTimers.get(appKey))
+    }
+    const entry = this._pendingSeeds.get(appKey)
+    if (!entry) return
+
+    const delay = Math.max(0, entry.nextRetryAt - Date.now())
+    const timer = setTimeout(() => {
+      this._pendingSeedTimers.delete(appKey)
+      this._retryPendingSeed(appKey).catch((err) => {
+        this.emit('seed-pending-retry-error', { appKey, error: err.message })
+      })
+    }, delay)
+    if (timer.unref) timer.unref()
+    this._pendingSeedTimers.set(appKey, timer)
+  }
+
+  async _retryPendingSeed (appKey) {
+    const entry = this._pendingSeeds.get(appKey)
+    if (!entry) return
+    this.emit('seed-pending-retry', { appKey, attempt: entry.attempts })
+    try {
+      // Pass retryPersistent:true so failures re-enqueue rather than swallowing
+      await this.seed(appKey, { ...entry.opts, retryPersistent: true })
+    } catch (err) {
+      // seed() itself rarely throws — it resolves with acceptances.
+      // On unexpected error, re-enqueue with bumped attempts.
+      this._enqueuePendingSeed(appKey, entry.opts, 'exception:' + err.message)
+    }
+  }
+
+  getPendingSeeds () {
+    return [...this._pendingSeeds.values()]
+  }
+
+  cancelPendingSeed (appKey) {
+    this._clearPendingSeed(appKey, 'cancelled')
+  }
+
+  async retryPendingSeedsNow () {
+    const keys = [...this._pendingSeeds.keys()]
+    for (const appKey of keys) {
+      if (this._pendingSeedTimers.has(appKey)) {
+        clearTimeout(this._pendingSeedTimers.get(appKey))
+        this._pendingSeedTimers.delete(appKey)
+      }
+      await this._retryPendingSeed(appKey).catch(() => {})
+    }
   }
 
   /**
@@ -1213,6 +1375,14 @@ export class HiveRelayClient extends EventEmitter {
     }
     this._reconnect.delay = 5000
     this._reconnect.attempt = 0
+
+    // Cancel pending seed retry timers (entries remain persisted for next session)
+    for (const timer of this._pendingSeedTimers.values()) {
+      clearTimeout(timer)
+    }
+    this._pendingSeedTimers.clear()
+    // Flush queue to disk before teardown
+    try { await this._savePendingSeeds() } catch (_) {}
 
     // Remove swarm connection listener (important for shared swarms)
     if (this._connectionHandler && this.swarm) {

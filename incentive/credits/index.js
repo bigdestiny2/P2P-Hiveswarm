@@ -32,10 +32,34 @@ export class CreditManager extends EventEmitter {
     // appPubkey -> Wallet
     this.wallets = new Map()
     this.storagePath = opts.storagePath || null
+    this.persistence = opts.persistence || null
     this.minTopUp = opts.minTopUp || 100 // minimum 100 sats top-up
     this.maxBalance = opts.maxBalance || 100_000_000 // 1 BTC max balance
     this.bonusSchedule = opts.bonusSchedule || DEFAULT_BONUS_SCHEDULE
     this.welcomeCredits = opts.welcomeCredits != null ? opts.welcomeCredits : 1000
+
+    // If a persistence store is supplied, hydrate from it immediately
+    if (this.persistence) {
+      for (const [key, wallet] of this.persistence.entries()) {
+        this.wallets.set(key, wallet)
+      }
+    }
+  }
+
+  _persist (appPubkey) {
+    if (!this.persistence) return
+    const wallet = this.wallets.get(appPubkey)
+    if (!wallet) {
+      try { this.persistence.delete(appPubkey) } catch (_) {}
+      return
+    }
+    try {
+      // Only persist last 1000 transactions to keep WAL lines bounded
+      const snapshot = { ...wallet, transactions: wallet.transactions.slice(-1000) }
+      this.persistence.set(appPubkey, snapshot)
+    } catch (err) {
+      this.emit('persist-error', { app: appPubkey, error: err.message })
+    }
   }
 
   /**
@@ -76,6 +100,7 @@ export class CreditManager extends EventEmitter {
     }
 
     this.emit('wallet-created', { app: appPubkey, welcomeCredits: this.welcomeCredits })
+    this._persist(appPubkey)
     return wallet
   }
 
@@ -128,6 +153,7 @@ export class CreditManager extends EventEmitter {
       balance: wallet.balance
     })
 
+    this._persist(appPubkey)
     return tx
   }
 
@@ -182,6 +208,7 @@ export class CreditManager extends EventEmitter {
       balance: wallet.balance
     })
 
+    this._persist(appPubkey)
     return { success: true, cost: costSats, balance: wallet.balance }
   }
 
@@ -250,6 +277,7 @@ export class CreditManager extends EventEmitter {
       reason
     })
     this.emit('wallet-frozen', { app: appPubkey, reason })
+    this._persist(appPubkey)
   }
 
   /**
@@ -267,6 +295,7 @@ export class CreditManager extends EventEmitter {
       timestamp: Date.now()
     })
     this.emit('wallet-unfrozen', { app: appPubkey })
+    this._persist(appPubkey)
   }
 
   /**
@@ -305,6 +334,7 @@ export class CreditManager extends EventEmitter {
       reason
     })
 
+    this._persist(appPubkey)
     return tx
   }
 

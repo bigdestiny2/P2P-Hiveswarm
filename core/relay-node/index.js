@@ -1,6 +1,5 @@
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
-import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
 import { EventEmitter } from 'events'
@@ -24,6 +23,7 @@ import { BandwidthReceipt } from '../protocol/bandwidth-receipt.js'
 import { ReputationSystem } from '../../incentive/reputation/index.js'
 import { NetworkDiscovery } from '../network-discovery.js'
 import { HealthMonitor } from './health-monitor.js'
+import { AlertManager } from './alert-manager.js'
 import { SelfHeal } from './self-heal.js'
 import { AccessControl } from './access-control.js'
 import { SeedingRegistry } from '../registry/index.js'
@@ -35,8 +35,10 @@ import {
 import { PluginLoader } from '../plugin-loader.js'
 import { Router } from '../router/index.js'
 import { AppRegistry } from '../app-registry.js'
-import { RELAY_DISCOVERY_TOPIC, isValidHexKey, normalizeContentType, normalizePrivacyTier } from '../constants.js'
+import { RELAY_DISCOVERY_TOPIC, isValidHexKey, normalizePrivacyTier } from '../constants.js'
 import { PolicyGuard } from '../policy-guard.js'
+import { AppLifecycle } from './app-lifecycle.js'
+import { GatewayServer } from './gateway-server.js'
 
 const DEFAULT_CONFIG = {
   storage: './storage',
@@ -179,13 +181,17 @@ export class RelayNode extends EventEmitter {
     this.relay = null
     this.metrics = null
     this.api = null
+    this.gatewayServer = null
     this.wsTransport = null
     this.torTransport = null
     this.paymentManager = null
     this.settlementInterval = null
     this.appRegistry = new AppRegistry(this.config.storage)
-    // Backwards compat: this.seededApps is the same Map instance
-    this.seededApps = this.appRegistry.apps
+    this.appLifecycle = new AppLifecycle(this)
+    // Forward lifecycle events so existing listeners on RelayNode keep working
+    for (const ev of ['seeding', 'unseeded', 'reseeded', 'reseed-error', 'app-replaced', 'app-version-rejected']) {
+      this.appLifecycle.on(ev, (payload) => this.emit(ev, payload))
+    }
     this.connections = new Map() // conn -> { lastActivity }
     this._healthCheckInterval = null
     this.bootstrapCache = new BootstrapCache(this.config.storage, {
@@ -199,6 +205,7 @@ export class RelayNode extends EventEmitter {
     this._reputationSaveInterval = null
     this.networkDiscovery = null
     this.healthMonitor = null
+    this.alertManager = null
     this.selfHeal = null
     this.seedingRegistry = null
     this.distributedDriveBridge = null
@@ -215,11 +222,15 @@ export class RelayNode extends EventEmitter {
     this._catalogBroadcastTimer = null
     this._catalogPeerThrottle = new Map() // peerKey -> lastCatalogTime
     this._catalogThrottleCleanup = null
-    this._seedMutex = false
     this._replicationCheckInterval = null
     this._replicationHealth = new Map() // appKey -> { state, current, target, missing }
     this._lastReplicationCheckAt = null
     this.running = false
+  }
+
+  // Backwards compat: expose the seeded apps Map owned by AppLifecycle.
+  get seededApps () {
+    return this.appLifecycle.seededApps
   }
 
   _isRestrictedMode () {
@@ -427,6 +438,23 @@ export class RelayNode extends EventEmitter {
           trustProxy: this.config.trustProxy || false
         })
         startups.push(this.api.start())
+
+        // Optional separate gateway server for data-plane traffic.
+        // When gatewayPort is set AND different from apiPort, spin up a
+        // dedicated HTTP server that only serves /v1/hyper/* and /catalog.json.
+        // This prevents heavy file traffic from starving the management API.
+        const gatewayPort = this.config.gatewayPort
+        if (gatewayPort && gatewayPort !== (this.config.apiPort || 9100)) {
+          this.gatewayServer = new GatewayServer(this, {
+            gatewayPort,
+            gatewayHost: this.config.gatewayHost || '0.0.0.0',
+            corsOrigins: this.config.corsOrigins,
+            trustProxy: this.config.trustProxy || false,
+            // Share the HyperGateway instance with RelayAPI to avoid duplicate state
+            gateway: this.api._gateway
+          })
+          startups.push(this.gatewayServer.start())
+        }
       }
 
       // Flush DHT + start subsystems concurrently
@@ -777,6 +805,11 @@ export class RelayNode extends EventEmitter {
       this.selfHeal.on('self-heal-action', (action) => this.emit('self-heal-action', action))
       this.healthMonitor.start()
 
+      // Start alert manager (if configured) — wires to health monitor + subsystems
+      if (this.config.alerts?.enabled) {
+        this.alertManager = new AlertManager(this, this.config.alerts)
+      }
+
       this.emit('started', { publicKey: this.swarm.keyPair.publicKey })
 
       // Auto-enable holesail if API is not publicly reachable
@@ -796,6 +829,7 @@ export class RelayNode extends EventEmitter {
       if (this.holesailTransport) { try { await this.holesailTransport.stop() } catch (_) {} this.holesailTransport = null }
       if (this.torTransport) { try { await this.torTransport.stop() } catch (_) {} this.torTransport = null }
       if (this.wsTransport) { try { await this.wsTransport.stop() } catch (_) {} this.wsTransport = null }
+      if (this.gatewayServer) { try { await this.gatewayServer.stop() } catch (_) {} this.gatewayServer = null }
       if (this.api) { try { await this.api.stop() } catch (_) {} this.api = null }
       if (this.metrics) { this.metrics.stop(); this.metrics = null }
       if (this.distributedDriveBridge) { try { await this.distributedDriveBridge.stop() } catch (_) {} this.distributedDriveBridge = null }
@@ -811,398 +845,30 @@ export class RelayNode extends EventEmitter {
   }
 
   async _reseedFromRegistry () {
-    // Load persisted entries — also migrates old seeded-apps.json format
-    const entries = await this.appRegistry.load()
-    if (!entries.length) {
-      // Try migrating from old seeded-apps.json if app-registry.json doesn't exist
-      await this._migrateOldSeededApps()
-      return
-    }
-
-    for (const entry of entries) {
-      if (!entry.appKey) continue
-      try {
-        await this.seedApp(entry.appKey, {
-          appId: entry.appId || null,
-          type: entry.type || 'app',
-          parentKey: entry.parentKey || null,
-          mountPath: entry.mountPath || null,
-          version: entry.version || null,
-          privacyTier: entry.privacyTier || null
-        })
-        this.emit('reseeded', { appKey: entry.appKey })
-      } catch (err) {
-        this.emit('reseed-error', { appKey: entry.appKey, error: err })
-      }
-    }
+    return this.appLifecycle.reseedFromRegistry()
   }
 
   /**
    * One-time migration from old seeded-apps.json → unified app-registry.json
    */
   async _migrateOldSeededApps () {
-    try {
-      const oldPath = join(this.config.storage, 'seeded-apps.json')
-      const data = JSON.parse(await readFile(oldPath, 'utf8'))
-      const entries = Array.isArray(data) ? data : []
-      if (!entries.length) return
-
-      for (const entry of entries) {
-        const appKey = entry.appKey
-        if (!appKey) continue
-        try {
-          await this.seedApp(appKey, {
-            appId: entry.appId || null,
-            type: entry.type || 'app',
-            parentKey: entry.parentKey || null,
-            mountPath: entry.mountPath || null,
-            version: entry.version || null,
-            privacyTier: entry.privacyTier || null
-          })
-          this.emit('reseeded', { appKey, source: 'migration' })
-        } catch (err) {
-          this.emit('reseed-error', { appKey, error: err })
-        }
-      }
-      // Migration done — registry is now saved in new format
-    } catch (_) {
-      // No old file — fresh install
-    }
+    return this.appLifecycle.migrateOldSeededApps()
   }
 
   async seedApp (appKeyHex, opts = {}) {
-    if (!this.seeder) throw new Error('Seeding not enabled')
-    if (!isValidHexKey(appKeyHex)) throw new Error('Invalid app key: must be 64 hex characters')
-
-    const contentType = normalizeContentType(opts.type, 'app')
-    const parentKey = typeof opts.parentKey === 'string' ? opts.parentKey.toLowerCase() : null
-    const mountPath = typeof opts.mountPath === 'string' ? opts.mountPath.trim() : null
-    if (parentKey && !isValidHexKey(parentKey, 64)) {
-      throw new Error('Invalid parent key: must be 64 hex characters')
-    }
-    if (mountPath && !mountPath.startsWith('/')) {
-      throw new Error('Invalid mountPath: must start with "/"')
-    }
-    if ((parentKey || mountPath) && contentType !== 'drive') {
-      throw new Error('parentKey and mountPath are only valid for content type "drive"')
-    }
-
-    const privacyTier = normalizePrivacyTier(opts.privacyTier || opts.tier, 'public')
-    if (this.policyGuard) {
-      const policyOperation = this.config.strictSeedingPrivacy !== false
-        ? 'replicate-user-data'
-        : (contentType === 'app' ? 'serve-code' : 'replicate-user-data')
-      const policy = this.policyGuard.check(appKeyHex, privacyTier, policyOperation)
-      if (!policy.allowed) {
-        throw new Error(`POLICY_VIOLATION: ${policy.reason}`)
-      }
-    }
-
-    // Already seeding this exact key — no-op
-    if (this.seededApps.has(appKeyHex)) {
-      const existing = this.seededApps.get(appKeyHex)
-      return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
-    }
-
-    // Acquire seed mutex to prevent concurrent eviction races
-    while (this._seedMutex) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-    this._seedMutex = true
-    try {
-      return await this._seedAppInner(appKeyHex, opts, contentType, parentKey, mountPath, privacyTier)
-    } finally {
-      this._seedMutex = false
-    }
-  }
-
-  async _seedAppInner (appKeyHex, opts, contentType, parentKey, mountPath, privacyTier) {
-    // Re-check after acquiring mutex — another call may have seeded it
-    if (this.seededApps.has(appKeyHex)) {
-      const existing = this.seededApps.get(appKeyHex)
-      return { discoveryKey: b4a.toString(existing.discoveryKey, 'hex'), alreadySeeded: true }
-    }
-
-    // Evict oldest app if storage capacity would be exceeded
-    if (this.config.enableEviction !== false && this.seeder.totalBytesStored >= this.config.maxStorageBytes && this.seededApps.size > 0) {
-      const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000
-      let oldestKey = null
-      let oldestTime = Infinity
-
-      for (const [appKey, entry] of this.seededApps) {
-        if (entry.startedAt < oldestTime) {
-          oldestTime = entry.startedAt
-          oldestKey = appKey
-        }
-      }
-
-      const shouldEvict = oldestKey && (
-        (opts.replicationFactor && opts.replicationFactor > (this.seededApps.get(oldestKey)?.replicationFactor || 1)) ||
-        (Date.now() - oldestTime > TWENTY_FOUR_HOURS)
-      )
-
-      if (shouldEvict) {
-        await this._evictOldestApp()
-      } else {
-        throw new Error('Storage capacity exceeded and no eligible app to evict')
-      }
-    }
-
-    const publisherPubkey = opts.publisherPubkey
-      ? (typeof opts.publisherPubkey === 'string'
-          ? opts.publisherPubkey
-          : b4a.toString(opts.publisherPubkey, 'hex'))
-      : null
-
-    const appKey = b4a.from(appKeyHex, 'hex')
-    const drive = new Hyperdrive(this.store, appKey)
-
-    try {
-      await drive.ready()
-
-      const discoveryKey = drive.discoveryKey
-
-      // Signal that we're looking for peers for this drive's cores
-      const done = drive.findingPeers ? drive.findingPeers() : null
-      this.swarm.join(discoveryKey, { server: true, client: true })
-      this.swarm.flush().then(() => { if (done) done() }).catch(() => { if (done) done() })
-
-      // Eagerly replicate drive content with retry loop
-      const eagerReplicate = async () => {
-        const MAX_RETRIES = 6
-        const RETRY_DELAYS = [5000, 10000, 15000, 30000, 60000, 120000]
-
-        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-          // Bail out if the drive was closed (e.g. by unseedApp)
-          if (drive.closed || drive.closing) return
-
-          try {
-            this.swarm.join(discoveryKey, { server: true, client: true })
-            await this.swarm.flush()
-
-            if (drive.closed || drive.closing) return
-
-            await Promise.race([
-              drive.update({ wait: true }),
-              new Promise((_resolve, reject) => setTimeout(() => reject(new Error('update timeout')), 30000))
-            ])
-
-            if (drive.version > 0 && !drive.closed && !drive.closing) {
-              let dl
-              try {
-                dl = drive.download('/')
-              } catch (_dlErr) {
-                // Drive closed between check and download call
-                return
-              }
-              await Promise.race([
-                dl.done(),
-                new Promise((_resolve, reject) => setTimeout(() => reject(new Error('download timeout')), 120000))
-              ]).catch(() => {}) // Swallow download errors (drive may close mid-download)
-
-              if (drive.closed || drive.closing) return
-
-              // After content is downloaded, read manifest and deduplicate
-              await this._indexAppManifest(appKeyHex, drive)
-
-              this.emit('reseeded', { appKey: appKeyHex, version: drive.version })
-              return
-            }
-          } catch (_) {
-            // SESSION_CLOSED, timeout, or drive closed during replication
-            if (drive.closed || drive.closing) return
-          }
-
-          if (attempt < MAX_RETRIES - 1) {
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
-          }
-        }
-        this.emit('reseed-error', { appKey: appKeyHex, error: 'max retries exceeded' })
-      }
-      eagerReplicate().catch(() => {})
-
-      this.appRegistry.set(appKeyHex, {
-        drive,
-        discoveryKey,
-        startedAt: Date.now(),
-        bytesServed: 0,
-        type: contentType,
-        parentKey,
-        mountPath,
-        appId: opts.appId || null,
-        version: opts.version || null,
-        privacyTier,
-        name: opts.name || opts.appId || null,
-        description: opts.description || '',
-        author: opts.author || null,
-        categories: Array.isArray(opts.categories) ? opts.categories : null,
-        blind: opts.blind || false,
-        publisherPubkey
-      })
-
-      if (this.distributedDriveBridge) {
-        this.distributedDriveBridge.registerDrive(appKeyHex, drive)
-      }
-
-      this.emit('seeding', { appKey: appKeyHex, discoveryKey: b4a.toString(discoveryKey, 'hex') })
-      return { discoveryKey: b4a.toString(discoveryKey, 'hex') }
-    } catch (err) {
-      try { await drive.close() } catch (_) {}
-      throw err
-    }
-  }
-
-  /**
-   * Read manifest.json from a drive and deduplicate by appId.
-   * If an older version of the same app is already seeded, unseed it.
-   */
-  async _indexAppManifest (appKeyHex, drive) {
-    try {
-      const manifestBuf = await Promise.race([
-        drive.get('/manifest.json'),
-        new Promise((_resolve, reject) => setTimeout(() => reject(new Error('manifest timeout')), 5000))
-      ])
-      if (!manifestBuf) return
-
-      const manifest = JSON.parse(manifestBuf.toString())
-      const manifestAppId = manifest.id || (manifest.name ? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : null)
-      const version = manifest.version || '0.0.0'
-      const manifestType = normalizeContentType(
-        manifest.contentType ||
-        manifest.hiverelay?.contentType ||
-        manifest.hiverelay?.type ||
-        manifest.type,
-        null
-      )
-      const existing = this.appRegistry.get(appKeyHex)
-      const contentType = manifestType || normalizeContentType(existing?.type, 'app')
-      const appId = manifestAppId || existing?.appId || null
-      const parentKey = isValidHexKey(manifest.parentKey, 64)
-        ? manifest.parentKey
-        : existing?.parentKey || null
-      const mountPath = typeof manifest.mountPath === 'string' && manifest.mountPath.trim().startsWith('/')
-        ? manifest.mountPath.trim()
-        : existing?.mountPath || null
-
-      // Update this entry's metadata via the registry
-      this.appRegistry.update(appKeyHex, {
-        type: contentType,
-        parentKey,
-        mountPath,
-        appId,
-        version,
-        privacyTier: manifest.privacyTier || manifest.privacy?.tier || manifest.privacy?.mode || undefined,
-        name: manifest.name || appId,
-        description: manifest.description || '',
-        author: manifest.author || null,
-        categories: manifest.categories || null
-      })
-
-      if (contentType !== 'app') return
-      if (!appId) return
-
-      // Check for version conflicts with existing apps
-      const conflict = this.appRegistry.checkConflict(appId, appKeyHex, version)
-      if (conflict.conflict) {
-        if (conflict.shouldReplace) {
-          this.emit('app-replaced', {
-            appId,
-            oldKey: conflict.existingKey,
-            oldVersion: conflict.existingVersion,
-            newKey: appKeyHex,
-            newVersion: version
-          })
-          await this.unseedApp(conflict.existingKey)
-        } else {
-          this.emit('app-version-rejected', {
-            appId,
-            rejectedKey: appKeyHex,
-            rejectedVersion: version,
-            currentKey: conflict.existingKey,
-            currentVersion: conflict.existingVersion
-          })
-          await this.unseedApp(appKeyHex)
-        }
-      }
-    } catch (_) {
-      // No manifest or parse error — skip deduplication silently
-    }
+    return this.appLifecycle.seedApp(appKeyHex, opts)
   }
 
   async unseedApp (appKeyHex) {
-    const entry = this.appRegistry.get(appKeyHex)
-    if (!entry) return
-
-    if (this.distributedDriveBridge) {
-      this.distributedDriveBridge.unregisterDrive(appKeyHex)
-    }
-
-    try { await this.swarm.leave(entry.discoveryKey) } catch (_) {}
-    try { await entry.drive.close() } catch (_) {}
-    this.appRegistry.delete(appKeyHex) // auto-cleans dedup index + persists
-
-    this.emit('unseeded', { appKey: appKeyHex })
+    return this.appLifecycle.unseedApp(appKeyHex)
   }
 
-  /**
-   * Authenticated unseed: verify the publisher signature before unseeding.
-   * The publisher must sign (appKey + 'unseed' + timestamp) with the key
-   * that originally published the app (stored in appRegistry.publisherPubkey).
-   *
-   * @param {string} appKeyHex - 64-char hex app key
-   * @param {string} publisherPubkeyHex - 64-char hex publisher public key
-   * @param {string} signatureHex - 128-char hex Ed25519 signature
-   * @param {number} timestamp - Unix timestamp (ms) included in the signed payload
-   * @returns {{ ok: boolean, error?: string }}
-   */
   verifyUnseedRequest (appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
-    const entry = this.appRegistry.get(appKeyHex)
-    if (!entry) return { ok: false, error: 'APP_NOT_FOUND' }
-
-    // Verify the publisher key matches the one that seeded the app
-    if (entry.publisherPubkey && entry.publisherPubkey !== publisherPubkeyHex) {
-      return { ok: false, error: 'PUBLISHER_MISMATCH' }
-    }
-
-    // If no publisher was stored (legacy app), reject the unseed —
-    // operator must use /unseed with API key instead
-    if (!entry.publisherPubkey) {
-      return { ok: false, error: 'NO_PUBLISHER_KEY: app has no recorded publisher — operator must unseed via /unseed with API key' }
-    }
-
-    // Check timestamp freshness (reject if older than 5 minutes)
-    const age = Date.now() - timestamp
-    if (age > 5 * 60 * 1000 || age < -60_000) {
-      return { ok: false, error: 'STALE_TIMESTAMP' }
-    }
-
-    // Verify Ed25519 signature over (appKey + 'unseed' + timestamp)
-    const appKeyBuf = b4a.from(appKeyHex, 'hex')
-    const pubkeyBuf = b4a.from(publisherPubkeyHex, 'hex')
-    const sigBuf = b4a.from(signatureHex, 'hex')
-
-    const tsBuf = b4a.alloc(8)
-    const tsView = new DataView(tsBuf.buffer, tsBuf.byteOffset)
-    tsView.setBigUint64(0, BigInt(timestamp))
-
-    const payload = b4a.concat([appKeyBuf, b4a.from('unseed'), tsBuf])
-    const valid = sodium.crypto_sign_verify_detached(sigBuf, payload, pubkeyBuf)
-
-    if (!valid) return { ok: false, error: 'INVALID_SIGNATURE' }
-    return { ok: true }
+    return this.appLifecycle.verifyUnseedRequest(appKeyHex, publisherPubkeyHex, signatureHex, timestamp)
   }
 
-  /**
-   * Broadcast an unseed request to all connected peers via P2P.
-   */
   broadcastUnseed (appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
-    if (!this._seedProtocol) return
-    this._seedProtocol.publishUnseedRequest(
-      b4a.from(appKeyHex, 'hex'),
-      b4a.from(publisherPubkeyHex, 'hex'),
-      b4a.from(signatureHex, 'hex'),
-      timestamp
-    )
+    return this.appLifecycle.broadcastUnseed(appKeyHex, publisherPubkeyHex, signatureHex, timestamp)
   }
 
   getStats () {
@@ -1873,6 +1539,7 @@ export class RelayNode extends EventEmitter {
 
     // Stop health checks, settlement, WebSocket, API, and metrics first
     if (this.selfHeal) { this.selfHeal.stop(); this.selfHeal = null }
+    if (this.alertManager) { this.alertManager.stop(); this.alertManager = null }
     if (this.healthMonitor) { this.healthMonitor.stop(); this.healthMonitor = null }
     if (this._healthCheckInterval) { clearInterval(this._healthCheckInterval); this._healthCheckInterval = null }
     if (this.settlementInterval) { clearInterval(this.settlementInterval); this.settlementInterval = null }
@@ -1890,6 +1557,10 @@ export class RelayNode extends EventEmitter {
     if (this.wsTransport) {
       try { await withTimeout(this.wsTransport.stop(), timeout, 'wsTransport.stop') } catch (_) {}
       this.wsTransport = null
+    }
+    if (this.gatewayServer) {
+      try { await withTimeout(this.gatewayServer.stop(), timeout, 'gatewayServer.stop') } catch (_) {}
+      this.gatewayServer = null
     }
     if (this.api) {
       try { await withTimeout(this.api.stop(), timeout, 'api.stop') } catch (_) {}

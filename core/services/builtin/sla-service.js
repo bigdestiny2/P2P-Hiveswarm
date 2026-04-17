@@ -17,11 +17,32 @@ const CHECK_INTERVAL_MS = 60_000
 const DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 export class SLAService extends ServiceProvider {
-  constructor () {
+  constructor (opts = {}) {
     super()
     this.contracts = new Map() // id -> SLA contract
     this.node = null
     this._checkInterval = null
+    this.persistence = opts.persistence || null
+
+    if (this.persistence) {
+      for (const [id, contract] of this.persistence.entries()) {
+        this.contracts.set(id, contract)
+      }
+    }
+  }
+
+  _persist (id) {
+    if (!this.persistence) return
+    const contract = this.contracts.get(id)
+    if (!contract) {
+      try { this.persistence.delete(id) } catch (_) {}
+      return
+    }
+    try {
+      this.persistence.set(id, contract)
+    } catch (_) {
+      // Silent — no emit channel on ServiceProvider by default
+    }
   }
 
   manifest () {
@@ -103,6 +124,7 @@ export class SLAService extends ServiceProvider {
     }
 
     this.contracts.set(id, contract)
+    this._persist(id)
 
     this.node?.router?.pubsub?.publish('sla/created', {
       contractId: id,
@@ -163,6 +185,7 @@ export class SLAService extends ServiceProvider {
       contract.collateralRemaining = 0
     }
 
+    this._persist(contract.id)
     this.node?.router?.pubsub?.publish('sla/terminated', { contractId: contract.id })
     return { id: contract.id, status: 'terminated' }
   }
@@ -224,6 +247,7 @@ export class SLAService extends ServiceProvider {
       // Expire contracts past their duration
       if (now > contract.expiresAt) {
         contract.status = 'expired'
+        this._persist(contract.id)
         this.node?.router?.pubsub?.publish('sla/expired', { contractId: contract.id })
         continue
       }
@@ -241,7 +265,6 @@ export class SLAService extends ServiceProvider {
 
     // Read proof-of-relay scores
     const score = this.node?._proofOfRelay?.scores?.get(contract.relayPubkey)
-    const record = this.node?.reputation?.getRecord(contract.relayPubkey)
 
     // Reliability check
     const reliability = score && score.challenges > 0
@@ -310,6 +333,10 @@ export class SLAService extends ServiceProvider {
         contractId: contract.id,
         reason: 'max_violations_exceeded'
       })
+    }
+
+    if (newViolations.length > 0) {
+      this._persist(contract.id)
     }
 
     return {

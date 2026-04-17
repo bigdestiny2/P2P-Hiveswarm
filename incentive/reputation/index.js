@@ -22,10 +22,31 @@ const GEO_BONUS = 50 // Bonus for underserved region
 const MIN_CHALLENGES_FOR_RANKING = 10 // Minimum challenges to be ranked
 
 export class ReputationSystem extends EventEmitter {
-  constructor () {
+  constructor (opts = {}) {
     super()
     // relayPubkeyHex -> ReputationRecord
     this.records = new Map()
+    this.persistence = opts.persistence || null
+
+    if (this.persistence) {
+      for (const [key, record] of this.persistence.entries()) {
+        this.records.set(key, record)
+      }
+    }
+  }
+
+  _persist (relayPubkeyHex) {
+    if (!this.persistence) return
+    const record = this.records.get(relayPubkeyHex)
+    if (!record) {
+      try { this.persistence.delete(relayPubkeyHex) } catch (_) {}
+      return
+    }
+    try {
+      this.persistence.set(relayPubkeyHex, { ...record })
+    } catch (err) {
+      this.emit('persist-error', { relay: relayPubkeyHex, error: err.message })
+    }
   }
 
   /**
@@ -46,6 +67,7 @@ export class ReputationSystem extends EventEmitter {
 
     record.lastActivity = Date.now()
     this.emit('challenge-recorded', { relay: relayPubkeyHex, passed, score: record.score })
+    this._persist(relayPubkeyHex)
   }
 
   /**
@@ -57,6 +79,7 @@ export class ReputationSystem extends EventEmitter {
     record.totalBytesServed += bytesServed
     record.score += mb * BANDWIDTH_WEIGHT
     record.lastActivity = Date.now()
+    this._persist(relayPubkeyHex)
   }
 
   /**
@@ -67,6 +90,7 @@ export class ReputationSystem extends EventEmitter {
     record.totalUptimeHours += hoursOnline
     record.score += hoursOnline * UPTIME_WEIGHT
     record.lastActivity = Date.now()
+    this._persist(relayPubkeyHex)
   }
 
   /**
@@ -93,15 +117,17 @@ export class ReputationSystem extends EventEmitter {
       record.score += GEO_BONUS
       record.geoBonus = true
     }
+    this._persist(relayPubkeyHex)
   }
 
   /**
    * Apply daily decay to all scores
    */
   applyDecay () {
-    for (const record of this.records.values()) {
+    for (const [key, record] of this.records) {
       record.score *= DECAY_RATE
       if (record.score < 0) record.score = 0
+      this._persist(key)
     }
     this.emit('decay-applied')
   }

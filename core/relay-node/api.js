@@ -361,10 +361,26 @@ export class RelayAPI extends EventEmitter {
           return this._serveDashboard(res, '_leaderboardHtml', 'leaderboard.html')
         }
 
+        if (path === '/catalog') {
+          return this._serveDashboard(res, '_catalogHtml', 'catalog.html')
+        }
+
         if (path === '/api/health-detail') {
           const healthStatus = this.node.getHealthStatus()
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
           return this._json(res, { ...healthStatus, actions })
+        }
+
+        if (path === '/api/alerts') {
+          if (!this.node.alertManager) {
+            return this._json(res, { enabled: false, total: 0, offset: 0, limit: 0, items: [] })
+          }
+          const offset = parseInt(url.searchParams.get('offset')) || 0
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit')) || 50, 1), 500)
+          const severity = url.searchParams.get('severity') || undefined
+          const typeFilter = url.searchParams.get('type') || undefined
+          const logOut = this.node.alertManager.getLog({ offset, limit, severity, type: typeFilter })
+          return this._json(res, { enabled: true, ...logOut })
         }
 
         if (path === '/api/overview') {
@@ -642,6 +658,19 @@ export class RelayAPI extends EventEmitter {
       // POST routes
       if (req.method === 'POST') {
         const body = await this._readBody(req)
+
+        if (path === '/api/alerts/test') {
+          if (!this._requireAuth(req, res, 'Unauthorized — API key required for /api/alerts/test')) return
+          if (!this.node.alertManager) {
+            return this._json(res, { error: 'AlertManager not enabled' }, 503)
+          }
+          const dispatched = this.node.alertManager.fireTest({
+            severity: body && typeof body.severity === 'string' ? body.severity : undefined,
+            message: body && typeof body.message === 'string' ? body.message : undefined,
+            details: body && typeof body.details === 'object' ? body.details : undefined
+          })
+          return this._json(res, { ok: true, dispatched })
+        }
 
         if (path === '/seed') {
           if (!this._requireAuth(req, res, 'Unauthorized — API key required for /seed')) return
