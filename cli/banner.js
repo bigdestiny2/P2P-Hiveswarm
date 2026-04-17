@@ -195,6 +195,82 @@ export function helpBanner (version) {
   return lines.join('\n')
 }
 
+// Operator management console — shown when entering `hiverelay manage` TUI.
+// Clears screen and displays a compact 3D logo + connection strip so the
+// operator immediately knows what they're configuring.
+export function manageBanner (host, port, version) {
+  // Scan-line effect across the top
+  const scan = '▁'.repeat(70)
+  const rule = '═'.repeat(70)
+  const endpoint = `${host}:${port}`
+
+  if (!useColor()) {
+    return [
+      '',
+      '  ╔' + '═'.repeat(68) + '╗',
+      '  ║   HIVERELAY MANAGEMENT CONSOLE · v' + version + ' '.repeat(Math.max(0, 30 - version.length)) + '║',
+      '  ║   Connected → ' + endpoint.padEnd(52) + '║',
+      '  ╚' + '═'.repeat(68) + '╝',
+      ''
+    ].join('\n')
+  }
+
+  const clear = '\x1b[2J\x1b[H'
+  return [
+    clear,
+    '',
+    paint(C.cyan, '  ╱▔') + paint(C.dim, scan) + paint(C.cyan, '▔╲'),
+    // Compact 3D title row — letter-spaced with depth shading
+    '  ' + paint(C.cyan + BOLD, '│ ') +
+      paint(C.cyan + BOLD, '█▀█') + ' ' + paint(C.blue + BOLD, '█') + ' ' +
+      paint(C.purple + BOLD, '█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
+      paint(C.pink + BOLD, '█▀█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
+      paint(C.purple + BOLD, '█') + ' ' + paint(C.blue + BOLD, '█▀█') + ' ' +
+      paint(C.cyan + BOLD, '█▄█') + '   ' +
+      paint(C.white + BOLD, 'MANAGEMENT CONSOLE') + '  ' + paint(C.cyan + BOLD, '│'),
+    '  ' + paint(C.cyan + BOLD, '│ ') +
+      paint(C.cyan + BOLD, '█▀█') + ' ' + paint(C.blue + BOLD, '█') + ' ' +
+      paint(C.purple + BOLD, '█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
+      paint(C.pink + BOLD, '██▀') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
+      paint(C.purple + BOLD, '█') + ' ' + paint(C.blue + BOLD, '█▀█') + ' ' +
+      paint(C.cyan + BOLD, ' █ ') + '   ' +
+      paint(C.dim, '// operator control plane       ') + paint(C.cyan + BOLD, ' │'),
+    '  ' + paint(C.cyan + BOLD, '│ ') +
+      paint(C.cyan + BOLD, '▀ ▀') + ' ' + paint(C.blue + BOLD, '▀') + ' ' +
+      paint(C.purple + BOLD, '▀') + ' ' + paint(C.magenta + BOLD, '▀▀▀') + ' ' +
+      paint(C.pink + BOLD, '▀ ▀') + ' ' + paint(C.magenta + BOLD, '▀▀▀') + ' ' +
+      paint(C.purple + BOLD, '▀▀▀') + ' ' + paint(C.blue + BOLD, '▀ ▀') + ' ' +
+      paint(C.cyan + BOLD, ' ▀ ') + '   ' + ' '.repeat(32) + paint(C.cyan + BOLD, '│'),
+    '  ' + paint(C.cyan, '╲▁') + paint(C.dim, rule) + paint(C.cyan, '▁╱'),
+    '',
+    '  ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'link:     ') + paint(C.white + BOLD, endpoint) +
+      '   ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'v') + paint(C.magenta, version) +
+      '   ' + paint(C.dim, '// ctrl+c to exit // q to back'),
+    ''
+  ].join('\n')
+}
+
+// Sub-menu header — used inside each settings page so every screen feels
+// part of the same cypherpunk UI.
+export function sectionHeader (title, subtitle = '') {
+  if (!useColor()) {
+    return [
+      '',
+      '  ── ' + title + ' ' + '─'.repeat(Math.max(4, 60 - title.length)),
+      subtitle ? '  // ' + subtitle : null,
+      ''
+    ].filter(Boolean).join('\n')
+  }
+  const bar = '─'.repeat(Math.max(4, 60 - title.length))
+  return [
+    '',
+    '  ' + paint(C.cyan + BOLD, '▓▓▓') + ' ' + paint(C.magenta + BOLD, title.toUpperCase()) +
+      ' ' + paint(C.cyan, bar),
+    subtitle ? '  ' + paint(C.dim, '// ' + subtitle) : null,
+    ''
+  ].filter(Boolean).join('\n')
+}
+
 export function shutdownBanner () {
   if (!useColor()) return '\n  signing off. fnord.\n'
   const lines = [

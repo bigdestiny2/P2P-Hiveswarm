@@ -11,6 +11,19 @@
 import {
   select, confirm, input, number
 } from '@inquirer/prompts'
+import { readFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import { manageBanner, sectionHeader, shutdownBanner, paint, C, OK } from './banner.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const MANAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')).version
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 // ─── API Client ─────────────────────────────────────────────────────
 
@@ -66,13 +79,8 @@ function parseStorageInput (val) {
   return num * 1024 * 1024 * 1024
 }
 
-const SEPARATOR = '  ' + '\u2500'.repeat(48)
-
-function header (title) {
-  console.log()
-  console.log(SEPARATOR)
-  console.log(`  ${title}`)
-  console.log(SEPARATOR)
+function header (title, subtitle = '') {
+  console.log(sectionHeader(title, subtitle))
 }
 
 // ─── Main Menu ──────────────────────────────────────────────────────
@@ -90,11 +98,7 @@ export async function runManage (host = '127.0.0.1', port = 9100) {
     return
   }
 
-  console.log()
-  console.log('  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557')
-  console.log('  \u2551   HiveRelay Management Console      \u2551')
-  console.log('  \u2551   Connected to ' + host + ':' + port + '              \u2551')
-  console.log('  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d')
+  console.log(manageBanner(host, port, MANAGE_VERSION))
 
   let running = true
   while (running) {
@@ -141,7 +145,9 @@ export async function runManage (host = '127.0.0.1', port = 9100) {
     }
   }
 
-  console.log('\n  Goodbye.\n')
+  console.log(shutdownBanner())
+  console.log('  ' + OK + ' ' + paint(C.dim, 'management console closed. swarm persists.'))
+  console.log()
 }
 
 // ─── Dashboard ──────────────────────────────────────────────────────
