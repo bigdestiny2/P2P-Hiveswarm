@@ -40,12 +40,29 @@ const log = createLogger({ name: 'hiverelay-cli' })
 
 // ─── Process crash protection ──────────────────────────────────────
 
+// Filter known-benign errors that shouldn't log as fatal:
+//   - ExitPromptError: user hit Ctrl+C inside an inquirer prompt (clean exit)
+//   - AbortError: inquirer prompt aborted via signal
+function isBenignExit (err) {
+  if (!err) return false
+  const name = err.name || (err.constructor && err.constructor.name) || ''
+  return name === 'ExitPromptError' || name === 'AbortError'
+}
+
 process.on('uncaughtException', (err) => {
+  if (isBenignExit(err)) {
+    console.log()
+    process.exit(0)
+  }
   log.fatal({ err }, 'uncaught exception — shutting down')
   process.exit(1)
 })
 
 process.on('unhandledRejection', (reason) => {
+  if (isBenignExit(reason)) {
+    console.log()
+    process.exit(0)
+  }
   log.fatal({ err: reason }, 'unhandled rejection — shutting down')
   process.exit(1)
 })

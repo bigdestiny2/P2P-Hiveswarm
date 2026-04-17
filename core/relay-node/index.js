@@ -1162,7 +1162,18 @@ export class RelayNode extends EventEmitter {
     })
 
     conn.on('error', (err) => {
-      this.emit('connection-error', { error: err, info })
+      // Classify: benign P2P network drops are normal and should NOT pollute
+      // the error counter. These happen constantly on the public DHT — mobile
+      // clients, captive portals, NAT timeouts, rebooting peers, etc.
+      const code = err && (err.code || err.message || '')
+      const benign = /ECONNRESET|ETIMEDOUT|EPIPE|Duplicate connection|channel destroyed/i.test(code)
+      if (benign) {
+        // Emit a separate low-severity event for observability, but don't
+        // increment the error counter or trigger health warnings.
+        this.emit('connection-drop', { reason: err.code || err.message, info })
+      } else {
+        this.emit('connection-error', { error: err, info })
+      }
     })
 
     conn.on('close', () => {
