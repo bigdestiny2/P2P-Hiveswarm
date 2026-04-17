@@ -198,10 +198,22 @@ export function helpBanner (version) {
 // Operator management console — shown when entering `hiverelay manage` TUI.
 // Clears screen and displays a compact 3D logo + connection strip so the
 // operator immediately knows what they're configuring.
+//
+// Mini 3-row font (each letter is 3-rows × 3-cols, separated by 1 space).
+// Designed so each glyph is obviously its letter at a glance. Letters that
+// are naturally narrow (I, L) are still 3 cols wide for even spacing.
+const MINI_FONT = {
+  H: ['█ █', '███', '█ █'],
+  I: [' █ ', ' █ ', ' █ '],
+  V: ['█ █', '█ █', ' █ '],
+  E: ['███', '██ ', '███'],
+  R: ['██▖', '██▘', '█ █'],
+  L: ['█  ', '█  ', '███'],
+  A: ['▗█▖', '███', '█ █'],
+  Y: ['█ █', '▝█▘', ' █ ']
+}
+
 export function manageBanner (host, port, version) {
-  // Scan-line effect across the top
-  const scan = '▁'.repeat(70)
-  const rule = '═'.repeat(70)
   const endpoint = `${host}:${port}`
 
   if (!useColor()) {
@@ -215,37 +227,38 @@ export function manageBanner (host, port, version) {
     ].join('\n')
   }
 
+  // Gradient — one palette entry per letter of HIVERELAY
+  const word = 'HIVERELAY'
+  const palette = [C.cyan, C.blue, C.purple, C.magenta, C.pink, C.magenta, C.purple, C.blue, C.cyan]
+
+  // Build three rows, each row of the word glued together
+  const rows = [[], [], []]
+  for (let i = 0; i < word.length; i++) {
+    const letter = MINI_FONT[word[i]]
+    const color = palette[i] + BOLD
+    for (let r = 0; r < 3; r++) {
+      rows[r].push(paint(color, letter[r]))
+    }
+  }
+  const titleRows = rows.map(r => r.join(' '))
+
+  const frameTop = paint(C.cyan, '  ╭────') + paint(C.dim, '─'.repeat(60)) + paint(C.cyan, '────╮')
+  const frameBot = paint(C.cyan, '  ╰────') + paint(C.dim, '─'.repeat(60)) + paint(C.cyan, '────╯')
+  const sep = '    ' // space between logo and label
+
   const clear = '\x1b[2J\x1b[H'
   return [
     clear,
     '',
-    paint(C.cyan, '  ╱▔') + paint(C.dim, scan) + paint(C.cyan, '▔╲'),
-    // Compact 3D title row — letter-spaced with depth shading
-    '  ' + paint(C.cyan + BOLD, '│ ') +
-      paint(C.cyan + BOLD, '█▀█') + ' ' + paint(C.blue + BOLD, '█') + ' ' +
-      paint(C.purple + BOLD, '█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
-      paint(C.pink + BOLD, '█▀█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
-      paint(C.purple + BOLD, '█') + ' ' + paint(C.blue + BOLD, '█▀█') + ' ' +
-      paint(C.cyan + BOLD, '█▄█') + '   ' +
-      paint(C.white + BOLD, 'MANAGEMENT CONSOLE') + '  ' + paint(C.cyan + BOLD, '│'),
-    '  ' + paint(C.cyan + BOLD, '│ ') +
-      paint(C.cyan + BOLD, '█▀█') + ' ' + paint(C.blue + BOLD, '█') + ' ' +
-      paint(C.purple + BOLD, '█') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
-      paint(C.pink + BOLD, '██▀') + ' ' + paint(C.magenta + BOLD, '█▀▀') + ' ' +
-      paint(C.purple + BOLD, '█') + ' ' + paint(C.blue + BOLD, '█▀█') + ' ' +
-      paint(C.cyan + BOLD, ' █ ') + '   ' +
-      paint(C.dim, '// operator control plane       ') + paint(C.cyan + BOLD, ' │'),
-    '  ' + paint(C.cyan + BOLD, '│ ') +
-      paint(C.cyan + BOLD, '▀ ▀') + ' ' + paint(C.blue + BOLD, '▀') + ' ' +
-      paint(C.purple + BOLD, '▀') + ' ' + paint(C.magenta + BOLD, '▀▀▀') + ' ' +
-      paint(C.pink + BOLD, '▀ ▀') + ' ' + paint(C.magenta + BOLD, '▀▀▀') + ' ' +
-      paint(C.purple + BOLD, '▀▀▀') + ' ' + paint(C.blue + BOLD, '▀ ▀') + ' ' +
-      paint(C.cyan + BOLD, ' ▀ ') + '   ' + ' '.repeat(32) + paint(C.cyan + BOLD, '│'),
-    '  ' + paint(C.cyan, '╲▁') + paint(C.dim, rule) + paint(C.cyan, '▁╱'),
+    frameTop,
+    '  ' + paint(C.cyan, '│ ') + titleRows[0] + sep + paint(C.white + BOLD, 'MANAGEMENT  CONSOLE') + '       ' + paint(C.cyan, '│'),
+    '  ' + paint(C.cyan, '│ ') + titleRows[1] + sep + paint(C.dim, '// operator control plane  ') + '   ' + paint(C.cyan, '│'),
+    '  ' + paint(C.cyan, '│ ') + titleRows[2] + sep + paint(C.dim, '// ctrl+c to exit · q to back') + ' ' + paint(C.cyan, '│'),
+    frameBot,
     '',
-    '  ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'link:     ') + paint(C.white + BOLD, endpoint) +
-      '   ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'v') + paint(C.magenta, version) +
-      '   ' + paint(C.dim, '// ctrl+c to exit // q to back'),
+    '  ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'link ') + paint(C.white + BOLD, endpoint) +
+      '   ' + paint(C.green, '⬢') + ' ' + paint(C.cyan, 'version ') + paint(C.magenta, 'v' + version) +
+      '   ' + paint(C.green, '⬢') + ' ' + paint(C.dim, pick(TAGLINES)),
     ''
   ].join('\n')
 }
