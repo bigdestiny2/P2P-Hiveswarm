@@ -23,6 +23,10 @@ import { existsSync, mkdirSync, cpSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
+import {
+  mainBanner, setupBanner, testnetBanner, statusBanner, helpBanner,
+  shutdownBanner, divider, HEX, HEX_DIM, OK, ARROW, paint, C
+} from './banner.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
@@ -91,8 +95,7 @@ async function manage () {
 // ─── init ───────────────────────────────────────────────────────────
 
 async function init () {
-  console.log('HiveRelay v' + VERSION + ' — Init')
-  console.log()
+  console.log(setupBanner(VERSION))
 
   // 1. Create directories and config
   ensureDirs()
@@ -151,18 +154,20 @@ async function init () {
 
   // 5. Summary
   console.log()
-  console.log('  Setup complete.')
+  console.log('  ' + divider('═', C.green))
+  console.log('  ' + OK + ' ' + paint(C.green, 'setup complete') + paint(C.dim, ' — welcome to the swarm'))
+  console.log('  ' + divider('═', C.green))
   console.log()
-  console.log('  Quick start:')
-  console.log('    hiverelay start                  # Start relay node')
-  console.log('    curl localhost:9100/health        # Health check')
-  console.log('    curl localhost:9100/status        # Live stats')
+  console.log('  ' + paint(C.cyan + '\x1b[1m', '▶ quick start'))
+  console.log('    ' + paint(C.magenta, 'hiverelay start') + '                 ' + paint(C.dim, '# start relay node'))
+  console.log('    ' + paint(C.magenta, 'curl localhost:9100/health') + '      ' + paint(C.dim, '# liveness check'))
+  console.log('    ' + paint(C.magenta, 'curl localhost:9100/status') + '      ' + paint(C.dim, '# live stats'))
   if (installed.length > 0) {
     console.log()
-    console.log(`  Agent integration (${installed.join(' + ')}):`)
-    console.log('    /hiverelay start                 # Start via agent skill')
-    console.log('    /hiverelay status                # Check status via agent')
-    console.log('    /hiverelay seed <key>            # Seed an app via agent')
+    console.log('  ' + paint(C.cyan + '\x1b[1m', '▶ agent integration') + paint(C.dim, ` (${installed.join(' + ')})`))
+    console.log('    ' + paint(C.magenta, '/hiverelay start') + '                ' + paint(C.dim, '# start via agent skill'))
+    console.log('    ' + paint(C.magenta, '/hiverelay status') + '               ' + paint(C.dim, '# check status via agent'))
+    console.log('    ' + paint(C.magenta, '/hiverelay seed <key>') + '           ' + paint(C.dim, '# seed an app via agent'))
   }
   console.log()
 }
@@ -206,8 +211,8 @@ async function start () {
 
   const config = loadConfig(cliOverrides)
 
-  console.log('HiveRelay v' + VERSION)
-  console.log('Starting relay node...')
+  console.log(mainBanner(VERSION))
+  console.log('  ' + ARROW + ' ' + paint(C.cyan, 'starting relay node') + ' ' + paint(C.dim, '...'))
   console.log()
 
   const node = new RelayNode(config)
@@ -307,10 +312,11 @@ async function start () {
   goodbye(async () => {
     if (statusInterval) clearInterval(statusInterval)
     log.info('shutting down')
-    console.log('\n  Shutting down...')
+    console.log(shutdownBanner())
     await node.stop()
     log.info('stopped')
-    console.log('  Stopped.')
+    console.log('  ' + OK + ' ' + paint(C.dim, 'stopped. the swarm remembers.'))
+    console.log()
   })
 
   await node.start()
@@ -355,17 +361,14 @@ async function startTestnet () {
   const baseDir = join(tmpdir(), `hiverelay-testnet-${testId}`)
   mkdirSync(baseDir, { recursive: true })
 
-  console.log('╔══════════════════════════════════════════════════════╗')
-  console.log('║           HiveRelay — Local Testnet                 ║')
-  console.log('╚══════════════════════════════════════════════════════╝')
+  console.log(testnetBanner(VERSION))
+  console.log('  ' + HEX + ' ' + paint(C.cyan, 'Testnet ID:   ') + paint(C.white, testId))
+  console.log('  ' + HEX + ' ' + paint(C.cyan, 'Relay nodes:  ') + paint(C.white, String(nodeCount)))
+  console.log('  ' + HEX + ' ' + paint(C.cyan, 'API ports:    ') + paint(C.white, `${basePort}–${basePort + nodeCount - 1}`))
+  console.log('  ' + HEX + ' ' + paint(C.cyan, 'Test client:  ') + paint(C.white, runClient ? 'yes' : 'no'))
+  console.log('  ' + HEX_DIM + ' ' + paint(C.dim, 'Storage:      ' + baseDir))
   console.log()
-  console.log(`  Testnet ID:   ${testId}`)
-  console.log(`  Relay nodes:  ${nodeCount}`)
-  console.log(`  API ports:    ${basePort}–${basePort + nodeCount - 1}`)
-  console.log(`  Test client:  ${runClient ? 'yes' : 'no'}`)
-  console.log(`  Storage:      ${baseDir}`)
-  console.log()
-  console.log('  Starting local DHT...')
+  console.log('  ' + ARROW + ' ' + paint(C.magenta, 'spinning up local DHT') + paint(C.dim, '...'))
 
   const testnet = await createTestnet(3)
   console.log(`  DHT bootstrap: ${testnet.bootstrap.map(b => b.host + ':' + b.port).join(', ')}`)
@@ -528,7 +531,8 @@ async function startTestnet () {
 
   goodbye(async () => {
     clearInterval(statusInterval)
-    console.log('\n\n  Shutting down testnet...')
+    console.log(shutdownBanner())
+    console.log('  ' + ARROW + ' ' + paint(C.dim, 'tearing down testnet...'))
 
     if (client) {
       try { await client.destroy() } catch {}
@@ -973,37 +977,37 @@ function isValidHexKey (value, length = 64) {
 
 async function status () {
   const port = args.port || 9100
+  console.log(statusBanner())
   try {
     const res = await fetch(`http://127.0.0.1:${port}/status`)
     const stats = await res.json()
-    console.log('HiveRelay Status')
-    console.log()
-    console.log(`  Running:     ${stats.running}`)
-    console.log(`  Public Key:  ${stats.publicKey || 'N/A'}`)
-    console.log(`  Seeded Apps: ${stats.seededApps}`)
-    console.log(`  Connections: ${stats.connections}`)
+    const row = (label, value, color = C.white) =>
+      '  ' + HEX + ' ' + paint(C.cyan, label.padEnd(13)) + paint(color, String(value))
+    console.log(row('Running:', stats.running, stats.running ? C.green : C.red))
+    console.log(row('Public Key:', stats.publicKey || 'N/A', C.magenta))
+    console.log(row('Seeded Apps:', stats.seededApps))
+    console.log(row('Connections:', stats.connections))
     if (stats.seeder) {
-      console.log(`  Stored:      ${formatBytes(stats.seeder.totalBytesStored || 0)}`)
-      console.log(`  Served:      ${formatBytes(stats.seeder.totalBytesServed || 0)}`)
+      console.log(row('Stored:', formatBytes(stats.seeder.totalBytesStored || 0)))
+      console.log(row('Served:', formatBytes(stats.seeder.totalBytesServed || 0)))
     }
     if (stats.relay) {
-      console.log(`  Circuits:    ${stats.relay.activeCircuits} active (${stats.relay.totalCircuitsServed} total)`)
-      console.log(`  Relayed:     ${formatBytes(stats.relay.totalBytesRelayed || 0)}`)
+      console.log(row('Circuits:', `${stats.relay.activeCircuits} active (${stats.relay.totalCircuitsServed} total)`))
+      console.log(row('Relayed:', formatBytes(stats.relay.totalBytesRelayed || 0)))
     }
-  } catch {
-    console.log('HiveRelay Status')
     console.log()
-    console.log(`  Cannot reach relay node at http://127.0.0.1:${port}`)
-    console.log('  Is the node running? Start it with: hiverelay start')
+  } catch {
+    console.log('  ' + paint(C.red, '✗') + ' ' + paint(C.dim, `Cannot reach relay node at http://127.0.0.1:${port}`))
+    console.log('  ' + paint(C.dim, '// is the node running? start it with: ') + paint(C.cyan, 'hiverelay start'))
+    console.log()
   }
 }
 
 // ─── help ───────────────────────────────────────────────────────────
 
 function help () {
+  console.log(helpBanner(VERSION))
   console.log(`
-HiveRelay v${VERSION} — Shared P2P Relay Backbone
-
 Usage:
   hiverelay setup               Interactive setup wizard (first-time config)
   hiverelay manage [options]    Live management console (connect to running node)
