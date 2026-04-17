@@ -55,6 +55,7 @@ process.on('unhandledRejection', (reason) => {
 const COMMANDS = {
   setup,
   manage,
+  tui: manage, // alias for manage — the operator TUI
   init,
   start,
   testnet: startTestnet,
