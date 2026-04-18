@@ -3,9 +3,12 @@
   "version": "0.4.2",
   "description": "Shared P2P relay backbone for the Holepunch/Pear ecosystem",
   "type": "module",
-  "main": "core/index.js",
+  "main": "pear-entry.js",
   "exports": {
-    ".": "./core/index.js",
+    ".": {
+      "bare": "./pear-entry.js",
+      "default": "./core/index.js"
+    },
     "./client": "./client/index.js",
     "./gateway": "./compute/gateway/hyper-gateway.js"
   },
@@ -24,8 +27,9 @@
     }
   },
   "pear": {
-    "name": "hiverelay",
-    "bin": "hiverelay"
+    "name": "p2p-hiverelay",
+    "type": "terminal",
+    "bin": "p2p-hiverelay"
   },
   "bin": {
     "p2p-hiverelay": "./cli/index.js",

@@ -10,7 +10,7 @@
  * not a party to the dispute.
  */
 
-import crypto from 'crypto'
+import { randomHex } from '../../compat/random.js'
 import { ServiceProvider } from '../provider.js'
 
 const MIN_ARBITRATOR_SCORE = 100
@@ -62,7 +62,7 @@ export class ArbitrationService extends ServiceProvider {
       throw new Error('ARBITRATION_MISSING_RESPONDENT')
     }
 
-    const id = crypto.randomBytes(16).toString('hex')
+    const id = randomHex(16)
     // Use authenticated identity when available, fall back to params for local calls
     const claimant = context?.remotePubkey || (context?.caller === 'remote' ? null : params.claimant) || 'local'
     if (context?.caller === 'remote' && !context.remotePubkey) {

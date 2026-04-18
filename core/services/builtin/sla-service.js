@@ -9,7 +9,7 @@
  * Enforcement is fully automated — proof-of-relay driven with immediate slashing.
  */
 
-import crypto from 'crypto'
+import { randomHex } from '../../compat/random.js'
 import { ServiceProvider } from '../provider.js'
 
 const MAX_VIOLATIONS = 3
@@ -102,7 +102,7 @@ export class SLAService extends ServiceProvider {
       throw new Error('SLA_INVALID_DURATION')
     }
 
-    const id = crypto.randomBytes(16).toString('hex')
+    const id = randomHex(16)
     const now = Date.now()
 
     const contract = {

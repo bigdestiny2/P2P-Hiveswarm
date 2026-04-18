@@ -18,7 +18,7 @@
  */
 
 import { ServiceProvider } from '../provider.js'
-import { randomBytes } from 'crypto'
+import { randomBytes } from '../../compat/random.js'
 
 const JOB_STATES = {
   PENDING: 'pending',

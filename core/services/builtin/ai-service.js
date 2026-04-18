@@ -23,7 +23,7 @@
  */
 
 import { ServiceProvider } from '../provider.js'
-import { randomBytes } from 'crypto'
+import { randomBytes } from '../../compat/random.js'
 import dns from 'node:dns/promises'
 
 const JOB_STATES = {

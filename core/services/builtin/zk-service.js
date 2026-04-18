@@ -23,7 +23,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { hmac } from '@noble/hashes/hmac.js'
 import sodium from 'sodium-universal'
 import b4a from 'b4a'
-import { randomBytes } from 'crypto'
+import { randomBytes } from '../../compat/random.js'
 
 // Wire noble hashes (required for secp256k1 v2+)
 if (!secp.hashes.sha256) {

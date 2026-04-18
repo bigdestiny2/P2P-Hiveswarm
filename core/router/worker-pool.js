@@ -7,8 +7,18 @@
  * Pool size 0 means disabled — everything runs in-process.
  */
 
-import { Worker } from 'worker_threads'
 import { EventEmitter } from 'events'
+
+// Worker is loaded lazily so this module can be imported under the Bare
+// runtime, which has no `node:worker_threads`. WorkerPool only fails if
+// you actually try to spawn a worker — not at import time.
+let Worker = null
+async function _loadWorker () {
+  if (Worker) return Worker
+  const mod = await import('worker_threads')
+  Worker = mod.Worker
+  return Worker
+}
 
 export class WorkerPool extends EventEmitter {
   constructor (opts = {}) {
@@ -26,6 +36,7 @@ export class WorkerPool extends EventEmitter {
   async start () {
     if (this.started || this._size === 0) return
 
+    await _loadWorker()
     for (let i = 0; i < this._size; i++) {
       this._spawnWorker(i)
     }
