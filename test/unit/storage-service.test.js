@@ -1,6 +1,6 @@
 import test from 'brittle'
-import { StorageService } from '../../core/services/builtin/storage-service.js'
-import { PolicyGuard } from '../../core/policy-guard.js'
+import { StorageService } from 'p2p-hiveservices/builtin/storage-service.js'
+import { PolicyGuard } from 'p2p-hiverelay/core/policy-guard.js'
 
 // ─── Manifest ───
 

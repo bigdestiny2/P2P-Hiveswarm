@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { PolicyGuard } from '../../core/policy-guard.js'
+import { PolicyGuard } from 'p2p-hiverelay/core/policy-guard.js'
 
 // ─── Tier × Operation matrix ───
 

@@ -1,6 +1,6 @@
 import test from 'brittle'
 import createTestnet from '@hyperswarm/testnet'
-import { RelayNode } from '../../core/relay-node/index.js'
+import { RelayNode } from 'p2p-hiverelay/core/relay-node/index.js'
 import b4a from 'b4a'
 import path from 'path'
 import { tmpdir } from 'os'

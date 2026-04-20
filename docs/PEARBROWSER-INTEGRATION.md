@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # HiveRelay + PearBrowser — App Store Infrastructure
 
 HiveRelay is the backbone infrastructure that powers PearBrowser's decentralized App Store. Without it, P2P apps on mobile are slow, unreliable, and undiscoverable. With it, apps load instantly, stay available 24/7, and users never need to touch a Hyperdrive key.

@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { SchemaService } from '../../core/services/builtin/schema-service.js'
+import { SchemaService } from 'p2p-hiveservices/builtin/schema-service.js'
 
 function createService () {
   const svc = new SchemaService()

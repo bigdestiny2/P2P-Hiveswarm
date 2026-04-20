@@ -1,7 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
-import { ServiceProtocol } from '../../core/services/protocol.js'
+import { ServiceProtocol } from 'p2p-hiverelay/core/services/protocol.js'
 
 // ─── Test 1 & 2: Service protocol message decoding ────────────────────────
 // We test the decode function directly from the ServiceProtocol encoding.
@@ -160,7 +160,7 @@ test('protocol-security: app catalog envelope fields are preserved', async (t) =
   t.is(msg.signature, 'c'.repeat(128))
 })
 
-test('protocol-security: restricted local methods blocked while compute submit allowed', async (t) => {
+test('protocol-security: restricted local methods blocked while ai infer allowed', async (t) => {
   const sent = []
   const registry = {
     catalog () { return [] },
@@ -186,9 +186,9 @@ test('protocol-security: restricted local methods blocked while compute submit a
 
   await proto._handleRequest('peer', {
     id: 2,
-    service: 'compute',
-    method: 'submit',
-    params: { type: 'noop', input: {} }
+    service: 'ai',
+    method: 'infer',
+    params: { prompt: 'hello' }
   })
-  t.alike(sent[1].result, { ok: true }, 'compute.submit passes to router')
+  t.alike(sent[1].result, { ok: true }, 'ai.infer passes to router')
 })

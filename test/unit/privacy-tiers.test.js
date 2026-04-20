@@ -18,10 +18,10 @@ import { mkdirSync, readFileSync, readdirSync, existsSync } from 'fs'
 import { rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { PrivacyManager } from '../../platform/privacy.js'
-import { KeyManager } from '../../platform/keys.js'
-import { LocalStorage } from '../../platform/storage.js'
-import { encrypt, decrypt, generateKey, hash } from '../../platform/crypto.js'
+import { PrivacyManager } from 'p2p-hiverelay/platform/privacy.js'
+import { KeyManager } from 'p2p-hiverelay/platform/keys.js'
+import { LocalStorage } from 'p2p-hiverelay/platform/storage.js'
+import { encrypt, decrypt, generateKey, hash } from 'p2p-hiverelay/platform/crypto.js'
 
 // ── Helpers ─────────────────────────────────────────���───────
 

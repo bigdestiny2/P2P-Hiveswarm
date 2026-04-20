@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # HiveRelay Token Model: RELAY
 
 ## Why Consider a Token At All

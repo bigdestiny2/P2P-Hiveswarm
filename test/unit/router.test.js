@@ -1,6 +1,6 @@
 import test from 'brittle'
-import { Router } from '../../core/router/index.js'
-import { PubSub } from '../../core/router/pubsub.js'
+import { Router } from 'p2p-hiverelay/core/router/index.js'
+import { PubSub } from 'p2p-hiverelay/core/router/pubsub.js'
 
 // --- Router Tests ---
 

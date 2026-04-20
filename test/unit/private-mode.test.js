@@ -1,11 +1,12 @@
 import test from 'brittle'
-import { RelayNode } from '../../core/relay-node/index.js'
-import { AccessControl } from '../../core/relay-node/access-control.js'
-import { MDNSDiscovery } from '../../core/relay-node/mdns-discovery.js'
+import { RelayNode } from 'p2p-hiverelay/core/relay-node/index.js'
+import { AccessControl } from 'p2p-hiverelay/core/relay-node/access-control.js'
+import { MDNSDiscovery } from 'p2p-hiverelay/core/relay-node/mdns-discovery.js'
 import path from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { mkdir } from 'fs/promises'
+import { EventEmitter } from 'events'
 import b4a from 'b4a'
 
 function tmpStorage () {
@@ -353,80 +354,87 @@ test('RelayNode - public mode rejects pairing calls', async (t) => {
 })
 
 // ─── Connection Rejection Tests ─────────────────────────────────
+//
+// These exercise RelayNode._onConnection's allowlist gate. The gate is a
+// pure function of {conn.remotePublicKey, info.publicKey, this.accessControl};
+// it needs no swarm, no DHT, no Corestore. Previously the tests called
+// `await node.start()` which spins up real Hyperswarm (10-15s per test)
+// and the resulting teardown races occasionally made `_rejectedConnections`
+// read as 0 when it should have been 1 — a flake that was masked for a
+// while by an errant `setTimeout(() => process.exit(0))` hack that killed
+// the entire test process. Now we construct the AccessControl manually,
+// wire it to a minimal RelayNode shell, and exercise the gate directly.
+// No swarm, no timing sensitivity.
 
-test('RelayNode - private mode emits connection-rejected for unknown peers', async (t) => {
+async function makePrivateNodeShell (allowlist = []) {
+  const storage = tmpStorage()
+  await mkdir(storage, { recursive: true })
+  // Construct a RelayNode but don't start it — _onConnection doesn't need
+  // the swarm, and starting it is what made the test slow + flaky.
   const node = new RelayNode({
     mode: 'private',
-    storage: tmpStorage(),
+    storage,
     enableAPI: false,
     enableServices: false,
+    access: { allowlist },
     discovery: { mdns: false }
   })
-  t.teardown(async () => { if (node.running) await node.stop() })
 
-  await node.start()
+  // AccessControl is normally set up inside start(). Wire it directly.
+  const ac = new AccessControl(storage)
+  await ac.load()
+  for (const pubkey of allowlist) {
+    await ac.addDevice(pubkey, 'bootstrap')
+  }
+  node.accessControl = ac
 
-  // Simulate an unknown connection
+  // The gate calls store.replicate() on the allowed path; stub it so we
+  // don't need a real Corestore session.
+  node.store = { replicate: () => {} }
+
+  return node
+}
+
+test('RelayNode - private mode emits connection-rejected for unknown peers', async (t) => {
+  const node = await makePrivateNodeShell([])
+  t.teardown(() => node.accessControl?.destroy?.())
+
   const events = []
   node.on('connection-rejected', (info) => events.push(info))
 
-  // Create a fake connection-like object
   const unknownPubkey = randomBytes(32)
-  const fakeConn = new (await import('events')).EventEmitter()
+  const fakeConn = new EventEmitter()
   fakeConn.remotePublicKey = unknownPubkey
   fakeConn.destroyed = false
   fakeConn.destroy = () => { fakeConn.destroyed = true }
 
-  const fakeInfo = { publicKey: unknownPubkey }
-  node._onConnection(fakeConn, fakeInfo)
+  node._onConnection(fakeConn, { publicKey: unknownPubkey })
 
   t.is(fakeConn.destroyed, true, 'connection destroyed')
   t.is(events.length, 1, 'rejection event emitted')
   t.is(events[0].reason, 'not in allowlist')
   t.is(node._rejectedConnections, 1)
-
-  await node.stop()
 })
 
 test('RelayNode - private mode allows paired devices through', async (t) => {
   const deviceKey = randomBytes(32).toString('hex')
+  const node = await makePrivateNodeShell([deviceKey])
+  t.teardown(() => node.accessControl?.destroy?.())
 
-  const node = new RelayNode({
-    mode: 'private',
-    storage: tmpStorage(),
-    enableAPI: false,
-    enableServices: false,
-    access: { allowlist: [deviceKey] },
-    discovery: { mdns: false }
-  })
-  t.teardown(async () => { if (node.running) await node.stop() })
-
-  await node.start()
-
-  // Simulate a known device connecting
   const events = []
   node.on('connection', (info) => events.push(info))
 
   const devicePubBuf = b4a.from(deviceKey, 'hex')
-  const fakeConn = new (await import('events')).EventEmitter()
+  const fakeConn = new EventEmitter()
   fakeConn.remotePublicKey = devicePubBuf
   fakeConn.destroyed = false
   fakeConn.destroy = () => { fakeConn.destroyed = true }
 
-  const fakeInfo = { publicKey: devicePubBuf }
-
-  // We need to stub store.replicate since there's no real connection
-  const origReplicate = node.store.replicate
-  node.store.replicate = () => {}
-
-  node._onConnection(fakeConn, fakeInfo)
+  node._onConnection(fakeConn, { publicKey: devicePubBuf })
 
   t.is(fakeConn.destroyed, false, 'connection NOT destroyed for allowed device')
   t.is(events.length, 1, 'connection event emitted')
   t.is(node._rejectedConnections, 0, 'no rejections')
-
-  node.store.replicate = origReplicate
-  await node.stop()
 })
 
 // ─── mDNS Discovery Tests ───────────────────────────────────────
@@ -459,6 +467,7 @@ test('MDNSDiscovery - ignores own announcements', async (t) => {
     port: 49737,
     mode: 'private'
   })
+  t.teardown(async () => { try { await mdns.stop() } catch (_) {} })
 
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
@@ -483,6 +492,7 @@ test('MDNSDiscovery - discovers other peers', async (t) => {
     port: 49737,
     mode: 'private'
   })
+  t.teardown(async () => { try { await mdns.stop() } catch (_) {} })
 
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
@@ -514,6 +524,7 @@ test('MDNSDiscovery - ignores non-hiverelay services', async (t) => {
     publicKey: randomBytes(32),
     port: 49737
   })
+  t.teardown(async () => { try { await mdns.stop() } catch (_) {} })
 
   const discovered = []
   mdns.on('peer-discovered', (peer) => discovered.push(peer))
@@ -536,6 +547,7 @@ test('MDNSDiscovery - handles malformed messages gracefully', async (t) => {
     publicKey: randomBytes(32),
     port: 49737
   })
+  t.teardown(async () => { try { await mdns.stop() } catch (_) {} })
 
   // Should not throw on malformed DNS-SD responses
   mdns._handleResponse({ answers: [], additionals: [] }, { address: '1.2.3.4' })
@@ -544,8 +556,9 @@ test('MDNSDiscovery - handles malformed messages gracefully', async (t) => {
   t.pass('malformed messages handled without crash')
 })
 
-// Force exit after all tests — Hyperswarm/HyperDHT may leave handles open
-test('cleanup', async (t) => {
-  t.pass('all tests complete')
-  setTimeout(() => process.exit(0), 500)
-})
+// Historical note: this file previously ended with
+//   `setTimeout(() => process.exit(0), 500)`
+// to work around dangling MDNS sockets that kept the process alive. That
+// hack killed every subsequent test file in the combined suite (relay-node,
+// sdk-seeding, etc.) — a silent and bad regression. The real fix is
+// t.teardown() on each MDNSDiscovery test above. Don't re-add process.exit.

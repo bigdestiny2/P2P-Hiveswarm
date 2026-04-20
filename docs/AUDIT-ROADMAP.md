@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # HiveRelay Audit Roadmap
 
 **Generated:** April 2026 | **Based on:** 6-agent codebase audit (architecture, protocol, security, code quality, performance, alternatives)
@@ -41,13 +44,13 @@
 - **Effort:** 2-3 hours
 
 ### 1.2 Legacy unseed accepts any signature
-- **File:** `core/relay-node/index.js:712-717`
+- **File:** `packages/core/core/relay-node/index.js:712-717`
 - **Issue:** Apps with `publisherPubkey === null` accept any valid Ed25519 signature
 - **Fix:** Reject unseed for apps with no recorded publisher. Log a warning suggesting operator backfill publisher keys
 - **Effort:** 30 minutes
 
 ### 1.3 Catalog sync rate limiting
-- **File:** `core/relay-node/index.js:343-361`
+- **File:** `packages/core/core/relay-node/index.js:343-361`
 - **Issue:** Malicious relay can broadcast catalog with thousands of bogus apps, forcing all connected relays to seed them
 - **Fix:** Cap at 10 new apps per catalog event per peer. Throttle to max 1 catalog event per peer per 30 seconds
 - **Effort:** 1 hour
@@ -59,19 +62,19 @@
 - **Effort:** 3-4 hours
 
 ### 1.5 WebSocket dashboard auth
-- **File:** `core/relay-node/ws-feed.js:32-41`
+- **File:** `packages/core/core/relay-node/ws-feed.js:32-41`
 - **Issue:** No origin validation or auth on WebSocket feed — anyone can get real-time telemetry
 - **Fix:** Validate Origin header, optionally require token parameter
 - **Effort:** 1 hour
 
 ### 1.6 Content-Type validation on POST
-- **File:** `core/relay-node/api.js:738-762`
+- **File:** `packages/core/core/relay-node/api.js:738-762`
 - **Issue:** Parses any POST body as JSON regardless of Content-Type — CSRF risk
 - **Fix:** Reject requests without `Content-Type: application/json`
 - **Effort:** 15 minutes
 
 ### 1.7 Config update bounds checking
-- **File:** `core/relay-node/api.js:770-809`
+- **File:** `packages/core/core/relay-node/api.js:770-809`
 - **Issue:** `parseInt()` without validation — can set `maxConnections` to 0, negative, or NaN
 - **Fix:** Validate all numeric config values are positive integers within sane ranges
 - **Effort:** 30 minutes
@@ -81,29 +84,31 @@
 ## Phase 2: Performance & Stability (Priority: High — this month)
 
 ### 2.1 Gateway duplicate P2P stack
-- **File:** `compute/gateway/hyper-gateway.js:156-167`
+- **File:** `packages/core/gateway/hyper-gateway.js:156-167`
 - **Issue:** Gateway creates its own Corestore + Hyperswarm, doubling memory on 512MB boxes
 - **Fix:** Share relay's Corestore with a namespace. Pass store reference into HyperGateway constructor
 - **Effort:** 3-4 hours
 - **Impact:** ~30-50MB memory savings on Utah box
+- **STATUS: Done in refactor — see REFACTOR-NOTES.md**
 
 ### 2.2 Gateway file streaming
-- **File:** `compute/gateway/hyper-gateway.js:258-290`
+- **File:** `packages/core/gateway/hyper-gateway.js:258-290`
 - **Issue:** `drive.get()` buffers entire file in memory before sending — 50MB file = 50MB spike
 - **Fix:** Replace with `drive.createReadStream()` piped to response. Add Range request support
 - **Effort:** 2-3 hours
 
 ### 2.3 Reduce DriveCache on small boxes
-- **File:** `compute/gateway/hyper-gateway.js`
+- **File:** `packages/core/gateway/hyper-gateway.js`
 - **Issue:** Default 50 cached drives × ~5-10MB each can blow the memory budget
 - **Fix:** Make configurable, default to 10. On boxes < 1GB RAM, auto-set to 5
 - **Effort:** 30 minutes
 
 ### 2.4 Debounce catalog broadcasts
-- **File:** `core/relay-node/index.js:339-340`
+- **File:** `packages/core/core/relay-node/index.js:339-340`
 - **Issue:** Every seed/unseed fires immediate full catalog broadcast to all peers
 - **Fix:** 5-second debounce window — rapid changes during startup only trigger one broadcast
 - **Effort:** 1 hour
+- **STATUS: Done in refactor — see REFACTOR-NOTES.md**
 
 ### 2.5 Delta catalog sync
 - **File:** `core/services/protocol.js:159-167`
@@ -134,7 +139,7 @@
 ## Phase 3: Architecture Refactoring (Priority: Medium — next month)
 
 ### 3.1 Extract RelayNode into composed managers
-- **File:** `core/relay-node/index.js` (1,233 lines)
+- **File:** `packages/core/core/relay-node/index.js` (1,233 lines)
 - **Issue:** God class with ~30 responsibilities
 - **Extract:**
   - `TransportManager` — WebSocket, Tor, Holesail lifecycle
@@ -145,7 +150,7 @@
 - **Effort:** 2-3 days
 
 ### 3.2 Split API into route modules
-- **File:** `core/relay-node/api.js` (1,017 lines)
+- **File:** `packages/core/core/relay-node/api.js` (1,017 lines)
 - **Issue:** Single 600-line if/else chain, 102 references to private node internals
 - **Fix:**
   - Route table: `{ path, method, handler, auth }` array
@@ -154,7 +159,7 @@
 - **Effort:** 2-3 days
 
 ### 3.3 Plugin architecture for services
-- **File:** `core/relay-node/index.js:27-33` (hardcoded imports), `core/relay-node/index.js:298-314` (registration)
+- **File:** `packages/core/core/relay-node/index.js:27-33` (hardcoded imports), `packages/core/core/relay-node/index.js:298-314` (registration)
 - **Issue:** All 8 services loaded regardless of operating mode
 - **Fix:**
   - New `core/plugin-loader.js` (~100 lines)
@@ -163,6 +168,7 @@
   - Operating modes become preset plugin configurations
 - **Foundation:** `ServiceProvider` base class already defines the interface — `manifest()`, `start()`, `stop()`
 - **Effort:** 1-2 days
+- **STATUS: Done in refactor — see REFACTOR-NOTES.md**
 
 ### 3.4 Shared constants module
 - **Issue:** Discovery topic, protocol names, hex validation duplicated 6+ times

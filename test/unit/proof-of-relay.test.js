@@ -1,7 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
-import { ProofOfRelay } from '../../core/protocol/proof-of-relay.js'
+import { ProofOfRelay } from 'p2p-hiverelay/core/protocol/proof-of-relay.js'
 
 function randomKey () {
   const buf = b4a.alloc(32)

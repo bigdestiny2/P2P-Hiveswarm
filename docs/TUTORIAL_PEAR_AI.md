@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # Build Your First Pear App with AI in 10 Minutes
 
 Build a peer-to-peer AI chat app that runs on the HiveRelay network. No cloud accounts, no API keys, no data collection. Your app connects to relay nodes that serve AI inference directly over encrypted P2P connections.

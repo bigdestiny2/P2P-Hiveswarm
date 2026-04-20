@@ -128,7 +128,6 @@ async function runTests () {
     'identity.resolve', 'identity.peers', 'identity.developer',
     'schema.register', 'schema.get', 'schema.list', 'schema.validate', 'schema.versions',
     'sla.create', 'sla.list', 'sla.get', 'sla.terminate', 'sla.check', 'sla.violations', 'sla.stats',
-    'compute.submit', 'compute.status', 'compute.result', 'compute.cancel', 'compute.list', 'compute.capabilities',
     'storage.drive-create', 'storage.drive-list', 'storage.drive-get', 'storage.drive-read',
     'storage.drive-write', 'storage.drive-delete', 'storage.core-create', 'storage.core-append', 'storage.core-get',
     'arbitration.submit', 'arbitration.vote', 'arbitration.get', 'arbitration.list', 'arbitration.evidence'
@@ -147,7 +146,7 @@ async function runTests () {
     const res = await request(RELAYS[0], 'GET', '/api/v1/services')
     assert(res.status === 200, `Expected 200, got ${res.status}`)
     const names = res.data.services.map(s => s.name)
-    for (const svc of ['identity', 'schema', 'sla', 'compute', 'storage', 'arbitration']) {
+    for (const svc of ['identity', 'schema', 'sla', 'storage', 'arbitration']) {
       assert(names.includes(svc), `Missing service: ${svc}`)
     }
   })
@@ -163,8 +162,6 @@ async function runTests () {
     { route: 'schema.list', check: (d) => d.result !== undefined },
     { route: 'sla.list', check: (d) => Array.isArray(d.result) },
     { route: 'sla.stats', check: (d) => d.result !== undefined },
-    { route: 'compute.list', check: (d) => d.result !== undefined },
-    { route: 'compute.capabilities', check: (d) => d.result !== undefined },
     { route: 'arbitration.list', check: (d) => Array.isArray(d.result) },
     { route: 'identity.peers', check: (d) => d.result !== undefined },
     { route: 'storage.drive-list', check: (d) => d.result !== undefined }
@@ -393,7 +390,7 @@ async function runTests () {
     const promises = []
     for (let i = 0; i < 10; i++) {
       const relay = RELAYS[i % RELAYS.length]
-      const routes = ['identity.whoami', 'schema.list', 'sla.stats', 'compute.capabilities', 'arbitration.list']
+      const routes = ['identity.whoami', 'schema.list', 'sla.stats', 'storage.drive-list', 'arbitration.list']
       promises.push(dispatch(relay, routes[i % routes.length]))
     }
     const results = await Promise.allSettled(promises)

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, openSync, writeSync, closeSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { PersistentStore, openStore } from '../../core/persistence/store.js'
-import { CreditManager } from '../../incentive/credits/index.js'
-import { ReputationSystem } from '../../incentive/reputation/index.js'
+import { PersistentStore, openStore } from 'p2p-hiverelay/core/persistence/store.js'
+import { CreditManager } from 'p2p-hiverelay/incentive/credits/index.js'
+import { ReputationSystem } from 'p2p-hiverelay/incentive/reputation/index.js'
 
 function tmpDir () {
   return mkdtempSync(join(tmpdir(), 'hiverelay-store-'))

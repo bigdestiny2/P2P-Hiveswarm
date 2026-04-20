@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { RelayNode } from '../../core/relay-node/index.js'
+import { RelayNode } from 'p2p-hiverelay/core/relay-node/index.js'
 import path from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'

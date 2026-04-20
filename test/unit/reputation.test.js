@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { ReputationSystem } from '../../incentive/reputation/index.js'
+import { ReputationSystem } from 'p2p-hiverelay/incentive/reputation/index.js'
 
 test('ReputationSystem - records challenges and computes score', async (t) => {
   const rep = new ReputationSystem()

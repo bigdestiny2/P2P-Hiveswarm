@@ -1,7 +1,7 @@
 import test from 'brittle'
 import sodium from 'sodium-universal'
 import b4a from 'b4a'
-import { IdentityService } from '../../core/services/builtin/identity-service.js'
+import { IdentityService } from 'p2p-hiveservices/builtin/identity-service.js'
 
 function mockIPL (opts = {}) {
   return {

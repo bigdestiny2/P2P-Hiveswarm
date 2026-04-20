@@ -51,7 +51,7 @@ function signUnseed (appKeyHex, timestamp, sk) {
 async function loadVerify () {
   // verifyUnseedRequest now lives on AppLifecycle (extracted from RelayNode
   // during the god-object refactor). Call it directly against the mock node.
-  const mod = await import('../../core/relay-node/app-lifecycle.js')
+  const mod = await import('p2p-hiverelay/core/relay-node/app-lifecycle.js')
   const AppLifecycleClass = mod.AppLifecycle
   return function verifyUnseedRequest (node, appKeyHex, publisherPubkeyHex, signatureHex, timestamp) {
     const lifecycle = new AppLifecycleClass(node)

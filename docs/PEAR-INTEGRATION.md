@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # HiveRelay for Pear Developers
 
 HiveRelay gives your Pear app always-on content persistence, NAT traversal relay, and service infrastructure -- without running your own servers.

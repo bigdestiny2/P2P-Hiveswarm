@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { SLAService } from '../../core/services/builtin/sla-service.js'
+import { SLAService } from 'p2p-hiveservices/builtin/sla-service.js'
 
 function mockNode (opts = {}) {
   const slashed = []
