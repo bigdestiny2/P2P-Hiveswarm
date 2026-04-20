@@ -16,12 +16,25 @@ import { createServer } from 'http'
 import { readFile } from 'fs/promises'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { DashboardFeed } from './ws-feed.js'
 import { HyperGateway } from '../../gateway/hyper-gateway.js'
 import { CONTENT_TYPES, isValidHexKey, normalizeContentType, normalizePrivacyTier } from '../constants.js'
+import { buildCapabilityDoc } from '../capability-doc.js'
+import { verifySeedingManifest } from '../seeding-manifest.js'
+import { ERR, formatErr } from '../error-prefixes.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Lazily-created CommonJS `require` for the rare synchronous file reads this
+// module does (package version lookup). One instance per process.
+let _cachedSyncRequire = null
+function _getSyncRequire () {
+  if (_cachedSyncRequire) return _cachedSyncRequire
+  _cachedSyncRequire = createRequire(import.meta.url)
+  return _cachedSyncRequire
+}
 
 const DEFAULT_PORT = 9100
 
@@ -53,7 +66,9 @@ export class RelayAPI extends EventEmitter {
   constructor (relayNode, opts = {}) {
     super()
     this.node = relayNode
-    this.port = opts.apiPort || DEFAULT_PORT
+    // Nullish-coalesce so `apiPort: 0` (OS-selected port, used in tests) is
+    // honored instead of falling through to the default 9100.
+    this.port = (opts.apiPort !== undefined && opts.apiPort !== null) ? opts.apiPort : DEFAULT_PORT
     this.host = opts.apiHost || '0.0.0.0'
     this.corsOrigins = opts.corsOrigins || []
     this.trustProxy = opts.trustProxy || false
@@ -76,13 +91,17 @@ export class RelayAPI extends EventEmitter {
   async start () {
     this.server = createServer((req, res) => this._handle(req, res))
 
-    // Clean stale rate limit entries every 2 minutes
+    // Clean stale rate limit entries every 2 minutes. unref so it never
+    // keeps the process alive on its own — callers rely on api.stop() for
+    // deterministic teardown, but an unref'd interval means "forgot to
+    // stop()" in a test doesn't hang the Node event loop.
     this._rateLimitCleanup = setInterval(() => {
       const now = Date.now()
       for (const [ip, entry] of this._rateLimits) {
         if (now > entry.resetAt) this._rateLimits.delete(ip)
       }
     }, 120_000)
+    if (this._rateLimitCleanup.unref) this._rateLimitCleanup.unref()
 
     // Warn if binding to non-loopback without an API key — all requests
     // will pass the localhost auth check when behind a reverse proxy.
@@ -170,7 +189,14 @@ export class RelayAPI extends EventEmitter {
 
   _requireAuth (req, res, errorMessage) {
     if (this._checkAuth(req)) return true
-    this._json(res, { error: errorMessage }, 401)
+    // `error` is the legacy human-readable string — kept for back-compat so
+    // existing clients string-matching on it don't break. `errorCode` is the
+    // machine-readable prefix form new clients should branch
+    // on: err.body.errorCode === 'auth-required' → retry after sign-in.
+    this._json(res, {
+      error: errorMessage,
+      errorCode: ERR.AUTH_REQUIRED.trim().replace(/:$/, '')
+    }, 401)
     return false
   }
 
@@ -375,6 +401,38 @@ export class RelayAPI extends EventEmitter {
           const actions = this.node.selfHeal ? this.node.selfHeal.getActions() : []
           return this._json(res, { ...healthStatus, actions })
         }
+
+        // Capability advertisement — served at /.well-known/hiverelay.json so
+        // clients can machine-detect what this relay offers (version, accept
+        // policy, fees, features) without speaking Hypercore first. Also
+        // mirrored at /api/capabilities for convenience. Both responses are
+        // identical and cheap (<1ms to build).
+        if (path === '/.well-known/hiverelay.json' || path === '/api/capabilities') {
+          const doc = buildCapabilityDoc({
+            relay: this.node,
+            version: this._relayVersion(),
+            runtime: 'node'
+          })
+          res.setHeader('Cache-Control', 'public, max-age=60')
+          return this._json(res, doc)
+        }
+
+        // Author seeding manifest fetch. Clients GET this to discover which
+        // relays an author uses for seeding. Returns 404 if we haven't cached
+        // a manifest for this author — that's a normal state, not an error.
+        const authorMatch = path.match(/^\/api\/authors\/([0-9a-f]{64})\/seeding\.json$/i)
+        if (authorMatch) {
+          if (!this.node.manifestStore) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest store not initialized') }, 503)
+          }
+          const manifest = this.node.manifestStore.get(authorMatch[1])
+          if (!manifest) {
+            return this._json(res, { error: formatErr('NOT_FOUND', 'no seeding manifest for this author') }, 404)
+          }
+          res.setHeader('Cache-Control', 'public, max-age=30')
+          return this._json(res, manifest)
+        }
+
 
         if (path === '/api/alerts') {
           if (!this.node.alertManager) {
@@ -679,6 +737,36 @@ export class RelayAPI extends EventEmitter {
       // POST routes
       if (req.method === 'POST') {
         const body = await this._readBody(req)
+
+        // Seeding manifest publish. Any signed, verified manifest is
+        // accepted — no API key required, because the signature on the
+        // manifest IS the authorization. Unsigned or tampered manifests
+        // are rejected at the signature-verification step below.
+        if (path === '/api/authors/seeding.json') {
+          if (!this.node.manifestStore) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest store not initialized') }, 503)
+          }
+          if (!body || typeof body !== 'object') {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'manifest required') }, 400)
+          }
+          // Double-check signature before even touching the store (defence in
+          // depth — the store also verifies, but failing fast here avoids
+          // log noise for obvious garbage).
+          const check = verifySeedingManifest(body)
+          if (!check.valid) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'invalid manifest: ' + check.reason) }, 400)
+          }
+          const result = this.node.manifestStore.put(body)
+          if (!result.ok) {
+            // 'stale' is a normal outcome (client has an older copy); 409 Conflict.
+            const status = /stale/.test(result.reason) ? 409 : 400
+            return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, status)
+          }
+          try { await this.node.manifestStore.save() } catch (err) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest persist failed: ' + err.message) }, 500)
+          }
+          return this._json(res, { ok: true, pubkey: check.pubkey, replaced: result.replaced })
+        }
 
         if (path === '/api/alerts/test') {
           if (!this._requireAuth(req, res, 'Unauthorized — API key required for /api/alerts/test')) return
@@ -1256,6 +1344,29 @@ export class RelayAPI extends EventEmitter {
   _json (res, data, status = 200) {
     res.writeHead(status)
     res.end(JSON.stringify(data) + '\n')
+  }
+
+  // Lazy-read the package version from the core workspace's package.json.
+  // Cached on first call; if reading fails we just return null rather than
+  // crash the endpoint. Path calculation is relative to this file:
+  //   packages/core/core/relay-node/api.js  →  packages/core/package.json
+  _relayVersion () {
+    if (this._cachedVersion !== undefined) return this._cachedVersion
+    try {
+      const pkgPath = join(__dirname, '..', '..', 'package.json')
+      // Synchronous read via a freshly-created CommonJS `require` — avoids
+      // turning this helper async (it's called from inside sync HTTP
+      // handlers) and sidesteps the ESM top-level-await restriction. One
+      // read per process, result cached.
+      const req = _getSyncRequire()
+      const { readFileSync } = req('fs')
+      const raw = readFileSync(pkgPath, 'utf8')
+      const pkg = JSON.parse(raw)
+      this._cachedVersion = pkg.version || null
+    } catch (_) {
+      this._cachedVersion = null
+    }
+    return this._cachedVersion
   }
 
   _readBody (req, maxBytes = 65536) {

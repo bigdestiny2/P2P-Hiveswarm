@@ -37,6 +37,7 @@ import c from 'compact-encoding'
 import sodium from 'sodium-universal'
 import hypercoreCrypto from 'hypercore-crypto'
 import { createRevocation } from 'p2p-hiverelay/core/delegation.js'
+import { createSeedingManifest, verifySeedingManifest } from 'p2p-hiverelay/core/seeding-manifest.js'
 import { EventEmitter } from 'events'
 import { readdir, readFile, writeFile, lstat, mkdir, rename } from 'fs/promises'
 import { join, relative, resolve, dirname } from 'path'
@@ -1577,6 +1578,122 @@ export class HiveRelayClient extends EventEmitter {
     return createRevocation(cert, this.keyPair.secretKey, opts)
   }
 
+  // ─── Seeding manifest (author-published relay list) ───────────────
+  //
+  // Authors sign a small "these are the relays you should fetch my drives
+  // from" document. Clients discover it over plain HTTP (GET
+  // /api/authors/<pubkey>/seeding.json), use it to decide which relays to
+  // connect to for a given author's content.
+  //
+  // The fetch helpers also double as a relay-health probe: you can hit
+  // /.well-known/hiverelay.json on any HiveRelay node to learn its version,
+  // accept policy, and feature set without opening a Hyperswarm connection.
+
+  /**
+   * Build + sign a seeding manifest using this client's identity.
+   *
+   * @param {object} args
+   * @param {Array}  args.relays - [{url, role: 'primary'|'backup'|'mirror'}]
+   * @param {Array}  args.drives - [{driveKey, channel?}]
+   * @param {number} [args.timestamp] - ms epoch (for tests); defaults to now
+   * @returns {object} signed manifest ready to publish
+   */
+  createSeedingManifest ({ relays, drives, timestamp } = {}) {
+    if (!this.keyPair) throw new Error('createSeedingManifest: client has no identity')
+    return createSeedingManifest({ keyPair: this.keyPair, relays, drives, timestamp })
+  }
+
+  /**
+   * Publish a signed seeding manifest to a HiveRelay node over HTTP. The
+   * manifest must already be signed — use createSeedingManifest() first.
+   * Accepts either a full URL (http://host:port) or a bare host:port pair.
+   *
+   * Returns {ok, pubkey, replaced} on success, throws on any failure so
+   * callers can decide whether to retry against a different relay.
+   *
+   * @param {string} relayUrl   e.g. 'http://relay.example.com:9100'
+   * @param {object} manifest   signed manifest from createSeedingManifest()
+   * @returns {Promise<{ok: true, pubkey: string, replaced: boolean}>}
+   */
+  async publishSeedingManifest (relayUrl, manifest) {
+    if (typeof relayUrl !== 'string' || !relayUrl.length) {
+      throw new Error('publishSeedingManifest: relayUrl required')
+    }
+    const base = relayUrl.replace(/\/+$/, '')
+    const endpoint = base + '/api/authors/seeding.json'
+    const res = await _fetchJson(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest)
+    })
+    if (!res.ok) {
+      const err = new Error('publishSeedingManifest failed: ' + (res.body?.error || res.status))
+      err.status = res.status
+      err.body = res.body
+      throw err
+    }
+    return res.body
+  }
+
+  /**
+   * Fetch a seeding manifest for `pubkey` from `relayUrl`. Returns the
+   * manifest (with signature verified) on success, null on 404. Throws on
+   * network or signature-verification failure so callers distinguish
+   * "no manifest cached" (expected) from "relay is broken" (not expected).
+   *
+   * @param {string} relayUrl
+   * @param {string} pubkey - hex (64 chars)
+   * @returns {Promise<object|null>}
+   */
+  async fetchSeedingManifest (relayUrl, pubkey) {
+    if (typeof relayUrl !== 'string' || !relayUrl.length) {
+      throw new Error('fetchSeedingManifest: relayUrl required')
+    }
+    if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey)) {
+      throw new Error('fetchSeedingManifest: pubkey must be 64 hex chars')
+    }
+    const base = relayUrl.replace(/\/+$/, '')
+    const endpoint = base + '/api/authors/' + pubkey.toLowerCase() + '/seeding.json'
+    const res = await _fetchJson(endpoint, { method: 'GET' })
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const err = new Error('fetchSeedingManifest failed: ' + (res.body?.error || res.status))
+      err.status = res.status
+      throw err
+    }
+    const check = verifySeedingManifest(res.body)
+    if (!check.valid) {
+      throw new Error('fetched manifest failed verification: ' + check.reason)
+    }
+    if (check.pubkey.toLowerCase() !== pubkey.toLowerCase()) {
+      throw new Error('fetched manifest pubkey mismatch')
+    }
+    return res.body
+  }
+
+  /**
+   * Fetch a relay's capability document. Useful for
+   * relay-shopping: pick relays by version, accept_mode, features without
+   * opening a swarm connection.
+   *
+   * @param {string} relayUrl
+   * @returns {Promise<object>}
+   */
+  async fetchCapabilities (relayUrl) {
+    if (typeof relayUrl !== 'string' || !relayUrl.length) {
+      throw new Error('fetchCapabilities: relayUrl required')
+    }
+    const base = relayUrl.replace(/\/+$/, '')
+    const res = await _fetchJson(base + '/.well-known/hiverelay.json', { method: 'GET' })
+    if (!res.ok) {
+      // Try the API mirror in case a reverse proxy hides /.well-known.
+      const fallback = await _fetchJson(base + '/api/capabilities', { method: 'GET' })
+      if (!fallback.ok) throw new Error('fetchCapabilities failed: ' + (res.body?.error || res.status))
+      return fallback.body
+    }
+    return res.body
+  }
+
   // ─── Pairing-over-swarm (multi-device, no QR) ──────────────────────
   //
   // The friction point of exportIdentity/importIdentity is "now go copy
@@ -2208,4 +2325,29 @@ export class HiveRelayClient extends EventEmitter {
     this._started = false
     this.emit('destroyed')
   }
+}
+
+/**
+ * Minimal JSON fetch helper used by the seeding-manifest and capabilities
+ * methods. Uses globalThis.fetch (Node 18+, Bare via bare-fetch polyfill,
+ * browsers natively). Returns {ok, status, body} rather than throwing on
+ * non-2xx so callers can distinguish network errors from 404s.
+ *
+ * Request bodies are caller-provided strings; this helper doesn't do any
+ * JSON-encoding (keep it transparent). Response body is always parsed as
+ * JSON; empty / non-JSON responses yield body=null.
+ */
+async function _fetchJson (url, opts = {}) {
+  if (typeof globalThis.fetch !== 'function') {
+    throw new Error('globalThis.fetch unavailable — upgrade to Node 18+ or install a fetch polyfill')
+  }
+  const response = await globalThis.fetch(url, opts)
+  let body = null
+  try {
+    const text = await response.text()
+    if (text) body = JSON.parse(text)
+  } catch (_) {
+    body = null
+  }
+  return { ok: response.ok, status: response.status, body }
 }
