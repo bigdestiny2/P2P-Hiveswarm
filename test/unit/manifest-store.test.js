@@ -149,9 +149,9 @@ test('enforces maxAuthors cap via oldest-first eviction', async (t) => {
 
   store.put(mA)
   // Stamp storedAt spread out so ordering is deterministic.
-  await new Promise(r => setTimeout(r, 5))
+  await new Promise(resolve => setTimeout(resolve, 5))
   store.put(mB)
-  await new Promise(r => setTimeout(r, 5))
+  await new Promise(resolve => setTimeout(resolve, 5))
   store.put(mC)
 
   t.is(store.size(), 2)
