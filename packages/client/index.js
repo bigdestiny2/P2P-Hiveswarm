@@ -155,6 +155,20 @@ export class HiveRelayClient extends EventEmitter {
     this._foundationPubkeys = Array.isArray(config.foundationPubkeys)
       ? config.foundationPubkeys.map(s => String(s).toLowerCase())
       : []
+    // Known-relay registry: URL → pinned pubkey. When the operator has
+    // out-of-band knowledge of a relay's identity, pinning here means
+    // the client auto-rejects fetched capability docs whose pubkey
+    // doesn't match — the strongest defense against relay impersonation.
+    // Foundation pubkeys are auto-registered if their URLs are known
+    // via knownRelays config.
+    this._knownRelays = new Map()
+    if (config.knownRelays && typeof config.knownRelays === 'object') {
+      for (const [url, pubkey] of Object.entries(config.knownRelays)) {
+        if (typeof pubkey === 'string') {
+          this._knownRelays.set(url.replace(/\/+$/, ''), pubkey.toLowerCase())
+        }
+      }
+    }
     // ForkDetector is loaded lazily on start() so the class is usable
     // in test environments that don't call start().
     this.forkDetector = null
@@ -1819,6 +1833,12 @@ export class HiveRelayClient extends EventEmitter {
       throw new Error('fetchCapabilities: relayUrl required')
     }
     const base = relayUrl.replace(/\/+$/, '')
+    // Auto-populate expectedPubkey from the known-relays registry.
+    // Caller-provided opts.expectedPubkey wins; the registry only
+    // fills in when the caller didn't pin explicitly.
+    if (!opts.expectedPubkey && this._knownRelays.has(base)) {
+      opts = { ...opts, expectedPubkey: this._knownRelays.get(base) }
+    }
     let doc
     const res = await _fetchJson(base + '/.well-known/hiverelay.json', { method: 'GET' })
     if (res.ok) {
@@ -2029,6 +2049,80 @@ export class HiveRelayClient extends EventEmitter {
       }
     }
     return { responses, agreed: okResponses, divergent }
+  }
+
+  /**
+   * Pin a known relay's identity pubkey. Future fetchCapabilities()
+   * calls against this URL will fail if the served capability doc's
+   * pubkey doesn't match. Use for out-of-band trust (e.g. operator
+   * shared their pubkey via QR code, federation entry, or printed
+   * card).
+   *
+   * @param {string} url
+   * @param {string} pubkey  hex pubkey (64 chars)
+   */
+  pinRelay (url, pubkey) {
+    if (typeof url !== 'string' || !url.length) throw new Error('pinRelay: url required')
+    if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey)) {
+      throw new Error('pinRelay: pubkey must be 64 hex chars')
+    }
+    this._knownRelays.set(url.replace(/\/+$/, ''), pubkey.toLowerCase())
+  }
+
+  /**
+   * Remove a relay from the pinned-pubkey registry. Subsequent
+   * fetchCapabilities() calls revert to TOFU (trust whatever pubkey
+   * the doc claims).
+   *
+   * @param {string} url
+   */
+  unpinRelay (url) {
+    return this._knownRelays.delete(url.replace(/\/+$/, ''))
+  }
+
+  /**
+   * Snapshot of currently-pinned relays.
+   * @returns {Array<{url: string, pubkey: string}>}
+   */
+  pinnedRelays () {
+    return [...this._knownRelays.entries()].map(([url, pubkey]) => ({ url, pubkey }))
+  }
+
+  /**
+   * Publish a fork proof to a list of relay URLs. Used to gossip
+   * locally-detected equivocation evidence to the wider network so
+   * other clients quarantine the same drive without having to
+   * independently observe the fork.
+   *
+   * No auth required by the receiving relay — fork proofs are
+   * self-validating in shape (the receiving relay's ForkDetector
+   * rejects malformed proofs at write time).
+   *
+   * Best-effort: relays that 4xx/5xx are noted in the result but
+   * don't abort the broadcast.
+   *
+   * @param {object} proof  shape from ForkDetector.list()[i]
+   * @param {string[]} relayUrls
+   * @returns {Promise<Array<{relay: string, ok: boolean, error?: string}>>}
+   */
+  async publishForkProof (proof, relayUrls) {
+    if (!proof || typeof proof !== 'object') throw new Error('publishForkProof: proof required')
+    if (!Array.isArray(relayUrls) || relayUrls.length === 0) {
+      throw new Error('publishForkProof: relayUrls must be a non-empty array')
+    }
+    return Promise.all(relayUrls.map(async (url) => {
+      const endpoint = url.replace(/\/+$/, '') + '/api/forks/proof'
+      try {
+        const res = await _fetchJson(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(proof)
+        })
+        return { relay: url, ok: res.ok, status: res.status }
+      } catch (err) {
+        return { relay: url, ok: false, error: err.message }
+      }
+    }))
   }
 
   /**

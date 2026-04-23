@@ -385,12 +385,70 @@ export class Federation extends EventEmitter {
       this.emit('federation-queued', { appKey, source: entry.url })
       queued++
     }
+
+    // Pull fork-proof gossip from this followed peer too. Bounded
+    // poll — fork-proof gossip latency = followInterval (5 min by
+    // default). Best-effort: if the remote has no /api/forks/proofs
+    // endpoint or it errors, we silently move on.
+    try { await this._pullForkProofs(entry.url) } catch (_) { /* non-fatal */ }
+
     return queued
+  }
+
+  /**
+   * Pull a remote relay's published fork-proof list and merge into our
+   * local fork detector. This is how equivocation evidence propagates
+   * across federation peers — without active gossip there's no way for
+   * client-A's fork detection to reach client-B.
+   *
+   * Best-effort: missing endpoint or malformed payload silently skipped.
+   * Per-call timeout enforced via FETCH_TIMEOUT.
+   */
+  async _pullForkProofs (entryUrl) {
+    if (!this.node?.forkDetector) return
+    const data = await this._fetchJson(entryUrl, '/api/forks/proofs')
+    if (!data || !Array.isArray(data.proofs)) return
+    let merged = 0
+    for (const proof of data.proofs) {
+      if (!proof || !proof.hypercoreKey || !Array.isArray(proof.evidence) || proof.evidence.length < 2) continue
+      const result = this.node.forkDetector.report({
+        hypercoreKey: proof.hypercoreKey,
+        blockIndex: proof.blockIndex || 0,
+        evidenceA: proof.evidence[0],
+        evidenceB: proof.evidence[1]
+      })
+      if (result.ok && !result.recordExists) merged++
+    }
+    if (merged > 0) {
+      this.emit('fork-proofs-merged', { source: entryUrl, count: merged })
+    }
   }
 
   _fetchCatalog (url) {
     return new Promise((resolve) => {
       const target = url.endsWith('/catalog.json') ? url : url.replace(/\/+$/, '') + '/catalog.json'
+      const req = http.get(target, { timeout: FETCH_TIMEOUT }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null) }
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk) => { body += chunk })
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)) } catch { resolve(null) }
+        })
+      })
+      req.on('error', () => resolve(null))
+      req.on('timeout', () => { req.destroy(); resolve(null) })
+    })
+  }
+
+  /**
+   * Generic JSON fetch helper for federation pulls. Reuses the same
+   * timeout + error tolerance as _fetchCatalog. Returns null on any
+   * failure so callers can short-circuit cleanly.
+   */
+  _fetchJson (baseUrl, path) {
+    return new Promise((resolve) => {
+      const target = baseUrl.replace(/\/+$/, '') + path
       const req = http.get(target, { timeout: FETCH_TIMEOUT }, (res) => {
         if (res.statusCode !== 200) { res.resume(); return resolve(null) }
         let body = ''

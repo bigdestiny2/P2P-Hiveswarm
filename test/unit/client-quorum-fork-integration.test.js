@@ -584,6 +584,133 @@ test('open() attaches truncate + verification-error listeners on drive.core', as
   t.is(detectedFork.driveKey, driveKey)
 })
 
+// ─── Pubkey pinning via knownRelays registry ─────────────────────
+
+test('pinRelay + fetchCapabilities auto-injects expectedPubkey', async (t) => {
+  const PUBKEY_GOOD = 'aa'.repeat(32)
+  const PUBKEY_BAD = 'bb'.repeat(32)
+  installMockFetch({
+    'https://pinned.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: PUBKEY_GOOD, features: [] }
+    },
+    'https://imposter.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: PUBKEY_BAD, features: [] }
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  client.pinRelay('https://pinned.test', PUBKEY_GOOD)
+  client.pinRelay('https://imposter.test', PUBKEY_GOOD) // we EXPECT good but they serve bad
+
+  // Pinned relay matches → succeeds
+  const goodDoc = await client.fetchCapabilities('https://pinned.test')
+  t.is(goodDoc.pubkey, PUBKEY_GOOD)
+
+  // Pinned relay serves WRONG pubkey → throws
+  let mismatchEvent = null
+  client.on('capability-pubkey-mismatch', (e) => { mismatchEvent = e })
+  try {
+    await client.fetchCapabilities('https://imposter.test')
+    t.fail('should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('pubkey mismatch'))
+    t.ok(mismatchEvent)
+  }
+})
+
+test('pinRelay validates inputs', async (t) => {
+  const client = makeClient()
+  try { client.pinRelay('', 'a'.repeat(64)); t.fail() } catch (err) { t.ok(err.message.includes('url')) }
+  try { client.pinRelay('https://x', 'not-hex'); t.fail() } catch (err) { t.ok(err.message.includes('64 hex')) }
+})
+
+test('unpinRelay removes pin and reverts to TOFU', async (t) => {
+  const client = makeClient()
+  client.pinRelay('https://x.test', 'a'.repeat(64))
+  t.is(client.pinnedRelays().length, 1)
+  t.ok(client.unpinRelay('https://x.test'))
+  t.is(client.pinnedRelays().length, 0)
+})
+
+test('constructor accepts initial knownRelays config', async (t) => {
+  const client = makeClient({
+    knownRelays: {
+      'https://a.test': 'a'.repeat(64),
+      'https://b.test/': 'b'.repeat(64) // trailing slash should be normalized
+    }
+  })
+  const pinned = client.pinnedRelays()
+  t.is(pinned.length, 2)
+  // URLs should be normalized (no trailing slash)
+  const urls = pinned.map(p => p.url).sort()
+  t.alike(urls, ['https://a.test', 'https://b.test'])
+})
+
+test('caller-supplied expectedPubkey wins over registry pin', async (t) => {
+  const PUBKEY_REGISTRY = 'aa'.repeat(32)
+  const PUBKEY_OVERRIDE = 'cc'.repeat(32)
+  installMockFetch({
+    'https://x.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: PUBKEY_OVERRIDE, features: [] }
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  client.pinRelay('https://x.test', PUBKEY_REGISTRY)
+  // Caller passes a DIFFERENT expectedPubkey — this should be respected
+  // (registry is just the auto-default).
+  const doc = await client.fetchCapabilities('https://x.test', { expectedPubkey: PUBKEY_OVERRIDE })
+  t.is(doc.pubkey, PUBKEY_OVERRIDE)
+})
+
+// ─── publishForkProof ─────────────────────────────────────────────
+
+test('publishForkProof POSTs to all relays in parallel', async (t) => {
+  const calls = []
+  installMockFetch({
+    'https://a.test/api/forks/proof': (url) => {
+      calls.push(url)
+      return mockResponse({ body: { ok: true } })
+    },
+    'https://b.test/api/forks/proof': (url) => {
+      calls.push(url)
+      return mockResponse({ body: { ok: true } })
+    },
+    'https://c.test/api/forks/proof': (url) => {
+      calls.push(url)
+      return mockResponse({ ok: false, status: 503, body: { error: 'down' } })
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  const proof = {
+    hypercoreKey: 'a'.repeat(64),
+    blockIndex: 5,
+    evidence: [
+      { fromRelay: 'r1', block: 'b1', signature: 's1' },
+      { fromRelay: 'r2', block: 'b2', signature: 's2' }
+    ]
+  }
+  const results = await client.publishForkProof(proof, [
+    'https://a.test',
+    'https://b.test',
+    'https://c.test'
+  ])
+  t.is(results.length, 3)
+  t.is(calls.length, 3, 'all three relays were POSTed to')
+  t.ok(results.find(r => r.relay === 'https://c.test' && !r.ok), '503 reported as not-ok')
+  t.ok(results.filter(r => r.ok).length === 2)
+})
+
+test('publishForkProof validates inputs', async (t) => {
+  const client = makeClient()
+  try { await client.publishForkProof(null, ['x']); t.fail() } catch (err) { t.ok(err.message.includes('proof required')) }
+  try { await client.publishForkProof({}, []); t.fail() } catch (err) { t.ok(err.message.includes('non-empty array')) }
+})
+
 test('closeDrive removes fork listeners (no leak)', async (t) => {
   const client = makeClient()
   client._started = true

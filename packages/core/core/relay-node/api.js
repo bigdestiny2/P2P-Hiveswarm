@@ -461,6 +461,21 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, manifest)
         }
 
+        // Fork-proof gossip — public list of fork records this relay
+        // has observed or had pushed to it by federation peers. Clients
+        // and peer relays poll this to learn about equivocation across
+        // the network. No auth required; fork proofs are public goods
+        // (the offending publisher's signatures are visible by design).
+        // Capped at 200 entries per response.
+        if (path === '/api/forks/proofs') {
+          if (!this.node.forkDetector) {
+            return this._json(res, { schemaVersion: 1, proofs: [] })
+          }
+          const proofs = this.node.forkDetector.list().slice(0, 200)
+          res.setHeader('Cache-Control', 'public, max-age=30')
+          return this._json(res, { schemaVersion: 1, proofs })
+        }
+
         // First-run setup wizard — serves the current state machine. The
         // dashboard checks `isComplete` on load and either renders the
         // wizard or the main UI. Localhost-only by design (the wizard
@@ -805,6 +820,33 @@ export class RelayAPI extends EventEmitter {
             return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest persist failed: ' + err.message) }, 500)
           }
           return this._json(res, { ok: true, pubkey: check.pubkey, replaced: result.replaced })
+        }
+
+        // Fork-proof gossip — receive a fork proof from a federation
+        // peer or a client that observed equivocation. No auth required;
+        // bad-shape proofs are silently rejected at the ForkDetector
+        // layer. We rate-limit at the per-IP level (the rate limiter
+        // higher up applies to all endpoints).
+        if (path === '/api/forks/proof') {
+          if (!this.node.forkDetector) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'fork detector not initialized') }, 503)
+          }
+          if (!body || typeof body !== 'object') {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'fork proof body required') }, 400)
+          }
+          const result = this.node.forkDetector.report({
+            hypercoreKey: body.hypercoreKey,
+            blockIndex: typeof body.blockIndex === 'number' ? body.blockIndex : 0,
+            evidenceA: body.evidenceA,
+            evidenceB: body.evidenceB
+          })
+          if (!result.ok) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, 400)
+          }
+          try { await this.node.forkDetector.save() } catch (err) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'fork persist failed: ' + err.message) }, 500)
+          }
+          return this._json(res, { ok: true, recordExists: result.recordExists })
         }
 
         // ─── Setup wizard mutations ──────────────────────────────
