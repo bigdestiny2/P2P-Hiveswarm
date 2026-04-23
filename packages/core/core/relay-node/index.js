@@ -17,6 +17,7 @@ import { HolesailTransport } from '../../transports/holesail/index.js'
 import http from 'http'
 import { BootstrapCache } from '../bootstrap-cache.js'
 import { Federation } from '../federation.js'
+import { ManifestStore } from '../manifest-store.js'
 import { resolveAcceptMode, decideAcceptance } from '../accept-mode.js'
 import { SeedProtocol } from '../protocol/seed-request.js'
 import { verifyDelegationCert, verifyRevocation } from '../delegation.js'
@@ -254,6 +255,7 @@ export class RelayNode extends EventEmitter {
     this._revokedCertSignatures = new Map()
     this._revocationSweepInterval = null
     this.federation = null // lazily constructed in start() if config.federation.enabled
+    this.manifestStore = null // lazily constructed in start() once storage dir exists
     this._catalogBroadcastTimer = null
     this._catalogPeerThrottle = new Map() // peerKey -> lastCatalogTime
     this._catalogThrottleCleanup = null
@@ -868,6 +870,18 @@ export class RelayNode extends EventEmitter {
       }
       this.federation.on('federation-error', (err) => this.emit('federation-error', err))
       this.federation.on('persistence-error', (info) => this.emit('federation-error', info))
+
+      // ManifestStore — caches author-signed seeding manifests.
+      // Relays serve these over HTTP so clients can discover which relays an
+      // author uses for seeding. Always-on since authoring is orthogonal to
+      // federation / accept-mode.
+      this.manifestStore = new ManifestStore({
+        storagePath: join(this.config.storage, 'manifests.json'),
+        maxAuthors: this.config.maxManifestAuthors || 10_000
+      })
+      try { await this.manifestStore.load() } catch (err) { this.emit('manifest-store-error', err) }
+      this.manifestStore.on('stored', (info) => this.emit('manifest-stored', info))
+      this.manifestStore.on('load-rejected', (info) => this.emit('manifest-store-error', info))
 
       this.running = true
 
@@ -1913,6 +1927,12 @@ export class RelayNode extends EventEmitter {
     if (this.seedingRegistry) { try { await this.seedingRegistry.stop() } catch (_) {} this.seedingRegistry = null }
     if (this.networkDiscovery) { try { await this.networkDiscovery.stop() } catch (_) {} this.networkDiscovery = null }
     if (this.federation) { try { await this.federation.stop() } catch (_) {} this.federation = null }
+    if (this.manifestStore) {
+      // Persist any unsaved manifest updates before dropping the reference.
+      try { await this.manifestStore.save() } catch (_) {}
+      this.manifestStore.removeAllListeners()
+      this.manifestStore = null
+    }
     if (this._revocationSweepInterval) { clearInterval(this._revocationSweepInterval); this._revocationSweepInterval = null }
     if (this._proofOfRelay) { if (this._proofOfRelay.destroy) this._proofOfRelay.destroy(); this._proofOfRelay = null }
     if (this._bandwidthReceipt) { this._bandwidthReceipt.stop(); this._bandwidthReceipt = null }

@@ -1,6 +1,6 @@
 {
   "name": "p2p-hiveservices",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "HiveRelay Services — application-layer services (AI inference, identity, schemas, SLAs, storage CRUD) that ride on top of HiveRelay Core",
   "type": "module",
   "exports": {

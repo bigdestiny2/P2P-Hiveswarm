@@ -5,6 +5,77 @@ All notable changes to `p2p-hiverelay`, `p2p-hiveservices`, and
 
 The three packages are versioned in lockstep.
 
+## [0.5.1] — 2026-04-20
+
+Additive release — zero breaking changes, safe to hot-deploy on top of 0.5.0.
+Introduces three features focused on client/relay interoperability: a
+machine-readable capability document, a machine-readable error prefix
+convention, and an author-published seeding manifest.
+
+See [`docs/v0.5.1-CAPABILITIES.md`](docs/v0.5.1-CAPABILITIES.md) for the
+full spec with examples.
+
+### Added
+
+**Capability advertisement**
+- `GET /.well-known/hiverelay.json` — returns a JSON document describing
+  the relay's identity, version, accept policy, transports, features,
+  limits, federation counts, catalog counts, and fees. Served at
+  `/api/capabilities` as a mirror for CDNs / proxies that hide
+  `/.well-known`. Built lazily per-request in <1ms, `Cache-Control:
+  public, max-age=60`.
+- Implemented for both Node (`RelayAPI`) and Bare (`BareHttpServer`)
+  runtimes with identical payloads — one client code path works against
+  either runtime.
+- `client.fetchCapabilities(relayUrl)` helper in the SDK — scan many
+  relays for the right accept mode / version / feature set without
+  opening a Hyperswarm connection.
+
+**Machine-readable error prefixes**
+- New `p2p-hiverelay/core/error-prefixes.js` module exporting `ERR`
+  (frozen map of 12 stable prefix strings), `formatErr(kind, message)`,
+  `classifyErr(err)` and `isErr(err, kind)`. Clients can branch on
+  failure type (`AUTH_REQUIRED`, `PAYMENT_REQUIRED`, `ACCEPT_QUEUED`,
+  `DELEGATION_REVOKED`, etc.) without string-matching human messages.
+- Management-API auth-failure responses now include a new `errorCode`
+  field (`"auth-required"`) alongside the legacy `error` string. Legacy
+  clients string-matching on `Unauthorized` keep working.
+
+**Author seeding manifest**
+- New `p2p-hiverelay/core/seeding-manifest.js` — Ed25519-signed
+  "these are the relays you should fetch my drives from" document.
+  Canonical signable payload sorts JSON keys so verification is
+  deterministic across encoders. 5-min timestamp-skew window for
+  replay protection. Max 32 relays / 512 drives per manifest.
+- New `p2p-hiverelay/core/manifest-store.js` — persistent cache of
+  author manifests, atomic-write to `storage/manifests.json`. Cap:
+  10k authors, oldest-first evicted. Newer-timestamp wins within a
+  given pubkey.
+- `POST /api/authors/seeding.json` — publish a signed manifest
+  (signature IS the authorization; no API key needed). `GET /api/authors/
+  <pubkey>/seeding.json` — fetch the cached manifest for a pubkey
+  (404 when none cached).
+- Client helpers: `createSeedingManifest(args)`, `publishSeedingManifest(
+  relayUrl, manifest)`, `fetchSeedingManifest(relayUrl, pubkey)`.
+- `ManifestStore` lifecycle integrated into `RelayNode.start()` and
+  `RelayNode.stop()` (atomic persistence on shutdown).
+
+### Fixed
+
+- `RelayAPI` honors `apiPort: 0` (OS-selected port for tests) instead
+  of silently falling back to the default 9100. The old `||` coalesce
+  was discarding `0` as falsy.
+- `RelayAPI._rateLimitCleanup` interval is now `unref()`'d so a forgotten
+  `api.stop()` in a test no longer pins the Node event loop open.
+
+### Notes for operators upgrading from 0.5.0
+
+All changes are additive. No config migration required. Restart the
+relay; hit `/.well-known/hiverelay.json` to verify the new surface
+is live. See the deploy guide in `docs/v0.5.1-CAPABILITIES.md`.
+
+---
+
 ## [0.5.0] — 2026-04-20
 
 Large refactor + feature release. The headline is **Core / Services split**

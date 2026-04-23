@@ -22,6 +22,7 @@
 // minimal usage).
 import http from 'http'
 import b4a from 'b4a'
+import { buildCapabilityDoc } from '../capability-doc.js'
 
 export class BareHttpServer {
   constructor (relay, opts = {}) {
@@ -29,6 +30,9 @@ export class BareHttpServer {
     this.port = opts.port || 9100
     this.host = opts.host || '0.0.0.0'
     this.server = null
+    // Version string surfaced in /.well-known/hiverelay.json. The Bare
+    // entry point passes this through from the workspace package.json.
+    this.version = opts.version || null
   }
 
   async start () {
@@ -73,6 +77,18 @@ export class BareHttpServer {
 
     if (path === '/api/peers') {
       return this._json(res, this._peers())
+    }
+
+    // Capability advertisement. Same shape as the Node version so clients
+    // can treat both runtimes identically.
+    if (path === '/.well-known/hiverelay.json' || path === '/api/capabilities') {
+      const doc = buildCapabilityDoc({
+        relay: this.relay,
+        version: this.version,
+        runtime: 'bare'
+      })
+      res.setHeader('Cache-Control', 'public, max-age=60')
+      return this._json(res, doc)
     }
 
     // 404
