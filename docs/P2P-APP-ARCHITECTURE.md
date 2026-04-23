@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # Building P2P Apps — Architecture Guide
 
 A complete guide to building, publishing, and running peer-to-peer applications on the Holepunch stack with HiveRelay and PearBrowser.

@@ -7,7 +7,7 @@
  * Run with: node index.js
  */
 
-import { HiveRelayClient } from 'p2p-hiverelay/client'
+import { HiveRelayClient } from 'p2p-hiverelay-client'
 
 const relay = new HiveRelayClient('./app-storage')
 
@@ -46,12 +46,14 @@ try {
   console.log('(Service RPC not available on connected relays)')
 }
 
-// List available apps across the network
+// List available apps across the network. Each row is one (app, relay) pair —
+// per-relay catalogs are local to each operator (no global merged view).
 const apps = relay.getAvailableApps()
 if (apps.length > 0) {
-  console.log(`\n${apps.length} app(s) on the network:`)
+  console.log(`\n${apps.length} app row(s) across connected relays:`)
   for (const app of apps) {
-    console.log(`  - ${app.appId || app.appKey.slice(0, 12) + '...'} (${app.relays.length} relay(s))`)
+    const id = app.appId || app.appKey.slice(0, 12) + '...'
+    console.log(`  - ${id} (from relay ${app.source.relayPubkey.slice(0, 12)})`)
   }
 }
 

@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { HiveRelayClient } from '../../client/index.js'
+import { HiveRelayClient } from 'p2p-hiverelay-client'
 import { EventEmitter } from 'events'
 import { randomBytes } from 'crypto'
 

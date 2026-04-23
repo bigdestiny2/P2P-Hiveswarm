@@ -1,9 +1,8 @@
 import test from 'brittle'
-import { ServiceRegistry } from '../../core/services/registry.js'
-import { ServiceProvider } from '../../core/services/provider.js'
-import { ComputeService } from '../../core/services/builtin/compute-service.js'
-import { ZKService } from '../../core/services/builtin/zk-service.js'
-import { AIService } from '../../core/services/builtin/ai-service.js'
+import { ServiceRegistry } from 'p2p-hiverelay/core/services/registry.js'
+import { ServiceProvider } from 'p2p-hiverelay/core/services/provider.js'
+import { ZKService } from 'p2p-hiveservices/builtin/zk-service.js'
+import { AIService } from 'p2p-hiveservices/builtin/ai-service.js'
 
 // ─── Test service for registry tests ────────────────────────────────
 
@@ -171,7 +170,7 @@ test('ServiceRegistry - find providers (remote)', async (t) => {
 
   registry.addRemoteServices('abc123', [
     { name: 'storage', version: '1.0.0', capabilities: ['drive-create'] },
-    { name: 'compute', version: '1.0.0', capabilities: ['submit'] }
+    { name: 'ai', version: '1.0.0', capabilities: ['infer'] }
   ])
 
   const storageProviders = registry.findProviders('storage')
@@ -242,163 +241,6 @@ test('ServiceRegistry - startAll fail-closed unregisters failed service', async 
   t.is(result.failed[0].name, 'bad', 'failed service recorded')
   t.is(registry.services.has('good'), true, 'healthy service stays registered')
   t.is(registry.services.has('bad'), false, 'failed service removed')
-})
-
-// ─── ComputeService tests ──────────────────────────────────────────
-
-test('ComputeService - manifest', async (t) => {
-  const svc = new ComputeService()
-  const m = svc.manifest()
-  t.is(m.name, 'compute')
-  t.ok(m.capabilities.includes('submit'))
-})
-
-test('ComputeService - submit and complete job', async (t) => {
-  const svc = new ComputeService()
-  svc.registerHandler('double', (input) => ({ result: input.value * 2 }))
-
-  const { jobId } = await svc.submit({ type: 'double', input: { value: 21 } })
-  t.ok(jobId)
-
-  // Wait for processing
-  await new Promise(resolve => setTimeout(resolve, 50))
-
-  const res = await svc.result({ jobId })
-  t.is(res.ready, true)
-  t.is(res.state, 'complete')
-  t.alike(res.result, { result: 42 })
-})
-
-test('ComputeService - job failure', async (t) => {
-  const svc = new ComputeService()
-  svc.registerHandler('fail', () => { throw new Error('BOOM') })
-
-  const { jobId } = await svc.submit({ type: 'fail', input: {} })
-  await new Promise(resolve => setTimeout(resolve, 50))
-
-  const res = await svc.result({ jobId })
-  t.is(res.state, 'failed')
-  t.is(res.error, 'BOOM')
-})
-
-test('ComputeService - cancel pending job', async (t) => {
-  const svc = new ComputeService({ maxConcurrent: 0 }) // nothing runs
-  svc.registerHandler('slow', async () => {
-    await new Promise(resolve => setTimeout(resolve, 10000))
-  })
-
-  const { jobId } = await svc.submit({ type: 'slow', input: {} })
-  const cancelResult = await svc.cancel({ jobId })
-  t.is(cancelResult.cancelled, true)
-
-  const status = await svc.status({ jobId })
-  t.is(status.state, 'cancelled')
-})
-
-test('ComputeService - unknown task type', async (t) => {
-  const svc = new ComputeService()
-
-  try {
-    await svc.submit({ type: 'unknown', input: {} })
-    t.fail('should throw')
-  } catch (err) {
-    t.ok(err.message.includes('UNKNOWN_TASK_TYPE'))
-  }
-})
-
-test('ComputeService - list jobs', async (t) => {
-  const svc = new ComputeService()
-  svc.registerHandler('noop', () => ({}))
-
-  await svc.submit({ type: 'noop', input: {} })
-  await svc.submit({ type: 'noop', input: {} })
-
-  const jobs = await svc.list()
-  t.is(jobs.length, 2)
-})
-
-test('ComputeService - capabilities', async (t) => {
-  const svc = new ComputeService({ maxConcurrent: 8 })
-  svc.registerHandler('hash', () => ({}))
-  svc.registerHandler('compress', () => ({}))
-
-  const caps = await svc.capabilities()
-  t.alike(caps.taskTypes, ['hash', 'compress'])
-  t.is(caps.maxConcurrent, 8)
-})
-
-test('ComputeService - job limit', async (t) => {
-  const svc = new ComputeService({ maxJobs: 1, maxConcurrent: 0 })
-  svc.registerHandler('x', () => ({}))
-
-  await svc.submit({ type: 'x', input: {} })
-
-  try {
-    await svc.submit({ type: 'x', input: {} })
-    t.fail('should throw')
-  } catch (err) {
-    t.ok(err.message.includes('JOB_LIMIT'))
-  }
-})
-
-test('ComputeService - concurrent job execution', async (t) => {
-  let running = 0
-  let maxRunning = 0
-
-  const svc = new ComputeService({ maxConcurrent: 2 })
-  svc.registerHandler('track', async () => {
-    running++
-    maxRunning = Math.max(maxRunning, running)
-    await new Promise(resolve => setTimeout(resolve, 50))
-    running--
-    return {}
-  })
-
-  // Submit 4 jobs — should run 2 at a time
-  const jobs = []
-  for (let i = 0; i < 4; i++) {
-    jobs.push(svc.submit({ type: 'track', input: {} }))
-  }
-  await Promise.all(jobs)
-
-  await new Promise(resolve => setTimeout(resolve, 200))
-
-  t.is(maxRunning, 2, 'max 2 concurrent jobs')
-})
-
-test('ComputeService - enforces job ownership between callers', async (t) => {
-  const svc = new ComputeService()
-  svc.registerHandler('double', (input) => ({ value: input.value * 2 }))
-
-  const { jobId } = await svc.submit({ type: 'double', input: { value: 5 } }, { remotePubkey: 'peer-a' })
-  await new Promise(resolve => setTimeout(resolve, 20))
-
-  const ownerResult = await svc.result({ jobId }, { remotePubkey: 'peer-a' })
-  t.is(ownerResult.result.value, 10, 'owner can read result')
-
-  try {
-    await svc.result({ jobId }, { remotePubkey: 'peer-b' })
-    t.fail('expected access denied for other caller')
-  } catch (err) {
-    t.ok(err.message.includes('ACCESS_DENIED'))
-  }
-
-  const adminResult = await svc.result({ jobId }, { role: 'relay-admin', authenticated: true })
-  t.is(adminResult.result.value, 10, 'relay admin can read any result')
-})
-
-test('ComputeService - per-caller active job limit', async (t) => {
-  const svc = new ComputeService({ maxConcurrent: 0, maxJobsPerCaller: 1 })
-  svc.registerHandler('noop', () => ({}))
-
-  await svc.submit({ type: 'noop', input: {} }, { remotePubkey: 'peer-a' })
-
-  try {
-    await svc.submit({ type: 'noop', input: {} }, { remotePubkey: 'peer-a' })
-    t.fail('should reject second active job for same caller')
-  } catch (err) {
-    t.ok(err.message.includes('CALLER_JOB_LIMIT'))
-  }
 })
 
 // ─── ZKService tests (secp256k1 EC-based) ──────────────────────────

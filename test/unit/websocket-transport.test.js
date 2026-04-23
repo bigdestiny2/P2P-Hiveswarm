@@ -1,6 +1,6 @@
 import test from 'brittle'
-import { WebSocketTransport } from '../../transports/websocket/index.js'
-import { WebSocketStream } from '../../transports/websocket/stream.js'
+import { WebSocketTransport } from 'p2p-hiverelay/transports/websocket/index.js'
+import { WebSocketStream } from 'p2p-hiverelay/transports/websocket/stream.js'
 import WebSocket from 'ws'
 
 function getPort () {

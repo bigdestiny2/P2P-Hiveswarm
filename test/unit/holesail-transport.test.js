@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { HolesailTransport } from '../../transports/holesail/index.js'
+import { HolesailTransport } from 'p2p-hiverelay/transports/holesail/index.js'
 
 test('HolesailTransport — constructor defaults', async (t) => {
   const ht = new HolesailTransport()

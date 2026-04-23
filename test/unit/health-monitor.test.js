@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { HealthMonitor } from '../../core/relay-node/health-monitor.js'
+import { HealthMonitor } from 'p2p-hiverelay/core/relay-node/health-monitor.js'
 
 function createMockNode (opts = {}) {
   const connList = opts.connections || []

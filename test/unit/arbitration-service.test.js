@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { ArbitrationService } from '../../core/services/builtin/arbitration-service.js'
+import { ArbitrationService } from 'p2p-hiveservices/builtin/arbitration-service.js'
 
 function mockNode (opts = {}) {
   const slashed = []

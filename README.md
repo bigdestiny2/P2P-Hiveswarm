@@ -131,7 +131,6 @@ All services are open right now. 1,000 welcome credits per app, every service ro
 | **Storage** | `storage.drive-create`, `drive-list`, `drive-read`, `drive-write` | Hyperdrive and Hypercore CRUD |
 | **Identity** | `identity.whoami`, `identity.sign`, `identity.verify`, `identity.developer` | Keypair identity, developer resolution, Nostr profiles |
 | **Schema** | `schema.register`, `schema.list`, `schema.validate` | Data format registry for cross-app interop |
-| **Compute** | `compute.submit`, `compute.status`, `compute.result` | Task queue with job lifecycle |
 | **SLA** | `sla.create`, `sla.get`, `sla.list` | Staked availability guarantees |
 
 ---
@@ -291,7 +290,7 @@ For home NAS, family photo sharing, personal app hosting, small business POS:
 - **Seeds apps** — stores and serves Hyperdrives for developers who need always-on availability
 - **Relays connections** — bridges NAT-blocked peers through encrypted circuits
 - **Syncs catalogs** — automatically discovers and replicates apps from other relays
-- **Runs services** — AI inference, compute, storage, identity, schemas, SLAs
+- **Runs services** — AI inference, storage, identity, schemas, SLAs
 - **Proves its work** — cryptographic proof-of-relay challenges verify you're actually serving data
 - **Heals itself** — 5 health checks every 30 seconds with automatic recovery
 - **Earns reputation** — the more reliably you serve, the more work the network sends you
@@ -301,7 +300,6 @@ For home NAS, family photo sharing, personal app hosting, small business POS:
 | Service | Rate | Hardware Needed |
 |---------|------|----------------|
 | AI inference | 1 sat/1K input tokens, 2 sats/1K output | 16GB+ RAM, GPU/Apple Silicon |
-| Compute tasks | 5 sats/job | 2+ CPU cores |
 | Storage write | 2 sats/write | Any ($5 VPS or home hardware) |
 | Storage read | 1 sat/read | Any |
 | Identity ops | 1 sat/operation | Any |
@@ -510,7 +508,6 @@ All management operations available programmatically (used by `p2p-hiverelay man
 |------|--------|-----|
 | AI embeddings | Inference works (Ollama/gemma4) | Embedding models not tested |
 | Lightning payments | Invoice creation works | No LND backend connected for settlement |
-| Compute sandbox | Handler registered | No container/WASM isolation for untrusted code |
 | ZK proofs | Service designed | Not implemented |
 | Mobile | Architecture supports it | No mobile testing |
 

@@ -1,7 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import sodium from 'sodium-universal'
-import { BandwidthReceipt } from '../../core/protocol/bandwidth-receipt.js'
+import { BandwidthReceipt } from 'p2p-hiverelay/core/protocol/bandwidth-receipt.js'
 
 function makeKeyPair () {
   const publicKey = b4a.alloc(32)

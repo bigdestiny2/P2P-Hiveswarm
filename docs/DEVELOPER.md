@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # HiveRelay Developer Documentation
 
 **Version:** 0.3.0
@@ -219,9 +222,8 @@ hiverelay/
 │   ├── demo.js                       # Self-contained demo (local testnet)
 │   ├── test.js                       # 10 tests (all passing)
 │   └── ARCHITECTURE.md               # Full technical + non-technical explainer
-├── compute/
-│   └── gateway/
-│       └── hyper-gateway.js      # HTTP gateway for Hyperdrive content (LRU cache, path security)
+├── packages/core/gateway/        # (Was compute/gateway/ — name was misleading. Pure HTTP gateway, no compute service.)
+│   └── hyper-gateway.js          # HTTP gateway for Hyperdrive content (LRU cache, path security)
 ├── plugins/
 │   └── openclaw/
 │       ├── index.ts              # OpenClaw TypeScript plugin (162 lines)

@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { PaymentManager } from '../../incentive/payment/index.js'
+import { PaymentManager } from 'p2p-hiverelay/incentive/payment/index.js'
 
 test('PaymentManager - register and record earnings', async (t) => {
   const pm = new PaymentManager()

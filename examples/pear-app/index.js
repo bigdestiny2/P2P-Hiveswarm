@@ -9,7 +9,7 @@
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
-import { HiveRelayClient } from 'p2p-hiverelay/client'
+import { HiveRelayClient } from 'p2p-hiverelay-client'
 
 // In a real Pear app, use Pear.config.storage for persistent storage.
 // For terminal testing, a local path works too.
@@ -17,6 +17,21 @@ const storagePath = typeof globalThis.Pear !== 'undefined'
   ? Pear.config.storage
   : './hiverelay-example-storage'
 
+// IMPORTANT: let Corestore manage its own primaryKey.
+//
+// DO NOT do `new Corestore(path, { primaryKey: someIdentitySeed, unsafe: true })`.
+// Tying Corestore's primaryKey to an external identity seed looks clean but
+// is a data-loss hazard:
+//   1. If the identity file gets corrupted or regenerated (unclean shutdown,
+//      partial write, etc.), Corestore sees a new primaryKey != stored one
+//      and throws "Another corestore is stored here".
+//   2. In-process auto-recovery can't rm -rf the dir because rocksdb already
+//      holds db/LOCK.
+//   3. Manual recovery wipes the publisher keypair, orphaning every
+//      HiveRelay-pinned drive (signed unseed requires the original keypair).
+// Corestore persists its own primaryKey independently. Drives survive
+// identity regeneration. See docs/IDENTITY-AND-STORAGE.md for the full
+// reasoning and a recovery-safe pattern.
 const store = new Corestore(storagePath)
 const swarm = new Hyperswarm()
 
@@ -47,12 +62,14 @@ const appKeyHex = drive.key.toString('hex')
 await relay.seed(appKeyHex, { replicationFactor: 3 })
 console.log('Seed request sent — relays will replicate your content')
 
-// Show available apps on the network
+// Show available apps on the network. Each row is one (app, relay) pair —
+// per-relay catalogs are local to each operator (no global merged view).
 const apps = relay.getAvailableApps()
 if (apps.length > 0) {
-  console.log(`\n${apps.length} app(s) available on the network:`)
+  console.log(`\n${apps.length} app row(s) across connected relays:`)
   for (const app of apps) {
-    console.log(`  - ${app.appId || app.appKey.slice(0, 12) + '...'} (${app.relays.length} relay(s))`)
+    const id = app.appId || app.appKey.slice(0, 12) + '...'
+    console.log(`  - ${id} (from relay ${app.source.relayPubkey.slice(0, 12)})`)
   }
 }
 

@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { Relay } from '../../core/relay-node/relay.js'
+import { Relay } from 'p2p-hiverelay/core/relay-node/relay.js'
 import { EventEmitter } from 'events'
 
 function mockStream () {

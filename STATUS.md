@@ -51,7 +51,7 @@ Accepts a directory path — reads all files recursively, writes them to an encr
 - **Always-on availability** — close your laptop, your app is still live on 5 relays
 - **Blind/encrypted mode** — relay stores ciphertext only, content readable only by peers with the encryption key
 - **Gateway serving** — any seeded app accessible via HTTP at `relay:9100/v1/hyper/{driveKey}/path`
-- **20 service routes** via unified dispatch — AI inference, compute, storage, identity, schemas, SLAs
+- **20 service routes** via unified dispatch — AI inference, storage, identity, schemas, SLAs
 - **Real-time events** — SSE subscriptions for seeding, connections, health changes
 - **Cross-app interoperability** — schema registry for shared data formats
 - **NAT traversal** — circuit relay bridges NAT-blocked peers through encrypted tunnels
@@ -113,7 +113,6 @@ hiverelay manage             # Full interactive TUI
 | Service | Rate |
 |---------|------|
 | AI inference | 1 sat/1K input tokens, 2 sats/1K output tokens |
-| Compute jobs | 5 sats/job |
 | Storage write | 2 sats/write |
 | Storage read | 1 sat/read |
 | Identity ops | 1 sat/operation |
@@ -153,7 +152,6 @@ P2P service latency: **~260ms** avg across relay network. Service catalog and ap
 | Service | Routes | Status |
 |---------|--------|--------|
 | AI Inference | `ai.infer`, `ai.embed`, `ai.list-models`, `ai.status` | Fully operational with Ollama (tested: gemma4) |
-| Compute | `compute.submit`, `compute.status`, `compute.result` | Registered, JS sandbox ready |
 | Storage | `storage.drive-create`, `drive-list`, `drive-read`, `drive-write` | Fully operational |
 | Identity | `identity.whoami`, `identity.sign`, `identity.verify` | Fully operational |
 | Schema | `schema.register`, `schema.list`, `schema.validate` | Fully operational |
@@ -186,7 +184,6 @@ Honest accounting of gaps:
 | Area | Status | What's Missing |
 |------|--------|---------------|
 | AI embeddings | Inference works (Ollama/gemma4) | Embedding models not tested yet (gemma4 doesn't support them) |
-| Compute sandbox | JS `vm` handler ready | No container/WASM isolation for untrusted code |
 | Lightning payments | Invoice creation works | No LND/CLN backend connected for settlement |
 | ZK proofs | Service designed | Not implemented |
 | Token model | Economics documented | No token — intentionally deferred |

@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Doc may be partially out of date.** This file was written before the Compute removal, Core/Services split, and Catalog auto-sync removal. See [REFACTOR-NOTES.md](REFACTOR-NOTES.md) for current architecture.
+
 # Build Your First Always-On Pear App — in 10 Minutes
 
 This is the fastest path to publishing a P2P app that stays online when your

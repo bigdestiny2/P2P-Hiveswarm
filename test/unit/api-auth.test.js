@@ -103,7 +103,7 @@ let port = 0
 let node = null
 
 test('api-auth: setup server', async (t) => {
-  const { RelayAPI } = await import('../../core/relay-node/api.js')
+  const { RelayAPI } = await import('p2p-hiverelay/core/relay-node/api.js')
   node = mockRelayNode()
   // Use port 0 so the OS picks a free port
   api = new RelayAPI(node, { apiPort: 0, apiKey: API_KEY, apiHost: '127.0.0.1' })

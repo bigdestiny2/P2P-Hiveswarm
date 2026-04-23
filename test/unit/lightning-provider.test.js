@@ -1,6 +1,6 @@
 import test from 'brittle'
-import { MockProvider } from '../../incentive/payment/mock-provider.js'
-import { PaymentManager } from '../../incentive/payment/index.js'
+import { MockProvider } from 'p2p-hiverelay/incentive/payment/mock-provider.js'
+import { PaymentManager } from 'p2p-hiverelay/incentive/payment/index.js'
 
 // ─── MockProvider tests ────────────────────────────────────────────
 

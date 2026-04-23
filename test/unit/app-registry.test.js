@@ -1,5 +1,5 @@
 import test from 'brittle'
-import { AppRegistry } from '../../core/app-registry.js'
+import { AppRegistry } from 'p2p-hiverelay/core/app-registry.js'
 
 test('AppRegistry: catalog keeps drive entries while deduplicating apps by appId', (t) => {
   const registry = new AppRegistry(null)

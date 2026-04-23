@@ -262,15 +262,6 @@ input[type="number"]:focus{border-color:var(--cyan)}
       </div>
 
       <div class="input-group">
-        <label>Compute Jobs / Day</label>
-        <div class="input-row">
-          <input type="range" id="computeJobs" min="0" max="10000" value="50" step="10" oninput="onSlider(this,'computeJobsVal')">
-          <span class="slider-value" id="computeJobsVal">50</span>
-        </div>
-        <div class="hint">Sandboxed code execution jobs (avg 2s each)</div>
-      </div>
-
-      <div class="input-group">
         <label>Storage Writes / Day</label>
         <div class="input-row">
           <input type="range" id="storageWrites" min="0" max="50000" value="200" step="50" oninput="onSlider(this,'storageWritesVal')">
@@ -423,11 +414,11 @@ input[type="number"]:focus{border-color:var(--cyan)}
 <!-- Notes -->
 <div class="notes">
   <strong>How earnings work:</strong> Relay operators earn sats from every paid service call routed through their node.
-  AI inference, compute jobs, storage writes, and identity operations all generate revenue at the published rate card.
+  AI inference, storage writes, and identity operations all generate revenue at the published rate card.
   Free-tier calls (within monthly quotas) don't generate revenue, but attract apps that eventually exceed free limits.
   Revenue is settled via Lightning Network. Operators keep 100% of service fees on their own node.<br><br>
   <strong>Assumptions:</strong> Default rates from the HiveRelay pricing engine. ~40% of input tokens, ~60% output tokens per AI call.
-  Compute jobs average 2 seconds. Storage writes average 4KB. All estimates assume consistent daily traffic.
+  Storage writes average 4KB. All estimates assume consistent daily traffic.
   Actual earnings depend on app adoption, network effects, and your relay's uptime and reputation score.<br><br>
   <strong>Getting started:</strong> Run <code style="color:var(--cyan)">npx hiverelay start --mode public</code> on any VPS or home server.
   All services are free by default. Operators earn 1,000 welcome credits on startup. Apps earn 1,000 credits on first connect.
@@ -438,18 +429,17 @@ input[type="number"]:focus{border-color:var(--cyan)}
 var RATES = {
   ai: { perInputToken: 0.001, perOutputToken: 0.002, perCall: 1 },
   embed: { perInputToken: 0.0005, perCall: 0.5 },
-  compute: { perCall: 10, perMs: 0.001 },
   storageWrite: { perCall: 1, perKB: 0.01 },
   sign: { perCall: 1 }
 };
 
 /* ===== Presets ===== */
 var PRESETS = {
-  hobby: { apps:2, aiCalls:20, avgTokens:500, embedCalls:100, computeJobs:5, storageWrites:20, signCalls:10, margin:1.0, costServer:0, costElectricity:5, costBandwidth:0, costGpu:0 },
-  small: { apps:10, aiCalls:500, avgTokens:1000, embedCalls:2000, computeJobs:50, storageWrites:200, signCalls:100, margin:1.0, costServer:20, costElectricity:10, costBandwidth:0, costGpu:0 },
-  medium: { apps:50, aiCalls:5000, avgTokens:1500, embedCalls:20000, computeJobs:500, storageWrites:2000, signCalls:500, margin:1.0, costServer:80, costElectricity:30, costBandwidth:10, costGpu:50 },
-  large: { apps:200, aiCalls:25000, avgTokens:2000, embedCalls:100000, computeJobs:2000, storageWrites:10000, signCalls:2000, margin:1.0, costServer:200, costElectricity:80, costBandwidth:30, costGpu:200 },
-  enterprise: { apps:1000, aiCalls:100000, avgTokens:2500, embedCalls:200000, computeJobs:10000, storageWrites:50000, signCalls:10000, margin:0.8, costServer:500, costElectricity:200, costBandwidth:100, costGpu:800 }
+  hobby: { apps:2, aiCalls:20, avgTokens:500, embedCalls:100, storageWrites:20, signCalls:10, margin:1.0, costServer:0, costElectricity:5, costBandwidth:0, costGpu:0 },
+  small: { apps:10, aiCalls:500, avgTokens:1000, embedCalls:2000, storageWrites:200, signCalls:100, margin:1.0, costServer:20, costElectricity:10, costBandwidth:0, costGpu:0 },
+  medium: { apps:50, aiCalls:5000, avgTokens:1500, embedCalls:20000, storageWrites:2000, signCalls:500, margin:1.0, costServer:80, costElectricity:30, costBandwidth:10, costGpu:50 },
+  large: { apps:200, aiCalls:25000, avgTokens:2000, embedCalls:100000, storageWrites:10000, signCalls:2000, margin:1.0, costServer:200, costElectricity:80, costBandwidth:30, costGpu:200 },
+  enterprise: { apps:1000, aiCalls:100000, avgTokens:2500, embedCalls:200000, storageWrites:50000, signCalls:10000, margin:0.8, costServer:500, costElectricity:200, costBandwidth:100, costGpu:800 }
 };
 
 function applyPreset(name) {
@@ -462,7 +452,6 @@ function applyPreset(name) {
   setInput('aiCalls', p.aiCalls);
   setInput('avgTokens', p.avgTokens);
   setInput('embedCalls', p.embedCalls);
-  setInput('computeJobs', p.computeJobs);
   setInput('storageWrites', p.storageWrites);
   setInput('signCalls', p.signCalls);
   setInput('margin', p.margin);
@@ -476,7 +465,6 @@ function applyPreset(name) {
   document.getElementById('aiCallsVal').textContent = fmt(p.aiCalls);
   document.getElementById('avgTokensVal').textContent = fmt(p.avgTokens);
   document.getElementById('embedCallsVal').textContent = fmt(p.embedCalls);
-  document.getElementById('computeJobsVal').textContent = fmt(p.computeJobs);
   document.getElementById('storageWritesVal').textContent = fmt(p.storageWrites);
   document.getElementById('signCallsVal').textContent = fmt(p.signCalls);
   document.getElementById('marginVal').textContent = p.margin.toFixed(1) + 'x';
@@ -524,7 +512,6 @@ function recalculate() {
   var aiCalls = parseInt(document.getElementById('aiCalls').value) || 0;
   var avgTokens = parseInt(document.getElementById('avgTokens').value) || 1000;
   var embedCalls = parseInt(document.getElementById('embedCalls').value) || 0;
-  var computeJobs = parseInt(document.getElementById('computeJobs').value) || 0;
   var storageWrites = parseInt(document.getElementById('storageWrites').value) || 0;
   var signCalls = parseInt(document.getElementById('signCalls').value) || 0;
 
@@ -550,11 +537,6 @@ function recalculate() {
     (512 * RATES.embed.perInputToken) // avg 512 tokens per embed
   ) * margin;
 
-  var computeRevenue = computeJobs * (
-    RATES.compute.perCall +
-    (2000 * RATES.compute.perMs) // avg 2s per job
-  ) * margin;
-
   var storageRevenue = storageWrites * (
     RATES.storageWrite.perCall +
     (4 * RATES.storageWrite.perKB) // avg 4KB per write
@@ -562,7 +544,7 @@ function recalculate() {
 
   var signRevenue = signCalls * RATES.sign.perCall * margin;
 
-  var dailySats = aiRevenue + embedRevenue + computeRevenue + storageRevenue + signRevenue;
+  var dailySats = aiRevenue + embedRevenue + storageRevenue + signRevenue;
   var monthlySats = dailySats * 30;
   var yearlySats = dailySats * 365;
 
@@ -594,7 +576,6 @@ function recalculate() {
   var breakdown = [
     { name: 'AI Inference', detail: fmt(aiCalls) + ' calls/day', sats: aiRevenue, pct: dailySats > 0 ? aiRevenue / dailySats : 0 },
     { name: 'Embeddings', detail: fmt(embedCalls) + ' calls/day', sats: embedRevenue, pct: dailySats > 0 ? embedRevenue / dailySats : 0 },
-    { name: 'Compute Jobs', detail: fmt(computeJobs) + ' jobs/day', sats: computeRevenue, pct: dailySats > 0 ? computeRevenue / dailySats : 0 },
     { name: 'Storage Writes', detail: fmt(storageWrites) + ' writes/day', sats: storageRevenue, pct: dailySats > 0 ? storageRevenue / dailySats : 0 },
     { name: 'Identity Signs', detail: fmt(signCalls) + ' signs/day', sats: signRevenue, pct: dailySats > 0 ? signRevenue / dailySats : 0 }
   ];

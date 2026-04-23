@@ -1,7 +1,7 @@
 import test from 'brittle'
 import { createServer } from 'http'
 import { EventEmitter } from 'events'
-import { AlertManager } from '../../core/relay-node/alert-manager.js'
+import { AlertManager } from 'p2p-hiverelay/core/relay-node/alert-manager.js'
 
 function createMockNode () {
   const node = new EventEmitter()

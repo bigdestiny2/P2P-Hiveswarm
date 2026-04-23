@@ -1,10 +1,10 @@
 import test from 'brittle'
-import { CreditManager } from '../../incentive/credits/index.js'
-import { PricingEngine } from '../../incentive/credits/pricing.js'
-import { InvoiceManager } from '../../incentive/credits/invoice.js'
-import { MockProvider } from '../../incentive/payment/mock-provider.js'
-import { FreeTierManager } from '../../incentive/free-tier/index.js'
-import { ServiceMeter } from '../../incentive/metering/index.js'
+import { CreditManager } from 'p2p-hiverelay/incentive/credits/index.js'
+import { PricingEngine } from 'p2p-hiverelay/incentive/credits/pricing.js'
+import { InvoiceManager } from 'p2p-hiverelay/incentive/credits/invoice.js'
+import { MockProvider } from 'p2p-hiverelay/incentive/payment/mock-provider.js'
+import { FreeTierManager } from 'p2p-hiverelay/incentive/free-tier/index.js'
+import { ServiceMeter } from 'p2p-hiverelay/incentive/metering/index.js'
 
 // ──────────────────────────────────────────────
 // CreditManager Tests
@@ -327,24 +327,6 @@ test('PricingEngine — embeddings pricing', async (t) => {
   t.is(result.cost, 2)
 })
 
-test('PricingEngine — compute with duration pricing', async (t) => {
-  const pe = new PricingEngine()
-
-  // 3 second compute job
-  const result = pe.calculate('compute.submit', { durationMs: 3000 })
-  // base: 10 sats + duration: 3000 * 0.001 = 3 sats = 13 sats
-  t.is(result.cost, 13)
-})
-
-test('PricingEngine — compute max charge cap', async (t) => {
-  const pe = new PricingEngine()
-
-  // Very long compute job — should be capped
-  const result = pe.calculate('compute.submit', { durationMs: 2_000_000 })
-  t.is(result.cost, 1000) // maxCharge cap
-  t.is(result.breakdown.capped, true)
-})
-
 test('PricingEngine — storage write with bytes', async (t) => {
   const pe = new PricingEngine()
 
@@ -367,7 +349,6 @@ test('PricingEngine — rate card returns all routes', async (t) => {
   const card = pe.getRateCard()
   t.ok(card['ai.infer'])
   t.ok(card['ai.embed'])
-  t.ok(card['compute.submit'])
   t.ok(card['storage.drive-write'])
   t.ok(card['identity.sign'])
 })
