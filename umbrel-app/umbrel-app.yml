@@ -1,6 +1,6 @@
 manifestVersion: 1
 id: blindspark
-category: lightning
+category: bitcoin
 name: Blindspark
 version: "0.6.0"
 tagline: Earn sats for blind seeding P2P apps
