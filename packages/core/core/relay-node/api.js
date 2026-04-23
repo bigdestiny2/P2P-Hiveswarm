@@ -85,6 +85,7 @@ export class RelayAPI extends EventEmitter {
     this._dashboardHtml = null
     this._networkHtml = null
     this._docsHtml = null
+    this._wizardHtml = null
     this._dashboardFeed = null
     this._wizard = null // lazily constructed by _getWizard() on first /api/wizard hit
     this._gateway = new HyperGateway(relayNode, { store: relayNode.store })
@@ -372,6 +373,31 @@ export class RelayAPI extends EventEmitter {
 
         if (path === '/dashboard') {
           return this._serveDashboard(res, '_dashboardHtml', 'index.html')
+        }
+
+        // First-run setup wizard UI. Localhost-only because the form
+        // collects secrets (LNbits admin key); the JSON endpoints
+        // /api/wizard/* enforce the same restriction.
+        if (path === '/wizard') {
+          if (!this._isLocalRequest(req)) {
+            res.setHeader('Content-Type', 'text/plain')
+            res.writeHead(403)
+            res.end('Wizard is localhost-only.\n')
+            return
+          }
+          return this._serveDashboard(res, '_wizardHtml', 'wizard.html')
+        }
+
+        // Smart root route: send freshly-installed users to the wizard,
+        // returning operators to the dashboard. Uses HTTP 302 so browser
+        // refreshes don't get cached.
+        if (path === '/') {
+          const wizard = await this._getWizard()
+          const target = wizard.isComplete() ? '/dashboard' : '/wizard'
+          res.setHeader('Location', target)
+          res.writeHead(302)
+          res.end()
+          return
         }
 
         if (path === '/network') {

@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blindspark — Setup</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 10 L30 55 L45 55 L40 90 L70 45 L55 45 Z' fill='%23f5a623'/%3E%3C/svg%3E">
+<style>
+  *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0 }
+  :root {
+    --bg: #1a1a2e;
+    --bg-elev: #16213e;
+    --border: #1e2d50;
+    --border-hi: #2d4570;
+    --text: #e0e0e0;
+    --text-dim: #7a8ba0;
+    --text-hi: #ffffff;
+    --accent: #f5a623;       /* Blindspark orange — the "spark" */
+    --accent-dim: #b8771a;
+    --good: #4ade80;
+    --bad: #f87171;
+    --mono: 'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+    --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  html { font-size: 16px }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1rem;
+    line-height: 1.5;
+  }
+
+  /* Top bar — minimal header with logo + progress dots */
+  .top {
+    width: 100%;
+    max-width: 720px;
+    margin-bottom: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 0;
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    text-decoration: none;
+    color: var(--text-hi);
+    font-weight: 600;
+    font-size: 1.05rem;
+  }
+  .logo svg { width: 24px; height: 24px }
+  .progress {
+    display: flex;
+    gap: .35rem;
+    align-items: center;
+  }
+  .progress .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background .2s;
+  }
+  .progress .dot.active { background: var(--accent) }
+  .progress .dot.done { background: var(--accent-dim) }
+  .progress-label {
+    font-family: var(--mono);
+    font-size: .75rem;
+    color: var(--text-dim);
+    margin-left: .5rem;
+  }
+
+  /* Card — main content container */
+  .card {
+    width: 100%;
+    max-width: 560px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2.5rem 2rem;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  }
+  @media (max-width: 600px) {
+    .card { padding: 1.75rem 1.25rem }
+  }
+
+  h1 {
+    font-size: 1.8rem;
+    font-weight: 600;
+    color: var(--text-hi);
+    margin-bottom: .6rem;
+    letter-spacing: -.01em;
+  }
+  h2 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--text-hi);
+    margin-bottom: .5rem;
+  }
+  .lead {
+    font-size: 1rem;
+    color: var(--text-dim);
+    margin-bottom: 2rem;
+  }
+  p {
+    margin-bottom: 1rem;
+    color: var(--text);
+  }
+  p.small {
+    font-size: .85rem;
+    color: var(--text-dim);
+  }
+
+  /* Form elements */
+  label {
+    display: block;
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: .4rem;
+  }
+  input[type="text"],
+  input[type="password"] {
+    display: block;
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text-hi);
+    font-family: var(--sans);
+    font-size: 1rem;
+    padding: .75rem .9rem;
+    border-radius: 8px;
+    transition: border-color .15s;
+  }
+  input[type="text"]:focus,
+  input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .field-help {
+    font-size: .8rem;
+    color: var(--text-dim);
+    margin-top: .4rem;
+  }
+  .field { margin-bottom: 1.5rem }
+
+  /* Buttons */
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 2rem;
+  }
+  button {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    font-family: var(--sans);
+    font-size: 1rem;
+    font-weight: 600;
+    padding: .75rem 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  button:hover { background: #ffb73a }
+  button:active { transform: translateY(1px) }
+  button:disabled {
+    background: var(--border-hi);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--text-dim);
+    padding: .5rem 0;
+  }
+  button.secondary:hover {
+    background: transparent;
+    color: var(--text-hi);
+  }
+
+  /* Status indicators */
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    font-family: var(--mono);
+    font-size: .85rem;
+    padding: .3rem .7rem;
+    border-radius: 999px;
+    margin-bottom: 1rem;
+  }
+  .status .ind {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status.good { background: rgba(74,222,128,.12); color: var(--good) }
+  .status.good .ind { background: var(--good); box-shadow: 0 0 8px var(--good) }
+  .status.bad { background: rgba(248,113,113,.12); color: var(--bad) }
+  .status.bad .ind { background: var(--bad) }
+  .status.dim { background: rgba(122,139,160,.1); color: var(--text-dim) }
+  .status.dim .ind { background: var(--text-dim) }
+
+  /* Choice cards (for accept-mode step) */
+  .choices { display: grid; gap: .75rem; margin-bottom: 1rem }
+  .choice {
+    background: var(--bg);
+    border: 1.5px solid var(--border-hi);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    text-align: left;
+    width: 100%;
+    color: var(--text);
+    font-family: var(--sans);
+  }
+  .choice:hover { border-color: var(--accent-dim); background: #1d2747 }
+  .choice.selected {
+    border-color: var(--accent);
+    background: #1d2747;
+  }
+  .choice-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-hi);
+    margin-bottom: .25rem;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+  }
+  .choice-title .recommended {
+    font-size: .65rem;
+    background: var(--accent);
+    color: #000;
+    padding: .15rem .5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    font-weight: 700;
+  }
+  .choice-desc {
+    font-size: .85rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  /* Error message */
+  .error {
+    background: rgba(248,113,113,.1);
+    border: 1px solid rgba(248,113,113,.3);
+    color: var(--bad);
+    padding: .75rem 1rem;
+    border-radius: 8px;
+    font-size: .9rem;
+    margin-top: 1rem;
+  }
+  .error:empty { display: none }
+
+  /* Honesty box — explicit "this is new, manage expectations" */
+  .honesty {
+    margin-top: 1rem;
+    padding: .85rem 1rem;
+    background: rgba(245,166,35,.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    font-size: .85rem;
+    color: var(--text);
+  }
+  .honesty strong { color: var(--text-hi); font-weight: 600 }
+
+  /* Complete-step celebration */
+  .complete-icon {
+    text-align: center;
+    margin-bottom: 1rem;
+    font-size: 4rem;
+    line-height: 1;
+  }
+  .complete-stat {
+    text-align: center;
+    margin: 1.5rem 0;
+    font-family: var(--mono);
+    font-size: 2rem;
+    color: var(--accent);
+  }
+  .complete-stat-label {
+    text-align: center;
+    font-size: .85rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+
+  /* Loading state */
+  .loading {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--text-dim);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: middle;
+    margin-right: .5rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg) } }
+
+  /* Step transitions — fade between */
+  .step { display: none }
+  .step.active { display: block; animation: fadein .25s ease-out }
+  @keyframes fadein {
+    from { opacity: 0; transform: translateY(4px) }
+    to   { opacity: 1; transform: translateY(0) }
+  }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <a class="logo" href="#" onclick="return false">
+    <svg viewBox="0 0 100 100" aria-hidden="true">
+      <path d="M50 10 L30 55 L45 55 L40 90 L70 45 L55 45 Z" fill="#f5a623"/>
+    </svg>
+    Blindspark
+  </a>
+  <div class="progress" id="progress">
+    <div class="dot active"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <span class="progress-label" id="progress-label">Step 1 of 5</span>
+  </div>
+</div>
+
+<div class="card">
+
+  <!-- Step 1: Welcome -->
+  <section class="step active" data-step="welcome">
+    <h1>Welcome to Blindspark.</h1>
+    <p class="lead">Earn sats for blind seeding P2P apps.</p>
+    <p>
+      Your Umbrel is about to become a paid relay for the Pear/Holepunch
+      app ecosystem. You'll host encrypted Hyperdrives — content the
+      relay can't read but can verify and serve — so apps stay reachable
+      while their users are offline.
+    </p>
+    <p>
+      Setup takes about 10 minutes. We'll name your relay, connect it
+      to your LNbits wallet, and pick a default policy for incoming
+      requests. You can change everything later.
+    </p>
+    <div class="honesty">
+      <strong>Honest expectations:</strong> Blindspark is a new
+      network. Early relays may earn very little while the demand-side
+      market is being built. The pitch is "you already paid for the
+      box; this is the switch to make it earn."
+    </div>
+    <div class="actions">
+      <span></span>
+      <button onclick="goNext('relay_name')">Let's go →</button>
+    </div>
+  </section>
+
+  <!-- Step 2: Name -->
+  <section class="step" data-step="relay_name">
+    <h2>Name your relay</h2>
+    <p class="lead">This is what other operators see in the network.</p>
+    <div class="field">
+      <label for="relay-name-input">Relay name</label>
+      <input type="text" id="relay-name-input" maxlength="60" placeholder="e.g. tokyo-anchor-01">
+      <div class="field-help">Up to 60 characters. You can change this later from the dashboard.</div>
+    </div>
+    <div class="error" id="err-relay-name"></div>
+    <div class="actions">
+      <button class="secondary" onclick="goNext('welcome')">← Back</button>
+      <button id="btn-relay-name" onclick="submitRelayName()">Continue</button>
+    </div>
+  </section>
+
+  <!-- Step 3: LNbits -->
+  <section class="step" data-step="lnbits_connect">
+    <h2>Connect LNbits</h2>
+    <p class="lead">Where your earnings land.</p>
+    <div id="lnbits-status" class="status dim">
+      <span class="ind"></span>
+      <span id="lnbits-status-text">Checking for LNbits…</span>
+    </div>
+    <div class="field">
+      <label for="lnbits-key-input">LNbits admin key</label>
+      <input type="password" id="lnbits-key-input" placeholder="paste your admin key here" autocomplete="off">
+      <div class="field-help">
+        Open your LNbits app, click the wallet, then "API Info" — the
+        admin key is the long string at the top.
+      </div>
+    </div>
+    <div class="error" id="err-lnbits"></div>
+    <div class="actions">
+      <button class="secondary" onclick="goNext('relay_name')">← Back</button>
+      <button id="btn-lnbits" onclick="submitLNbits()">Continue</button>
+    </div>
+  </section>
+
+  <!-- Step 4: Accept mode -->
+  <section class="step" data-step="accept_mode">
+    <h2>Choose your default policy</h2>
+    <p class="lead">How should the relay handle incoming seed requests?</p>
+    <div class="choices">
+      <button class="choice" data-mode="review" onclick="selectMode('review')">
+        <div class="choice-title">
+          Review
+          <span class="recommended">recommended</span>
+        </div>
+        <div class="choice-desc">
+          You see every incoming seed request and approve it manually.
+          The safe default while you learn how the network behaves.
+        </div>
+      </button>
+      <button class="choice" data-mode="allowlist" onclick="selectMode('allowlist')">
+        <div class="choice-title">Allowlist</div>
+        <div class="choice-desc">
+          Auto-accept requests from publishers you've explicitly trusted.
+          Add publishers from the dashboard after install.
+        </div>
+      </button>
+      <button class="choice" data-mode="open" onclick="selectMode('open')">
+        <div class="choice-title">Open</div>
+        <div class="choice-desc">
+          Auto-accept any signed request. Pair with payment-required
+          to filter for paying customers only. Most permissive.
+        </div>
+      </button>
+    </div>
+    <div class="error" id="err-accept-mode"></div>
+    <div class="actions">
+      <button class="secondary" onclick="goNext('lnbits_connect')">← Back</button>
+      <button id="btn-accept-mode" onclick="submitAcceptMode()" disabled>Continue</button>
+    </div>
+  </section>
+
+  <!-- Step 5: Complete -->
+  <section class="step" data-step="complete">
+    <div class="complete-icon">⚡</div>
+    <h1 style="text-align:center">You're online.</h1>
+    <p class="lead" style="text-align:center">
+      Your relay is now discoverable on the Blindspark network.
+    </p>
+    <div class="complete-stat">0 sats</div>
+    <div class="complete-stat-label">earned this month</div>
+    <p style="text-align:center; margin-top: 1.5rem;">
+      Earnings will appear here as the network discovers and uses your
+      relay. Don't expect overnight numbers — be patient with the early
+      phase.
+    </p>
+    <div class="actions" style="justify-content:center">
+      <button onclick="goToDashboard()">Open dashboard →</button>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // ─── State ───────────────────────────────────────────────────
+  // The wizard mirrors the server-side state machine. The server is
+  // the source of truth; we sync via /api/wizard on every navigation.
+  // This keeps reload/refresh safe — close the tab mid-wizard and
+  // reopen and you pick up where you left off.
+
+  const STEPS = ['welcome', 'relay_name', 'lnbits_connect', 'accept_mode', 'complete']
+  let state = null
+  let selectedMode = null
+
+  // ─── API helpers ────────────────────────────────────────────
+
+  async function api (path, opts = {}) {
+    const res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    })
+    let data = null
+    try { data = await res.json() } catch (_) {}
+    if (!res.ok) {
+      const msg = (data && data.error) || ('HTTP ' + res.status)
+      throw new Error(msg)
+    }
+    return data
+  }
+
+  async function loadState () {
+    state = await api('/api/wizard')
+    return state
+  }
+
+  // ─── Step rendering ─────────────────────────────────────────
+
+  function showStep (step) {
+    document.querySelectorAll('.step').forEach(el => {
+      el.classList.toggle('active', el.dataset.step === step)
+    })
+    const idx = STEPS.indexOf(step)
+    document.querySelectorAll('#progress .dot').forEach((dot, i) => {
+      dot.classList.toggle('active', i === idx)
+      dot.classList.toggle('done', i < idx)
+    })
+    document.getElementById('progress-label').textContent =
+      'Step ' + (idx + 1) + ' of ' + STEPS.length
+    if (state) hydrateStep(step)
+  }
+
+  function hydrateStep (step) {
+    if (step === 'relay_name') {
+      const input = document.getElementById('relay-name-input')
+      if (!input.value) input.value = state.relayName || ''
+      input.focus()
+    } else if (step === 'lnbits_connect') {
+      probeLNbits()
+      if (state.lnbits.connected) {
+        document.getElementById('lnbits-key-input').placeholder = '(connected — paste again to change)'
+      }
+    } else if (step === 'accept_mode') {
+      selectMode(state.acceptMode || 'review')
+    }
+  }
+
+  async function goNext (step) {
+    clearErrors()
+    try {
+      await api('/api/wizard/goto', { method: 'POST', body: { step } })
+      await loadState()
+      showStep(step)
+    } catch (err) {
+      console.error('Could not navigate:', err)
+    }
+  }
+
+  // ─── Step 2 — relay name ────────────────────────────────────
+
+  async function submitRelayName () {
+    const input = document.getElementById('relay-name-input')
+    const name = input.value.trim()
+    if (!name) {
+      showError('err-relay-name', 'Pick a name (or accept the default).')
+      return
+    }
+    setBusy('btn-relay-name', true)
+    try {
+      await api('/api/wizard/relay-name', { method: 'POST', body: { relayName: name } })
+      await goNext('lnbits_connect')
+    } catch (err) {
+      showError('err-relay-name', err.message)
+    } finally {
+      setBusy('btn-relay-name', false)
+    }
+  }
+
+  // ─── Step 3 — LNbits ────────────────────────────────────────
+
+  async function probeLNbits () {
+    // The status indicator is best-effort — we can't actually test the
+    // LNbits URL from here without the admin key, but we can at least
+    // show whether the wizard knows about LNbits at all.
+    const el = document.getElementById('lnbits-status')
+    const txt = document.getElementById('lnbits-status-text')
+    if (state && state.lnbits && state.lnbits.url) {
+      el.className = 'status good'
+      txt.textContent = 'LNbits detected at ' + state.lnbits.url
+    } else {
+      el.className = 'status bad'
+      txt.textContent = 'LNbits not configured — please install it from the App Store first'
+    }
+  }
+
+  async function submitLNbits () {
+    clearErrors()
+    const adminKey = document.getElementById('lnbits-key-input').value.trim()
+    if (!adminKey) {
+      showError('err-lnbits', 'Paste your LNbits admin key to continue.')
+      return
+    }
+    setBusy('btn-lnbits', true)
+    try {
+      await api('/api/wizard/lnbits', { method: 'POST', body: { adminKey } })
+      await goNext('accept_mode')
+    } catch (err) {
+      showError('err-lnbits', err.message)
+    } finally {
+      setBusy('btn-lnbits', false)
+    }
+  }
+
+  // ─── Step 4 — accept mode ──────────────────────────────────
+
+  function selectMode (mode) {
+    selectedMode = mode
+    document.querySelectorAll('.choice').forEach(el => {
+      el.classList.toggle('selected', el.dataset.mode === mode)
+    })
+    document.getElementById('btn-accept-mode').disabled = false
+  }
+
+  async function submitAcceptMode () {
+    if (!selectedMode) {
+      showError('err-accept-mode', 'Pick one of the three policies.')
+      return
+    }
+    setBusy('btn-accept-mode', true)
+    try {
+      await api('/api/wizard/accept-mode', { method: 'POST', body: { acceptMode: selectedMode } })
+      // Final step — POST /complete tells the server to apply the
+      // wizard answers to the live config and mark the wizard done.
+      await api('/api/wizard/complete', { method: 'POST', body: {} })
+      await loadState()
+      showStep('complete')
+    } catch (err) {
+      showError('err-accept-mode', err.message)
+    } finally {
+      setBusy('btn-accept-mode', false)
+    }
+  }
+
+  // ─── Step 5 — done ──────────────────────────────────────────
+
+  function goToDashboard () {
+    window.location.href = '/dashboard'
+  }
+
+  // ─── Utility ────────────────────────────────────────────────
+
+  function showError (id, msg) {
+    const el = document.getElementById(id)
+    if (el) el.textContent = msg
+  }
+
+  function clearErrors () {
+    document.querySelectorAll('.error').forEach(el => { el.textContent = '' })
+  }
+
+  function setBusy (btnId, busy) {
+    const btn = document.getElementById(btnId)
+    if (!btn) return
+    btn.disabled = busy
+    if (busy) {
+      btn.dataset.label = btn.textContent
+      btn.innerHTML = '<span class="loading"></span>Working…'
+    } else if (btn.dataset.label) {
+      btn.textContent = btn.dataset.label
+    }
+  }
+
+  // ─── Bootstrap ──────────────────────────────────────────────
+
+  // On page load: fetch current state from server and resume at the
+  // right step. If wizard is already complete, redirect to dashboard
+  // — this prevents accidental re-runs.
+
+  loadState().then(s => {
+    if (s.isComplete) {
+      window.location.href = '/dashboard'
+      return
+    }
+    showStep(s.step || 'welcome')
+  }).catch(err => {
+    document.querySelector('.card').innerHTML =
+      '<h2>Couldn\'t load setup</h2>' +
+      '<p>The wizard endpoint returned an error: ' +
+      '<code>' + (err.message || 'unknown') + '</code></p>' +
+      '<p class="small">If you\'re not on the same machine as the relay, the wizard is locked to localhost for security. ' +
+      'Open this URL from the Umbrel device itself.</p>'
+  })
+</script>
+
+</body>
+</html>
