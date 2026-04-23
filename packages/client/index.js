@@ -38,6 +38,8 @@ import sodium from 'sodium-universal'
 import hypercoreCrypto from 'hypercore-crypto'
 import { createRevocation } from 'p2p-hiverelay/core/delegation.js'
 import { createSeedingManifest, verifySeedingManifest } from 'p2p-hiverelay/core/seeding-manifest.js'
+import { selectQuorum, describeQuorum } from 'p2p-hiverelay/core/quorum-selector.js'
+import { ForkDetector } from 'p2p-hiverelay/core/fork-detector.js'
 import { EventEmitter } from 'events'
 import { readdir, readFile, writeFile, lstat, mkdir, rename } from 'fs/promises'
 import { join, relative, resolve, dirname } from 'path'
@@ -133,6 +135,28 @@ export class HiveRelayClient extends EventEmitter {
       maxDelay: 3_600_000, // 1h
       maxAttempts: 50
     }
+
+    // ─── Quorum + fork-detection state (v0.6.0 security additions) ───
+    //
+    // Implements docs/THREAT-MODEL.md defense mechanisms #1 (replica
+    // diversity) and #2 (fork detection). All state below is additive;
+    // legacy code paths that don't call queryQuorum() / open() with the
+    // new options keep working unchanged.
+    //
+    // Capability cache stores the last-fetched capability doc per relay
+    // URL with a TTL — keeps quorum selection fast without repeated
+    // network round-trips. Values: { doc, fetchedAt }
+    this._capabilityCache = new Map()
+    this._capabilityCacheTtl = config.capabilityCacheTtl || 5 * 60 * 1000
+    // Foundation pubkeys — when supplied, the 'foundation' quorum
+    // strategy uses this list as its trusted floor. Operators of-last-
+    // resort live here. See docs/OPERATOR-INCENTIVES-Y1.md.
+    this._foundationPubkeys = Array.isArray(config.foundationPubkeys)
+      ? config.foundationPubkeys.map(s => String(s).toLowerCase())
+      : []
+    // ForkDetector is loaded lazily on start() so the class is usable
+    // in test environments that don't call start().
+    this.forkDetector = null
   }
 
   /**
@@ -209,6 +233,25 @@ export class HiveRelayClient extends EventEmitter {
     // Load persistent seed retry queue and schedule retries
     await this._loadPendingSeeds()
     this._schedulePendingSeeds()
+
+    // ─── ForkDetector — load any persisted equivocation evidence ────
+    // Storage path may be null in advanced-mode (caller-supplied
+    // store with no `storage` config); in that case the detector runs
+    // in-memory only and forgets across restarts. Operators who care
+    // about persistence will configure a storage path.
+    if (this._storagePath) {
+      this.forkDetector = new ForkDetector({
+        storagePath: join(this._storagePath, 'forks.json')
+      })
+      try { await this.forkDetector.load() } catch (err) {
+        this.emit('fork-detector-error', { context: 'load', error: err })
+      }
+      // Re-emit fork events on the client so applications can react.
+      this.forkDetector.on('fork-detected', (info) => this.emit('fork-detected', info))
+      this.forkDetector.on('fork-resolved', (info) => this.emit('fork-resolved', info))
+    } else {
+      this.forkDetector = new ForkDetector({})
+    }
 
     this.emit('ready')
     this.emit('started')
@@ -358,6 +401,23 @@ export class HiveRelayClient extends EventEmitter {
 
     const keyBuf = typeof key === 'string' ? b4a.from(key, 'hex') : key
     const keyHex = b4a.toString(keyBuf, 'hex')
+
+    // Quarantine check (v0.6.0 security): if the ForkDetector has
+    // recorded an unresolved fork for this drive, refuse to open it
+    // unless the caller explicitly passes { force: true }. Forks are
+    // cryptographic equivocation evidence — opening a forked drive
+    // means committing to ONE of the two divergent histories without
+    // knowing which is canonical. Operators must resolve the fork
+    // first (rotate keys / revoke / mark false-alarm).
+    if (!opts.force && this.isDriveQuarantined(keyHex)) {
+      const err = new Error(
+        'Drive ' + keyHex + ' is quarantined: an unresolved fork is on record. ' +
+        'Pass { force: true } to open anyway, or call client.forkDetector.resolve() first.'
+      )
+      err.code = 'DRIVE_QUARANTINED'
+      err.driveKey = keyHex
+      throw err
+    }
 
     if (this.drives.has(keyHex)) {
       return this.drives.get(keyHex)
@@ -1694,6 +1754,194 @@ export class HiveRelayClient extends EventEmitter {
     return res.body
   }
 
+  // ─── Quorum + fork-detection (v0.6.0 security additions) ──────────
+  //
+  // Implements docs/THREAT-MODEL.md defenses #1 (replica diversity) and
+  // #2 (fork detection). All methods below are additive — apps that
+  // don't call them keep working unchanged. Apps that do gain
+  // structurally smaller attack surfaces against eclipse, withholding,
+  // and silent equivocation.
+
+  /**
+   * Refresh the local capability-doc cache for a list of relays. Honors
+   * a TTL so successive calls within the cache window are cheap.
+   *
+   * @param {string[]} relayUrls
+   * @param {object} [opts]
+   * @param {boolean} [opts.force=false]  bypass TTL
+   * @returns {Promise<object[]>}  array of RelayInfo records
+   */
+  async refreshCapabilityCache (relayUrls, opts = {}) {
+    if (!Array.isArray(relayUrls)) throw new Error('refreshCapabilityCache: relayUrls must be an array')
+    const now = Date.now()
+    const force = !!opts.force
+
+    const results = []
+    for (const url of relayUrls) {
+      const cached = this._capabilityCache.get(url)
+      if (!force && cached && (now - cached.fetchedAt) < this._capabilityCacheTtl) {
+        results.push({ url, ...cached.relayInfo })
+        continue
+      }
+      try {
+        const doc = await this.fetchCapabilities(url)
+        const relayInfo = capabilityDocToRelayInfo(url, doc)
+        this._capabilityCache.set(url, { relayInfo, fetchedAt: now })
+        results.push({ url, ...relayInfo })
+      } catch (err) {
+        // Don't throw — partial success matters for quorum selection.
+        // The unreachable relay simply doesn't appear in the candidate
+        // pool until next refresh.
+        this.emit('capability-fetch-error', { url, error: err })
+      }
+    }
+    return results
+  }
+
+  /**
+   * Select a quorum from the cached capability docs.
+   *
+   * @param {object} [opts] — same shape as quorum-selector.selectQuorum
+   * @returns {Array}  selected RelayInfo records (with `.diversityWarning` if applicable)
+   */
+  selectQuorum (opts = {}) {
+    const candidates = []
+    for (const [url, entry] of this._capabilityCache) {
+      candidates.push({ url, ...entry.relayInfo })
+    }
+    const merged = {
+      foundationPubkeys: this._foundationPubkeys,
+      ...opts
+    }
+    const selected = selectQuorum(candidates, merged)
+    if (selected.diversityWarning) {
+      this.emit('quorum-warning', selected.diversityWarning)
+    }
+    return selected
+  }
+
+  /**
+   * Convenience helper — describe the current quorum (size, regions,
+   * operators, warning). Useful for UIs that want to show "you're
+   * reading from N relays across M regions."
+   */
+  describeQuorum (selected) {
+    return describeQuorum(selected)
+  }
+
+  /**
+   * Issue an HTTP query to every relay in a quorum, in parallel.
+   * Returns ALL responses (including failures) so the caller can do
+   * its own comparison. Used by queryQuorumWithComparison() — most
+   * apps will want that helper instead.
+   *
+   * @param {string} relativePath  path like '/catalog.json' or '/api/info'
+   * @param {Array}  quorum        result of selectQuorum()
+   * @param {object} [opts]
+   * @param {number} [opts.timeoutMs=10000]
+   * @returns {Promise<Array<{relay: string, ok: boolean, body?: any, error?: string}>>}
+   */
+  async queryQuorum (relativePath, quorum, opts = {}) {
+    if (typeof relativePath !== 'string' || !relativePath.startsWith('/')) {
+      throw new Error('queryQuorum: relativePath must start with /')
+    }
+    if (!Array.isArray(quorum) || quorum.length === 0) {
+      throw new Error('queryQuorum: quorum must be a non-empty array')
+    }
+    const timeoutMs = opts.timeoutMs || 10_000
+    return Promise.all(quorum.map(async (relay) => {
+      if (!relay || !relay.url) return { relay: relay?.pubkey || '?', ok: false, error: 'no relay URL in quorum entry' }
+      const url = relay.url.replace(/\/+$/, '') + relativePath
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+        const res = await globalThis.fetch(url, { signal: controller.signal })
+        clearTimeout(timer)
+        const text = await res.text().catch(() => '')
+        let body = null
+        try { body = text ? JSON.parse(text) : null } catch (_) { /* leave null */ }
+        return { relay: relay.pubkey || relay.url, ok: res.ok, status: res.status, body }
+      } catch (err) {
+        return { relay: relay.pubkey || relay.url, ok: false, error: err.message }
+      }
+    }))
+  }
+
+  /**
+   * Query a quorum AND compare responses for divergence. If responses
+   * disagree on a value the caller declares "should be invariant"
+   * (via opts.compareFields), report the divergence to ForkDetector
+   * and emit a warning event.
+   *
+   * Returns { responses, agreed, divergent } so callers can decide how
+   * to handle disagreement (fall back to majority, refuse to act,
+   * surface to user, etc.).
+   *
+   * @param {string} relativePath
+   * @param {Array}  quorum
+   * @param {object} [opts]
+   * @param {string[]} [opts.compareFields=[]]  fields that must agree across responses
+   * @param {string} [opts.driveKey]            if comparing a specific drive, the hex key (used in fork records)
+   */
+  async queryQuorumWithComparison (relativePath, quorum, opts = {}) {
+    const responses = await this.queryQuorum(relativePath, quorum, opts)
+    const compareFields = opts.compareFields || []
+    const okResponses = responses.filter(r => r.ok && r.body)
+    if (okResponses.length < 2 || compareFields.length === 0) {
+      return { responses, agreed: okResponses, divergent: [] }
+    }
+    const reference = okResponses[0]
+    const divergent = []
+    for (let i = 1; i < okResponses.length; i++) {
+      const cmp = okResponses[i]
+      const diffFields = compareFields.filter(f => reference.body?.[f] !== cmp.body?.[f])
+      if (diffFields.length > 0) {
+        divergent.push({
+          relayA: reference.relay,
+          relayB: cmp.relay,
+          fields: diffFields,
+          valuesA: Object.fromEntries(diffFields.map(f => [f, reference.body[f]])),
+          valuesB: Object.fromEntries(diffFields.map(f => [f, cmp.body[f]]))
+        })
+      }
+    }
+    if (divergent.length > 0) {
+      this.emit('quorum-divergence', { path: relativePath, divergent })
+      // Optional: record as fork evidence if the caller passed a driveKey
+      // and the comparison divergence is at the drive level (length /
+      // version differences are equivocation candidates).
+      if (opts.driveKey && this.forkDetector) {
+        for (const d of divergent) {
+          // Best-effort: encode the divergent values as evidence
+          // payloads. A future revision should pull the actual signed
+          // hypercore blocks; for now this captures the metadata so
+          // the operator has something to investigate.
+          this.forkDetector.report({
+            hypercoreKey: opts.driveKey.toLowerCase(),
+            blockIndex: 0,
+            evidenceA: { fromRelay: d.relayA, block: JSON.stringify(d.valuesA), signature: 'metadata-only-' + d.relayA },
+            evidenceB: { fromRelay: d.relayB, block: JSON.stringify(d.valuesB), signature: 'metadata-only-' + d.relayB }
+          })
+        }
+      }
+    }
+    return { responses, agreed: okResponses, divergent }
+  }
+
+  /**
+   * Returns true if the ForkDetector has an unresolved fork on record
+   * for this drive key. Quarantined drives should not be opened or
+   * trusted until the operator resolves the fork.
+   *
+   * @param {string|Buffer} driveKey
+   * @returns {boolean}
+   */
+  isDriveQuarantined (driveKey) {
+    if (!this.forkDetector) return false
+    const hex = typeof driveKey === 'string' ? driveKey : b4a.toString(driveKey, 'hex')
+    return this.forkDetector.isQuarantined(hex)
+  }
+
   // ─── Pairing-over-swarm (multi-device, no QR) ──────────────────────
   //
   // The friction point of exportIdentity/importIdentity is "now go copy
@@ -2265,6 +2513,17 @@ export class HiveRelayClient extends EventEmitter {
     // Flush queue to disk before teardown
     try { await this._savePendingSeeds() } catch (_) {}
 
+    // Persist any in-memory fork records before tearing down. Fork
+    // evidence is too valuable to lose on shutdown — operators may
+    // not see the alert until the next session.
+    if (this.forkDetector) {
+      try { await this.forkDetector.save() } catch (_) {}
+      this.forkDetector.removeAllListeners()
+      this.forkDetector = null
+    }
+    // Capability cache is an in-memory optimization; nothing to persist.
+    this._capabilityCache.clear()
+
     // Remove swarm connection listener (important for shared swarms)
     if (this._connectionHandler && this.swarm) {
       this.swarm.removeListener('connection', this._connectionHandler)
@@ -2350,4 +2609,30 @@ async function _fetchJson (url, opts = {}) {
     body = null
   }
   return { ok: response.ok, status: response.status, body }
+}
+
+/**
+ * Adapt a capability document (per docs/v0.5.1-CAPABILITIES.md) into
+ * the RelayInfo shape that the QuorumSelector expects. The selector
+ * only uses pubkey + region + operator + features; other fields are
+ * ignored at selection time but preserved on the cache entry for any
+ * caller that wants to inspect them.
+ */
+function capabilityDocToRelayInfo (url, doc) {
+  if (!doc || typeof doc !== 'object') {
+    return { url, pubkey: '', features: [] }
+  }
+  return {
+    url,
+    pubkey: typeof doc.pubkey === 'string' ? doc.pubkey : '',
+    region: typeof doc.region === 'string' ? doc.region : null,
+    // If the capability doc declares a separate operator pubkey (for
+    // multi-relay operators), prefer it; otherwise the relay pubkey
+    // is its own operator identity.
+    operator: typeof doc.operator === 'string' ? doc.operator : doc.pubkey,
+    features: Array.isArray(doc.features) ? doc.features : [],
+    // Optional ranking signals — selectors can use these if present.
+    score: typeof doc.score === 'number' ? doc.score : undefined,
+    latencyMs: typeof doc.latencyMs === 'number' ? doc.latencyMs : undefined
+  }
 }
