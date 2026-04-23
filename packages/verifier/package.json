@@ -1,0 +1,31 @@
+{
+  "name": "p2p-hiverelay-verifier",
+  "version": "0.6.0",
+  "description": "Independent reference verifier for HiveRelay — reads raw hypercores from multiple relays and reports divergence. Ships separately from the main client SDK so cross-client verification is meaningful (see docs/THREAT-MODEL.md action item #3).",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "hive-verify": "./bin/verify.js"
+  },
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "b4a": "^1.6.6"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bigdestiny2/p2p-hiverelay",
+    "directory": "packages/verifier"
+  }
+}
