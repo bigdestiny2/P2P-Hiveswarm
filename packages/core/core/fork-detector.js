@@ -63,7 +63,13 @@ export class ForkDetector extends EventEmitter {
     super()
     this.storagePath = opts.storagePath || null
     this.maxForks = opts.maxForks || 1000
+    this.maxBypassLog = opts.maxBypassLog || 500
     this._forks = new Map() // hypercoreKeyHex -> ForkRecord
+    // Audit log of `force: true` quarantine bypasses. Persisted
+    // alongside fork records so an operator forensic-investigating a
+    // post-incident has a chronological trail of who overrode what.
+    // Bounded so a malicious caller can't fill the disk.
+    this._bypassLog = [] // [{ at, hypercoreKey, caller, note }]
   }
 
   /**
@@ -87,6 +93,11 @@ export class ForkDetector extends EventEmitter {
     for (const [key, record] of Object.entries(parsed.forks || {})) {
       this._forks.set(key.toLowerCase(), record)
     }
+    if (Array.isArray(parsed.bypassLog)) {
+      // Cap at maxBypassLog in case the on-disk file grew past it
+      // (e.g., maxBypassLog was reduced between runs).
+      this._bypassLog = parsed.bypassLog.slice(-this.maxBypassLog)
+    }
   }
 
   /**
@@ -99,7 +110,8 @@ export class ForkDetector extends EventEmitter {
     try { await mkdir(dir, { recursive: true }) } catch (_) {}
     const payload = JSON.stringify({
       schemaVersion: SCHEMA_VERSION,
-      forks: Object.fromEntries(this._forks)
+      forks: Object.fromEntries(this._forks),
+      bypassLog: this._bypassLog
     }, null, 2)
     const tmp = join(dir, basename(this.storagePath) + '.tmp')
     await writeFile(tmp, payload, 'utf8')
@@ -214,6 +226,46 @@ export class ForkDetector extends EventEmitter {
     let n = 0
     for (const r of this._forks.values()) if (r.resolution === null) n++
     return n
+  }
+
+  /**
+   * Record an audit-trail entry when an operator (or, more concerning,
+   * compromised code path) bypasses the quarantine via `force: true`.
+   * This is the SOC-style postmortem trail — if a forked drive's data
+   * later turns out to have been the malicious version, the operator
+   * can prove who bypassed and when.
+   *
+   * @param {object} entry
+   * @param {string} entry.hypercoreKey  the drive that was bypassed
+   * @param {string} [entry.caller]      best-effort identifier (filename / SDK method)
+   * @param {string} [entry.note]        operator-supplied justification, if any
+   */
+  recordBypass ({ hypercoreKey, caller, note }) {
+    if (typeof hypercoreKey !== 'string' || !/^[0-9a-f]{64}$/i.test(hypercoreKey)) {
+      return { ok: false, reason: 'bad hypercoreKey' }
+    }
+    const entry = {
+      at: Date.now(),
+      hypercoreKey: hypercoreKey.toLowerCase(),
+      caller: typeof caller === 'string' ? caller : null,
+      note: typeof note === 'string' ? note : null
+    }
+    this._bypassLog.push(entry)
+    // Trim from the head if we've exceeded the cap. We keep the most
+    // recent bypasses since those are most relevant for incident
+    // response.
+    if (this._bypassLog.length > this.maxBypassLog) {
+      this._bypassLog = this._bypassLog.slice(-this.maxBypassLog)
+    }
+    this.emit('quarantine-bypassed', entry)
+    return { ok: true, entry }
+  }
+
+  /**
+   * Snapshot of all bypass-audit entries for the dashboard / API.
+   */
+  bypassLog () {
+    return [...this._bypassLog]
   }
 
   /**

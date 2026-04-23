@@ -1,5 +1,14 @@
 import test from 'brittle'
-import { buildCapabilityDoc, CAPABILITY_DOC_SCHEMA_VERSION } from 'p2p-hiverelay/core/capability-doc.js'
+import b4a from 'b4a'
+import sodium from 'sodium-universal'
+import { buildCapabilityDoc, verifyCapabilityDoc, CAPABILITY_DOC_SCHEMA_VERSION } from 'p2p-hiverelay/core/capability-doc.js'
+
+function makeKeyPair () {
+  const publicKey = b4a.alloc(32)
+  const secretKey = b4a.alloc(64)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+  return { publicKey, secretKey }
+}
 
 // We test buildCapabilityDoc purely — no swarm, no HTTP server, no
 // filesystem. The builder accepts a partial relay-shaped object, so every
@@ -158,4 +167,72 @@ test('operator metadata flows through when provided', async (t) => {
 test('explicit runtime override respected', async (t) => {
   const doc = buildCapabilityDoc({ relay: { config: {} }, runtime: 'bare' })
   t.is(doc.runtime, 'bare')
+})
+
+// ─── Signature tests (Concern 4 fix) ──────────────────────────────
+
+test('builder signs the doc when relay has a swarm.keyPair', async (t) => {
+  const kp = makeKeyPair()
+  const relay = {
+    config: {},
+    swarm: { keyPair: kp }
+  }
+  const doc = buildCapabilityDoc({ relay })
+  t.ok(doc.signature, 'signature attached')
+  t.is(doc.signature.v, 1)
+  t.is(doc.signature.sig.length, 128, '64-byte hex signature')
+  t.is(doc.pubkey, b4a.toString(kp.publicKey, 'hex'), 'pubkey matches signing key')
+})
+
+test('builder ships unsigned doc when no secret key is available', async (t) => {
+  const doc = buildCapabilityDoc({ relay: { config: {} } })
+  t.absent(doc.signature, 'no secret key → no signature')
+})
+
+test('verifyCapabilityDoc accepts a freshly-signed doc', async (t) => {
+  const kp = makeKeyPair()
+  const doc = buildCapabilityDoc({ relay: { config: {}, swarm: { keyPair: kp } } })
+  const check = verifyCapabilityDoc(doc)
+  t.ok(check.valid)
+})
+
+test('verifyCapabilityDoc rejects unsigned doc', async (t) => {
+  const doc = buildCapabilityDoc({ relay: { config: {} } })
+  const check = verifyCapabilityDoc(doc)
+  t.absent(check.valid)
+  t.ok(check.reason.includes('no signature'))
+})
+
+test('verifyCapabilityDoc detects field tampering', async (t) => {
+  const kp = makeKeyPair()
+  const doc = buildCapabilityDoc({ relay: { config: { acceptMode: 'review' }, swarm: { keyPair: kp } } })
+  // Tamper a field after signing
+  doc.limitation.accept_mode = 'open'
+  const check = verifyCapabilityDoc(doc)
+  t.absent(check.valid)
+  t.is(check.reason, 'signature verification failed')
+})
+
+test('verifyCapabilityDoc detects pubkey tampering', async (t) => {
+  const kp = makeKeyPair()
+  const other = makeKeyPair()
+  const doc = buildCapabilityDoc({ relay: { config: {}, swarm: { keyPair: kp } } })
+  doc.pubkey = b4a.toString(other.publicKey, 'hex')
+  const check = verifyCapabilityDoc(doc)
+  t.absent(check.valid)
+})
+
+test('verify survives JSON roundtrip (real over-the-wire scenario)', async (t) => {
+  const kp = makeKeyPair()
+  const doc = buildCapabilityDoc({ relay: { config: {}, swarm: { keyPair: kp } } })
+  const roundtripped = JSON.parse(JSON.stringify(doc))
+  const check = verifyCapabilityDoc(roundtripped)
+  t.ok(check.valid, 'JSON roundtrip preserves signature validity')
+})
+
+test('verifyCapabilityDoc rejects malformed inputs gracefully', async (t) => {
+  t.absent(verifyCapabilityDoc(null).valid)
+  t.absent(verifyCapabilityDoc({}).valid)
+  t.absent(verifyCapabilityDoc({ signature: { v: 1, sig: 'not-hex' }, pubkey: 'a'.repeat(64) }).valid)
+  t.absent(verifyCapabilityDoc({ signature: { v: 999, sig: 'a'.repeat(128) }, pubkey: 'a'.repeat(64) }).valid)
 })

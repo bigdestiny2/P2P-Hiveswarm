@@ -213,8 +213,12 @@ framing loses to any adversary who knows the literature.
 | Authored state immutability | `packages/core/core/delegation.js` (signed certs), Hyperdrive append-only | ✅ shipped |
 | Hypercore append-only Merkle | upstream `hypercore` v10 | ✅ shipped |
 | Replica diversity at infrastructure | `packages/core/core/federation.js` (per-relay catalog mirroring) | ✅ shipped (primitive); ⚠️ not yet wired into client quorum selection |
-| Quorum selection UX | `packages/client/index.js` (`HiveRelayClient`) | ❌ to build in v0.6.0 |
-| Fork-detection gossip | hypercore primitives present, no surfacing yet | ❌ to build in v0.6.0 |
+| Quorum selection UX | `packages/client/index.js` (`HiveRelayClient`) | ✅ shipped v0.6.0 (`selectQuorum`, `queryQuorumWithComparison`) |
+| Fork-detection during local replication | `client.open()` attaches listeners to `drive.core.on('truncate' / 'verification-error')`; auto-reports to `ForkDetector` | ✅ shipped v0.6.0 (catches local fork-detected events, NOT silent multi-replica equivocation) |
+| Fork-proof gossip across federation | not implemented | ❌ to build in M2 |
+| Capability-doc signature | server signs with relay identity key; client verifies on fetch | ✅ shipped v0.6.0 |
+| LNbits admin key encryption at rest | AES-256-GCM, key from `$APP_SEED` | ✅ shipped v0.6.0 |
+| Quarantine bypass audit trail | `forkDetector.recordBypass` + persisted `bypassLog` | ✅ shipped v0.6.0 |
 | Cross-client verification | one client (`@hive/client`) — needs `@hive/verifier` | ❌ to build in v0.6.0 |
 | Deterministic aggregation rules | required for Operator Score | ❌ to spec in M2 |
 | Capability advertisement | `/.well-known/hiverelay.json` (v0.5.1) | ✅ shipped — surfaces region/operator metadata for diverse quorum selection |

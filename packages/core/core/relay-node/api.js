@@ -827,18 +827,24 @@ export class RelayAPI extends EventEmitter {
               result = wizard.setRelayName({ relayName: body && body.relayName })
               break
             case 'lnbits':
-              result = wizard.setLNbitsCredentials({ url: body && body.url, adminKey: body && body.adminKey })
+              // setLNbitsCredentials is async — it encrypts the admin key
+              // before storing. Failures here are reported as bad-request
+              // since the most likely cause is a bad input (missing key)
+              // rather than internal failure.
+              result = await wizard.setLNbitsCredentials({ url: body && body.url, adminKey: body && body.adminKey })
               break
             case 'accept-mode':
               result = wizard.setAcceptMode({ acceptMode: body && body.acceptMode })
               break
             case 'complete':
               result = wizard.complete()
-              // Apply wizard answers to the live config so the relay
-              // starts behaving as configured immediately, before next
-              // restart even.
+              // Apply wizard answers to the live config. toConfig() is
+              // async because it decrypts the LNbits admin key.
               if (result.ok && this.node._applyWizardConfig) {
-                try { this.node._applyWizardConfig(wizard.toConfig()) } catch (err) {
+                try {
+                  const cfg = await wizard.toConfig()
+                  this.node._applyWizardConfig(cfg)
+                } catch (err) {
                   return this._json(res, { error: formatErr('UNSUPPORTED', 'failed to apply wizard config: ' + err.message) }, 500)
                 }
               }

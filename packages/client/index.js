@@ -40,6 +40,7 @@ import { createRevocation } from 'p2p-hiverelay/core/delegation.js'
 import { createSeedingManifest, verifySeedingManifest } from 'p2p-hiverelay/core/seeding-manifest.js'
 import { selectQuorum, describeQuorum } from 'p2p-hiverelay/core/quorum-selector.js'
 import { ForkDetector } from 'p2p-hiverelay/core/fork-detector.js'
+import { verifyCapabilityDoc } from 'p2p-hiverelay/core/capability-doc.js'
 import { EventEmitter } from 'events'
 import { readdir, readFile, writeFile, lstat, mkdir, rename } from 'fs/promises'
 import { join, relative, resolve, dirname } from 'path'
@@ -418,6 +419,17 @@ export class HiveRelayClient extends EventEmitter {
       err.driveKey = keyHex
       throw err
     }
+    // Audit trail: if the operator bypassed quarantine via force:true,
+    // record the event so an incident-response investigation later has
+    // a chronological trail of overrides. The fork-detector persists
+    // the log alongside fork records.
+    if (opts.force && this.forkDetector && this.forkDetector.isQuarantined(keyHex)) {
+      this.forkDetector.recordBypass({
+        hypercoreKey: keyHex,
+        caller: opts.caller || 'client.open',
+        note: typeof opts.bypassReason === 'string' ? opts.bypassReason : null
+      })
+    }
 
     if (this.drives.has(keyHex)) {
       return this.drives.get(keyHex)
@@ -426,6 +438,52 @@ export class HiveRelayClient extends EventEmitter {
     const driveOpts = opts.encryptionKey ? { encryptionKey: opts.encryptionKey } : {}
     const drive = new Hyperdrive(this.store, keyBuf, driveOpts)
     await drive.ready()
+
+    // ─── Auto-detect forks during replication (Defect 2 fix) ────────
+    //
+    // Hypercore emits 'truncate' when the local view is rolled back
+    // due to fork detection during replication — i.e. a peer served
+    // blocks that conflict with what we already have. This is the
+    // smoking gun for an equivocating publisher.
+    //
+    // We register the listener BEFORE the swarm.join below so we
+    // catch the very first replication round that might trigger it.
+    // The handler records evidence to the ForkDetector and emits the
+    // event upward so callers can react (drop the drive, alert the
+    // operator, etc.).
+    if (drive.core && this.forkDetector && typeof drive.core.on === 'function') {
+      const onTruncate = (newLength, fork) => {
+        // The hypercore 'truncate' event fires with (newLength, fork).
+        // 'fork' is the new fork id; if it changed, that's a fork.
+        try {
+          this.forkDetector.report({
+            hypercoreKey: keyHex,
+            blockIndex: typeof newLength === 'number' ? newLength : 0,
+            evidenceA: { fromRelay: 'local', block: 'truncate-event-pre', signature: 'auto-detected-pre-' + Date.now() },
+            evidenceB: { fromRelay: 'replication', block: 'truncate-event-post-fork-' + fork, signature: 'auto-detected-post-' + Date.now() }
+          })
+          this.emit('drive-fork-detected', { driveKey: keyHex, newLength, fork })
+        } catch (_) { /* non-fatal — drive remains operational, fork is recorded */ }
+      }
+      const onVerifyError = (err) => {
+        // Signature verification failure during replication. This is
+        // less common than truncate but equally diagnostic.
+        try {
+          this.forkDetector.report({
+            hypercoreKey: keyHex,
+            blockIndex: 0,
+            evidenceA: { fromRelay: 'expected', block: 'verified-prior-state', signature: 'expected-' + Date.now() },
+            evidenceB: { fromRelay: 'replication', block: 'verification-error: ' + (err?.message || 'unknown'), signature: 'verify-error-' + Date.now() }
+          })
+          this.emit('drive-verification-error', { driveKey: keyHex, error: err })
+        } catch (_) { /* non-fatal */ }
+      }
+      drive.core.on('truncate', onTruncate)
+      drive.core.on('verification-error', onVerifyError)
+      // Track listeners so we can remove them on close
+      if (!this._driveForkListeners) this._driveForkListeners = new Map()
+      this._driveForkListeners.set(keyHex, { core: drive.core, onTruncate, onVerifyError })
+    }
 
     const isAuthor = drive.core?.writable || false
     // server=true if author OR if reader explicitly opted in via seedAsReader.
@@ -508,6 +566,14 @@ export class HiveRelayClient extends EventEmitter {
     const keyHex = typeof driveKey === 'string' ? driveKey : b4a.toString(driveKey, 'hex')
     const drive = this.drives.get(keyHex)
     if (!drive) return
+    // Detach fork-detection listeners before closing the drive (so
+    // we don't leak listeners on the underlying core).
+    if (this._driveForkListeners && this._driveForkListeners.has(keyHex)) {
+      const { core, onTruncate, onVerifyError } = this._driveForkListeners.get(keyHex)
+      try { core.removeListener('truncate', onTruncate) } catch (_) {}
+      try { core.removeListener('verification-error', onVerifyError) } catch (_) {}
+      this._driveForkListeners.delete(keyHex)
+    }
     try { await this.swarm.leave(drive.discoveryKey) } catch (_) {}
     try { await drive.close() } catch (_) {}
     this.drives.delete(keyHex)
@@ -1732,26 +1798,63 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   /**
-   * Fetch a relay's capability document. Useful for
-   * relay-shopping: pick relays by version, accept_mode, features without
-   * opening a swarm connection.
+   * Fetch a relay's capability document. Useful for relay-shopping:
+   * pick relays by version, accept_mode, features without opening a
+   * swarm connection.
+   *
+   * Signature verification (added in v0.6.0): if the doc is signed and
+   * `opts.requireSignature` is true (or the doc is signed and we
+   * choose to verify), the signature is validated against the pubkey
+   * IN the doc (TOFU). A failed verification emits 'capability-verify-error'
+   * and throws — the relay is shipping tampered metadata.
    *
    * @param {string} relayUrl
+   * @param {object} [opts]
+   * @param {boolean} [opts.requireSignature=false]   throw if doc is unsigned
+   * @param {string}  [opts.expectedPubkey]           pin pubkey (out-of-band trust)
    * @returns {Promise<object>}
    */
-  async fetchCapabilities (relayUrl) {
+  async fetchCapabilities (relayUrl, opts = {}) {
     if (typeof relayUrl !== 'string' || !relayUrl.length) {
       throw new Error('fetchCapabilities: relayUrl required')
     }
     const base = relayUrl.replace(/\/+$/, '')
+    let doc
     const res = await _fetchJson(base + '/.well-known/hiverelay.json', { method: 'GET' })
-    if (!res.ok) {
+    if (res.ok) {
+      doc = res.body
+    } else {
       // Try the API mirror in case a reverse proxy hides /.well-known.
       const fallback = await _fetchJson(base + '/api/capabilities', { method: 'GET' })
       if (!fallback.ok) throw new Error('fetchCapabilities failed: ' + (res.body?.error || res.status))
-      return fallback.body
+      doc = fallback.body
     }
-    return res.body
+
+    // Signature verification — opt-in via requireSignature for now,
+    // but we ALWAYS check when a signature is present and emit an
+    // event on mismatch. A future revision could elevate signature
+    // failures to throw by default.
+    if (doc && doc.signature) {
+      const check = verifyCapabilityDoc(doc)
+      if (!check.valid) {
+        this.emit('capability-verify-error', { url: relayUrl, reason: check.reason })
+        throw new Error('fetchCapabilities: signature verification failed: ' + check.reason)
+      }
+    } else if (opts.requireSignature) {
+      throw new Error('fetchCapabilities: doc is unsigned and requireSignature was set')
+    }
+
+    // Pinned-pubkey check (out-of-band trust): if the caller knows
+    // which pubkey the relay should have, fail fast on mismatch.
+    if (opts.expectedPubkey && doc.pubkey && doc.pubkey.toLowerCase() !== opts.expectedPubkey.toLowerCase()) {
+      this.emit('capability-pubkey-mismatch', {
+        url: relayUrl,
+        expected: opts.expectedPubkey,
+        actual: doc.pubkey
+      })
+      throw new Error('fetchCapabilities: pubkey mismatch (expected ' + opts.expectedPubkey + ', got ' + doc.pubkey + ')')
+    }
+    return doc
   }
 
   // ─── Quorum + fork-detection (v0.6.0 security additions) ──────────
