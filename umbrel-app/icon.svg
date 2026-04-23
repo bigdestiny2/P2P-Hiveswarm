@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PLACEHOLDER icon for the Blindspark Umbrel app.
+
+  Before submission this MUST be replaced with a properly-designed
+  1024x1024 SVG icon. Commission via Fiverr / Dribbble / similar
+  ($200-400 budget). Brief: "blind spark" - a stylized lightning bolt
+  inside a closed eye, suggesting the relay can carry the spark
+  (Lightning) without seeing the content.
+
+  This placeholder is intentionally ugly so it can't accidentally
+  ship to production.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect width="1024" height="1024" fill="#1a1a2e"/>
+  <text x="512" y="480" font-family="Arial, sans-serif" font-size="120" font-weight="bold"
+        text-anchor="middle" fill="#f5a623">PLACEHOLDER</text>
+  <text x="512" y="600" font-family="Arial, sans-serif" font-size="80"
+        text-anchor="middle" fill="#ffffff">Blindspark</text>
+  <text x="512" y="700" font-family="Arial, sans-serif" font-size="40"
+        text-anchor="middle" fill="#888888">replace before submission</text>
+</svg>

@@ -1,0 +1,93 @@
+version: "3.7"
+
+# Blindspark — Umbrel App Store packaging.
+#
+# Conformance notes for Umbrel reviewers:
+#   - Image is multi-arch (linux/amd64, linux/arm64) and pinned by
+#     sha256 digest per Umbrel's reproducibility requirement.
+#   - The container runs as a non-root user (uid 1000); the Dockerfile
+#     creates the `blindspark` user and sets ownership of /data + /app.
+#   - Persistent state lives under ${APP_DATA_DIR}/data and survives
+#     reinstalls when Umbrel preserves data on uninstall.
+#   - Talks to LNbits via the lnbits_default Docker network — declared
+#     as `external: true` so we don't try to recreate it.
+#   - Only the dashboard port (9100) is exposed via app_proxy; no extra
+#     ports leak to the host.
+#
+# Note about the image name:
+#   The image is currently published under `p2p-hiverelay` because the
+#   project is mid-rebrand (HiveRelay → Blindspark). v0.7.0 will publish
+#   under `blindspark` cleanly. v0.6.0 ships from the existing image to
+#   minimize the diff Umbrel reviewers see.
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: blindspark_web_1
+      APP_PORT: 9100
+      PROXY_AUTH_ADD: "false"
+
+  web:
+    # Pinned by digest per Umbrel reviewer requirement. Replace
+    # @sha256:PLACEHOLDER with the real digest before submission —
+    # `docker buildx imagetools inspect ghcr.io/bigdestiny2/p2p-hiverelay:0.6.0`
+    # gives the digest after CI publishes.
+    image: ghcr.io/bigdestiny2/p2p-hiverelay:0.6.0@sha256:PLACEHOLDER
+    init: true
+    restart: on-failure
+    stop_grace_period: 1m
+    user: "1000:1000"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      # ─── Core relay config ────────────────────────────────────
+      HIVERELAY_API_HOST: 0.0.0.0
+      HIVERELAY_API_PORT: 9100
+      HIVERELAY_STORAGE: /data
+      HIVERELAY_LOG_LEVEL: info
+
+      # ─── Sane defaults for the Umbrel App Store target audience ───
+      # `review` — operator inspects every incoming seed request before
+      # accepting. The wizard offers to switch this from the dashboard
+      # once the operator understands the implications.
+      HIVERELAY_ACCEPT_MODE: review
+
+      # Mid-tier pricing — earns meaningful sats while staying
+      # competitive with what authors will pay.
+      HIVERELAY_FEE_STORAGE_SATS_PER_GB_MO: "10"
+      HIVERELAY_FEE_EGRESS_SATS_PER_GB: "20"
+
+      # Storage cap: 75% of the volume by default (operator can change
+      # in settings). Leaves headroom for OS + LNbits.
+      HIVERELAY_MAX_STORAGE: "75%"
+
+      # ─── LNbits integration (auto-detected on Umbrel) ─────────
+      # Umbrel's internal Docker DNS resolves the LNbits container name.
+      # The setup wizard collects the admin key on first run and writes
+      # it to /data/wizard.json — we don't ship a default key.
+      LNBITS_URL: http://lnbits_web_1:5000
+
+      # ─── Region tagging (operator sets in wizard) ─────────────
+      HIVERELAY_REGION: ""
+
+      # ─── Federation defaults ──────────────────────────────────
+      # Empty by default. Operator adds peers via dashboard.
+      HIVERELAY_FEDERATION_ENABLED: "true"
+
+      # ─── Use Umbrel-provided seed for deterministic identity ──
+      # Umbrel exposes $APP_SEED — a 256-bit hex string deterministically
+      # derived from the user's Umbrel seed and our app id. This means
+      # if a user reinstalls Blindspark, they get the same relay
+      # identity back automatically (no manual key backup needed).
+      HIVERELAY_IDENTITY_SEED: ${APP_SEED}
+
+    networks:
+      - default
+      - lnbits_default
+
+networks:
+  default:
+  # Umbrel auto-creates per-app networks; lnbits_default is created by
+  # the LNbits app and shared with us via external: true.
+  lnbits_default:
+    external: true

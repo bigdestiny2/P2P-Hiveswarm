@@ -1283,6 +1283,38 @@ export class RelayNode extends EventEmitter {
   }
 
   /**
+   * Apply settings collected by the first-run setup wizard. Called by
+   * the API when the operator clicks "Done" on the wizard's final step.
+   * Mutates `this.config` so the relay's behavior changes immediately,
+   * without requiring a restart.
+   *
+   * Settings handled here are intentionally narrow — only the four the
+   * wizard actually collects. Anything else continues to come from the
+   * config passed at constructor time.
+   *
+   * @param {object} cfg - Output of SetupWizard.toConfig()
+   * @param {string} [cfg.name]        - operator-chosen relay name
+   * @param {string} [cfg.acceptMode]  - 'open' | 'review' | 'allowlist' | 'closed'
+   * @param {object} [cfg.lnbits]      - { url, adminKey } for the LNbits payment provider
+   */
+  _applyWizardConfig (cfg) {
+    if (!cfg || typeof cfg !== 'object') return
+    if (typeof cfg.name === 'string' && cfg.name.length > 0) {
+      this.config.name = cfg.name
+    }
+    if (typeof cfg.acceptMode === 'string') {
+      this.config.acceptMode = cfg.acceptMode
+    }
+    if (cfg.lnbits && typeof cfg.lnbits === 'object') {
+      this.config.lnbits = {
+        url: cfg.lnbits.url || null,
+        adminKey: cfg.lnbits.adminKey || null
+      }
+    }
+    this.emit('wizard-applied', { name: this.config.name, acceptMode: this.config.acceptMode })
+  }
+
+  /**
    * Submit a signed revocation to this relay's revocation store. The
    * revocation's signature must verify against the cert's primaryPubkey;
    * otherwise we reject (anyone else's "revocation" is a forgery).

@@ -24,6 +24,7 @@ import { CONTENT_TYPES, isValidHexKey, normalizeContentType, normalizePrivacyTie
 import { buildCapabilityDoc } from '../capability-doc.js'
 import { verifySeedingManifest } from '../seeding-manifest.js'
 import { ERR, formatErr } from '../error-prefixes.js'
+import { SetupWizard } from '../wizard.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -85,6 +86,7 @@ export class RelayAPI extends EventEmitter {
     this._networkHtml = null
     this._docsHtml = null
     this._dashboardFeed = null
+    this._wizard = null // lazily constructed by _getWizard() on first /api/wizard hit
     this._gateway = new HyperGateway(relayNode, { store: relayNode.store })
   }
 
@@ -433,6 +435,17 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, manifest)
         }
 
+        // First-run setup wizard — serves the current state machine. The
+        // dashboard checks `isComplete` on load and either renders the
+        // wizard or the main UI. Localhost-only by design (the wizard
+        // accepts secrets like LNbits admin keys).
+        if (path === '/api/wizard') {
+          if (!this._isLocalRequest(req)) {
+            return this._json(res, { error: formatErr('NOT_ALLOWED', 'wizard is localhost-only') }, 403)
+          }
+          const wizard = await this._getWizard()
+          return this._json(res, wizard.snapshot())
+        }
 
         if (path === '/api/alerts') {
           if (!this.node.alertManager) {
@@ -766,6 +779,58 @@ export class RelayAPI extends EventEmitter {
             return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest persist failed: ' + err.message) }, 500)
           }
           return this._json(res, { ok: true, pubkey: check.pubkey, replaced: result.replaced })
+        }
+
+        // ─── Setup wizard mutations ──────────────────────────────
+        // Five POST endpoints, one per wizard step. All localhost-only —
+        // they accept secrets (LNbits admin key) and configuration
+        // changes. The dashboard front-end calls these in sequence as
+        // the operator clicks through the 5-step flow.
+        if (path.startsWith('/api/wizard/')) {
+          if (!this._isLocalRequest(req)) {
+            return this._json(res, { error: formatErr('NOT_ALLOWED', 'wizard is localhost-only') }, 403)
+          }
+          const wizard = await this._getWizard()
+          const action = path.slice('/api/wizard/'.length)
+          let result
+          switch (action) {
+            case 'goto':
+              result = wizard.goToStep({ step: body && body.step })
+              break
+            case 'relay-name':
+              result = wizard.setRelayName({ relayName: body && body.relayName })
+              break
+            case 'lnbits':
+              result = wizard.setLNbitsCredentials({ url: body && body.url, adminKey: body && body.adminKey })
+              break
+            case 'accept-mode':
+              result = wizard.setAcceptMode({ acceptMode: body && body.acceptMode })
+              break
+            case 'complete':
+              result = wizard.complete()
+              // Apply wizard answers to the live config so the relay
+              // starts behaving as configured immediately, before next
+              // restart even.
+              if (result.ok && this.node._applyWizardConfig) {
+                try { this.node._applyWizardConfig(wizard.toConfig()) } catch (err) {
+                  return this._json(res, { error: formatErr('UNSUPPORTED', 'failed to apply wizard config: ' + err.message) }, 500)
+                }
+              }
+              break
+            case 'reset':
+              wizard.reset()
+              result = { ok: true, state: wizard.snapshot() }
+              break
+            default:
+              return this._json(res, { error: formatErr('NOT_FOUND', 'unknown wizard action: ' + action) }, 404)
+          }
+          if (!result.ok) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, 400)
+          }
+          try { await wizard.save() } catch (err) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'wizard persist failed: ' + err.message) }, 500)
+          }
+          return this._json(res, { ok: true, state: result.state })
         }
 
         if (path === '/api/alerts/test') {
@@ -1344,6 +1409,29 @@ export class RelayAPI extends EventEmitter {
   _json (res, data, status = 200) {
     res.writeHead(status)
     res.end(JSON.stringify(data) + '\n')
+  }
+
+  /**
+   * Lazily construct + load the SetupWizard. We don't create it eagerly
+   * because relays running in non-interactive mode (CLI flags only,
+   * env-var configs) never need it — wizard.json never gets written
+   * unless the operator actually visits /api/wizard.
+   *
+   * Cached on first use; survives subsequent requests in the same
+   * process. Goes away on container restart, then re-loaded from disk.
+   */
+  async _getWizard () {
+    if (this._wizard) return this._wizard
+    const storageDir = this.node.config && this.node.config.storage
+      ? this.node.config.storage
+      : '/data'
+    this._wizard = new SetupWizard({
+      storagePath: join(storageDir, 'wizard.json')
+    })
+    try { await this._wizard.load() } catch (err) {
+      this.emit('wizard-error', { message: 'wizard load failed', error: err })
+    }
+    return this._wizard
   }
 
   // Lazy-read the package version from the core workspace's package.json.
