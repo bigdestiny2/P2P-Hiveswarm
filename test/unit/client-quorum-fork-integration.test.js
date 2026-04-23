@@ -17,8 +17,20 @@
  */
 
 import test from 'brittle'
+import b4a from 'b4a'
+import sodium from 'sodium-universal'
 import { HiveRelayClient } from 'p2p-hiverelay-client'
 import { ForkDetector } from 'p2p-hiverelay/core/fork-detector.js'
+
+// Generate a default keypair for tests that need signed operations
+// (e.g., publishForkProof). Tests can override by passing keyPair: ...
+// in opts.
+function defaultKeyPair () {
+  const publicKey = b4a.alloc(32)
+  const secretKey = b4a.alloc(64)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+  return { publicKey, secretKey }
+}
 
 // ─── Mock fetch helpers ──────────────────────────────────────────
 
@@ -56,6 +68,7 @@ function makeClient (opts = {}) {
     autoDiscover: false,
     swarm: {}, // dummy — we never call start()
     store: {}, // dummy
+    keyPair: defaultKeyPair(), // signed ops need a real key
     ...opts
   })
 }
@@ -709,6 +722,125 @@ test('publishForkProof validates inputs', async (t) => {
   const client = makeClient()
   try { await client.publishForkProof(null, ['x']); t.fail() } catch (err) { t.ok(err.message.includes('proof required')) }
   try { await client.publishForkProof({}, []); t.fail() } catch (err) { t.ok(err.message.includes('non-empty array')) }
+})
+
+// ─── Signed fork proof publishing (closes attack 8.2) ────────────
+
+test('publishForkProof requires client to have an identity key', async (t) => {
+  installMockFetch({})
+  t.teardown(restoreFetch)
+  const client = makeClient()
+  client.keyPair = null // explicitly clear
+  try {
+    await client.publishForkProof({
+      hypercoreKey: 'a'.repeat(64),
+      blockIndex: 0,
+      evidence: [{ fromRelay: 'r1', block: 'b1', signature: 's1' }, { fromRelay: 'r2', block: 'b2', signature: 's2' }]
+    }, ['https://x.test'])
+    t.fail('should throw')
+  } catch (err) {
+    t.ok(err.message.includes('no identity key'))
+  }
+})
+
+test('publishForkProof wraps proof in signed envelope before POST', async (t) => {
+  const sodium = (await import('sodium-universal')).default
+  const b4a = (await import('b4a')).default
+
+  // Build a real keypair so signing works
+  const publicKey = b4a.alloc(32)
+  const secretKey = b4a.alloc(64)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+
+  let receivedBody = null
+  installMockFetch({
+    'https://relay.test/api/forks/proof': async (url, opts) => {
+      // Store the POST body so we can inspect what was sent
+      receivedBody = opts && opts.body ? JSON.parse(opts.body) : null
+      return mockResponse({ body: { ok: true } })
+    }
+  })
+  // Override our mock fetch so it captures opts
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    if (url === 'https://relay.test/api/forks/proof') {
+      receivedBody = opts && opts.body ? JSON.parse(opts.body) : null
+      return mockResponse({ body: { ok: true } })
+    }
+    return mockResponse({ ok: false, status: 404, body: {} })
+  }
+  t.teardown(() => { globalThis.fetch = origFetch })
+
+  const client = makeClient()
+  client.keyPair = { publicKey, secretKey }
+  await client.publishForkProof({
+    hypercoreKey: 'a'.repeat(64),
+    blockIndex: 5,
+    evidence: [{ fromRelay: 'r1', block: 'b1', signature: 's1' }, { fromRelay: 'r2', block: 'b2', signature: 's2' }]
+  }, ['https://relay.test'])
+
+  t.ok(receivedBody, 'a body was POSTed')
+  t.is(receivedBody.version, 1, 'envelope version 1')
+  t.ok(receivedBody.proof, 'has proof inside envelope')
+  t.ok(receivedBody.observer, 'has observer inside envelope')
+  t.is(receivedBody.observer.pubkey, b4a.toString(publicKey, 'hex'))
+  t.is(receivedBody.observer.signature.length, 128)
+  t.ok(typeof receivedBody.observer.attestedAt === 'number')
+})
+
+// ─── Capability doc staleness emit ───────────────────────────────
+
+test('fetchCapabilities emits capability-doc-stale when attestedAt is old', async (t) => {
+  const oldTime = Date.now() - 48 * 60 * 60 * 1000 // 48h old
+  installMockFetch({
+    'https://stale.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: 'a'.repeat(64), features: [], attestedAt: oldTime }
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  let staleEvent = null
+  client.on('capability-doc-stale', (e) => { staleEvent = e })
+
+  // No threshold override → defaults to 24h, our doc is 48h old → fires
+  await client.fetchCapabilities('https://stale.test')
+  t.ok(staleEvent, 'capability-doc-stale fired')
+  t.is(staleEvent.url, 'https://stale.test')
+  t.ok(staleEvent.ageMs > 24 * 60 * 60 * 1000)
+})
+
+test('fetchCapabilities does NOT emit stale for fresh attestation', async (t) => {
+  const recentTime = Date.now() - 60_000 // 1m old
+  installMockFetch({
+    'https://fresh.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: 'a'.repeat(64), features: [], attestedAt: recentTime }
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  let staleEvent = null
+  client.on('capability-doc-stale', (e) => { staleEvent = e })
+  await client.fetchCapabilities('https://fresh.test')
+  t.absent(staleEvent, 'no stale event for fresh doc')
+})
+
+test('fetchCapabilities maxAgeMs override is honored', async (t) => {
+  const tenMinutesOld = Date.now() - 10 * 60 * 1000
+  installMockFetch({
+    'https://x.test/.well-known/hiverelay.json': {
+      body: { schemaVersion: 1, pubkey: 'a'.repeat(64), features: [], attestedAt: tenMinutesOld }
+    }
+  })
+  t.teardown(restoreFetch)
+
+  const client = makeClient()
+  let staleEvent = null
+  client.on('capability-doc-stale', (e) => { staleEvent = e })
+  // 5-minute threshold with a 10-minute-old doc → should fire
+  await client.fetchCapabilities('https://x.test', { maxAgeMs: 5 * 60 * 1000 })
+  t.ok(staleEvent, 'stale fires under tighter threshold')
 })
 
 test('closeDrive removes fork listeners (no leak)', async (t) => {

@@ -152,7 +152,12 @@ export function buildCapabilityDoc (opts = {}) {
     limitation,
     federation,
     catalog,
-    fees
+    fees,
+    // attestedAt — closes the stale-doc replay attack stub. The
+    // signed payload covers this timestamp, so a relay's old doc
+    // can't be replayed (clients can detect it's stale via the field).
+    // Test override accepted via opts.attestedAt for deterministic tests.
+    attestedAt: typeof opts.attestedAt === 'number' ? opts.attestedAt : Date.now()
   }
 
   // Sign the doc with the relay's identity secret key, if available.

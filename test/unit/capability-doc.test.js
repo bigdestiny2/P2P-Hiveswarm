@@ -236,3 +236,28 @@ test('verifyCapabilityDoc rejects malformed inputs gracefully', async (t) => {
   t.absent(verifyCapabilityDoc({ signature: { v: 1, sig: 'not-hex' }, pubkey: 'a'.repeat(64) }).valid)
   t.absent(verifyCapabilityDoc({ signature: { v: 999, sig: 'a'.repeat(128) }, pubkey: 'a'.repeat(64) }).valid)
 })
+
+// ─── attestedAt timestamp tests (closes stale-doc replay) ─────────
+
+test('builder includes attestedAt timestamp', async (t) => {
+  const before = Date.now()
+  const doc = buildCapabilityDoc({ relay: { config: {} } })
+  const after = Date.now()
+  t.ok(typeof doc.attestedAt === 'number')
+  t.ok(doc.attestedAt >= before && doc.attestedAt <= after)
+})
+
+test('attestedAt is covered by the signature', async (t) => {
+  const kp = makeKeyPair()
+  const doc = buildCapabilityDoc({ relay: { config: {}, swarm: { keyPair: kp } } })
+  // Tamper with attestedAt only
+  doc.attestedAt = doc.attestedAt - 1000
+  const check = verifyCapabilityDoc(doc)
+  t.absent(check.valid, 'tampering attestedAt invalidates signature')
+})
+
+test('opts.attestedAt override works for deterministic tests', async (t) => {
+  const fixedTime = 1729571234000
+  const doc = buildCapabilityDoc({ relay: { config: {} }, attestedAt: fixedTime })
+  t.is(doc.attestedAt, fixedTime)
+})

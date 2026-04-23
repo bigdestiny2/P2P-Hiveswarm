@@ -41,6 +41,7 @@ import { createSeedingManifest, verifySeedingManifest } from 'p2p-hiverelay/core
 import { selectQuorum, describeQuorum } from 'p2p-hiverelay/core/quorum-selector.js'
 import { ForkDetector } from 'p2p-hiverelay/core/fork-detector.js'
 import { verifyCapabilityDoc } from 'p2p-hiverelay/core/capability-doc.js'
+import { signForkProof } from 'p2p-hiverelay/core/fork-proof-signing.js'
 import { EventEmitter } from 'events'
 import { readdir, readFile, writeFile, lstat, mkdir, rename } from 'fs/promises'
 import { join, relative, resolve, dirname } from 'path'
@@ -1874,6 +1875,24 @@ export class HiveRelayClient extends EventEmitter {
       })
       throw new Error('fetchCapabilities: pubkey mismatch (expected ' + opts.expectedPubkey + ', got ' + doc.pubkey + ')')
     }
+
+    // Staleness check (closes capability-doc replay sub-attack):
+    // If the doc has an attestedAt timestamp older than maxAgeMs,
+    // emit 'capability-doc-stale' so the caller can decide. We don't
+    // throw — operators may legitimately leave caches running, and
+    // a stale doc is still a known-good doc, just out of date.
+    const maxAge = typeof opts.maxAgeMs === 'number' ? opts.maxAgeMs : 24 * 60 * 60 * 1000
+    if (typeof doc.attestedAt === 'number' && doc.attestedAt > 0) {
+      const ageMs = Date.now() - doc.attestedAt
+      if (ageMs > maxAge) {
+        this.emit('capability-doc-stale', {
+          url: relayUrl,
+          attestedAt: doc.attestedAt,
+          ageMs,
+          maxAgeMs: maxAge
+        })
+      }
+    }
     return doc
   }
 
@@ -2089,19 +2108,18 @@ export class HiveRelayClient extends EventEmitter {
   }
 
   /**
-   * Publish a fork proof to a list of relay URLs. Used to gossip
-   * locally-detected equivocation evidence to the wider network so
-   * other clients quarantine the same drive without having to
-   * independently observe the fork.
+   * Publish a fork proof to a list of relay URLs. Auto-signs the proof
+   * with this client's identity key as the observer attestation —
+   * relays REQUIRE the signature (closes attack 8.2 from
+   * SECURITY-STRATEGY.md).
    *
-   * No auth required by the receiving relay — fork proofs are
-   * self-validating in shape (the receiving relay's ForkDetector
-   * rejects malformed proofs at write time).
+   * The proof is wrapped in a signed envelope:
+   *   { version: 1, proof, observer: { pubkey, signature, attestedAt } }
    *
    * Best-effort: relays that 4xx/5xx are noted in the result but
    * don't abort the broadcast.
    *
-   * @param {object} proof  shape from ForkDetector.list()[i]
+   * @param {object} proof    { hypercoreKey, blockIndex, evidence: [a, b] }
    * @param {string[]} relayUrls
    * @returns {Promise<Array<{relay: string, ok: boolean, error?: string}>>}
    */
@@ -2110,13 +2128,28 @@ export class HiveRelayClient extends EventEmitter {
     if (!Array.isArray(relayUrls) || relayUrls.length === 0) {
       throw new Error('publishForkProof: relayUrls must be a non-empty array')
     }
+    if (!this.keyPair || !this.keyPair.secretKey) {
+      throw new Error('publishForkProof: client has no identity key (signed proofs required)')
+    }
+
+    // Adapt ForkDetector's list() output to the unsigned-proof shape
+    // signForkProof expects, if the caller passed a record (which has
+    // `evidence` as an array already). Otherwise assume already in the
+    // right shape.
+    const unsigned = {
+      hypercoreKey: proof.hypercoreKey,
+      blockIndex: typeof proof.blockIndex === 'number' ? proof.blockIndex : 0,
+      evidence: Array.isArray(proof.evidence) ? proof.evidence : []
+    }
+    const signed = signForkProof(unsigned, this.keyPair)
+
     return Promise.all(relayUrls.map(async (url) => {
       const endpoint = url.replace(/\/+$/, '') + '/api/forks/proof'
       try {
         const res = await _fetchJson(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(proof)
+          body: JSON.stringify(signed)
         })
         return { relay: url, ok: res.ok, status: res.status }
       } catch (err) {

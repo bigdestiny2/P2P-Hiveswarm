@@ -26,6 +26,7 @@ import { EventEmitter } from 'events'
 import http from 'http'
 import { readFile, writeFile, mkdir, rename, unlink } from 'fs/promises'
 import { dirname, basename, join } from 'path'
+import { verifyForkProof } from './fork-proof-signing.js'
 
 const DEFAULT_FOLLOW_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const FETCH_TIMEOUT = 10_000
@@ -409,18 +410,48 @@ export class Federation extends EventEmitter {
     const data = await this._fetchJson(entryUrl, '/api/forks/proofs')
     if (!data || !Array.isArray(data.proofs)) return
     let merged = 0
+    let rejected = 0
     for (const proof of data.proofs) {
-      if (!proof || !proof.hypercoreKey || !Array.isArray(proof.evidence) || proof.evidence.length < 2) continue
+      if (!proof) continue
+      // Two acceptable shapes during the M2 transition:
+      //   A. Signed envelope { version, proof, observer } — preferred
+      //   B. Bare record { hypercoreKey, evidence, ... } — accepted
+      //      from peers who haven't yet upgraded to the signed format.
+      //      Still funneled through ForkDetector but flagged as
+      //      'unverified-observer' in the fork record metadata.
+      let coreProof
+      let trustLevel
+      if (proof.version && proof.proof && proof.observer) {
+        const verify = verifyForkProof(proof)
+        if (!verify.valid) {
+          rejected++
+          continue
+        }
+        coreProof = proof.proof
+        trustLevel = 'signed-observer'
+      } else if (proof.hypercoreKey && Array.isArray(proof.evidence) && proof.evidence.length >= 2) {
+        coreProof = proof
+        trustLevel = 'unverified-observer'
+      } else {
+        continue
+      }
       const result = this.node.forkDetector.report({
-        hypercoreKey: proof.hypercoreKey,
-        blockIndex: proof.blockIndex || 0,
-        evidenceA: proof.evidence[0],
-        evidenceB: proof.evidence[1]
+        hypercoreKey: coreProof.hypercoreKey,
+        blockIndex: coreProof.blockIndex || 0,
+        evidenceA: coreProof.evidence[0],
+        evidenceB: coreProof.evidence[1]
       })
       if (result.ok && !result.recordExists) merged++
+      // (Future M2: persist trustLevel on the fork record so dashboard
+      // can distinguish signed observer attestations from legacy
+      // unverified ones.) For now the trust level is captured in the
+      // emit below.
+      if (trustLevel === 'unverified-observer') {
+        this.emit('fork-proof-unverified', { source: entryUrl, hypercoreKey: coreProof.hypercoreKey })
+      }
     }
-    if (merged > 0) {
-      this.emit('fork-proofs-merged', { source: entryUrl, count: merged })
+    if (merged > 0 || rejected > 0) {
+      this.emit('fork-proofs-merged', { source: entryUrl, count: merged, rejected })
     }
   }
 

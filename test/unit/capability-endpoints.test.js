@@ -17,7 +17,7 @@ import sodium from 'sodium-universal'
 import { ManifestStore } from 'p2p-hiverelay/core/manifest-store.js'
 import { createSeedingManifest } from 'p2p-hiverelay/core/seeding-manifest.js'
 
-function mockRelayNode ({ manifestStore } = {}) {
+function mockRelayNode ({ manifestStore, forkDetector } = {}) {
   return {
     running: true,
     config: {
@@ -48,6 +48,7 @@ function mockRelayNode ({ manifestStore } = {}) {
       }
     },
     manifestStore,
+    forkDetector,
     _checkDelegation: () => {},
     _revokedCertSignatures: new Map(),
     getStats () { return { publicKey: 'deadbeef', connections: 0, seededApps: 0 } },
@@ -159,7 +160,16 @@ test('GET /api/capabilities mirrors /.well-known/hiverelay.json', async (t) => {
   const b = await request(port, 'GET', '/api/capabilities')
   t.is(a.statusCode, 200)
   t.is(b.statusCode, 200)
-  t.alike(a.body, b.body, 'both endpoints return identical payloads')
+  // Compare semantic content. attestedAt differs by ms between calls
+  // (each is a fresh build) and so does signature (signs the
+  // attestedAt). That's correct behavior — clients should always see
+  // fresh attestation. Strip both for the equivalence check.
+  const stripVolatile = (doc) => {
+    const { attestedAt, signature, ...rest } = doc
+    return rest
+  }
+  t.alike(stripVolatile(a.body), stripVolatile(b.body),
+    'both endpoints return semantically-identical payloads')
 })
 
 test('GET /api/authors/<unknown>/seeding.json returns 404 with machine code', async (t) => {
@@ -259,4 +269,110 @@ test('unauthenticated management endpoint returns errorCode auth-required', asyn
   t.is(res.body.errorCode, 'auth-required',
     'errorCode field is machine-readable')
   t.ok(res.body.error, 'human-readable error string still present for back-compat')
+})
+
+// ─── Signed fork-proof server-side requirement ──────────────────
+
+test('POST /api/forks/proof rejects unsigned bare proofs', async (t) => {
+  // Set up node with ForkDetector
+  const { ForkDetector } = await import('p2p-hiverelay/core/fork-detector.js')
+  const fd = new ForkDetector({})
+  const { port } = await setupApi(t, { forkDetector: fd })
+
+  // Bare unsigned proof — pre-v0.6.0 shape
+  const res = await request(port, 'POST', '/api/forks/proof', {
+    hypercoreKey: 'a'.repeat(64),
+    blockIndex: 0,
+    evidenceA: { fromRelay: 'r1', block: 'b1', signature: 's1' },
+    evidenceB: { fromRelay: 'r2', block: 'b2', signature: 's2' }
+  })
+  t.is(res.statusCode, 400)
+  t.ok(res.body.error?.includes('invalid signed proof'))
+})
+
+test('POST /api/forks/proof accepts properly signed envelope', async (t) => {
+  const { ForkDetector } = await import('p2p-hiverelay/core/fork-detector.js')
+  const { signForkProof } = await import('p2p-hiverelay/core/fork-proof-signing.js')
+  const sodium = (await import('sodium-universal')).default
+  const b4a = (await import('b4a')).default
+
+  const fd = new ForkDetector({})
+  const { port } = await setupApi(t, { forkDetector: fd })
+
+  const publicKey = b4a.alloc(32)
+  const secretKey = b4a.alloc(64)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+
+  const signed = signForkProof({
+    hypercoreKey: 'b'.repeat(64),
+    blockIndex: 7,
+    evidence: [{ fromRelay: 'r1', block: 'b1', signature: 's1' }, { fromRelay: 'r2', block: 'b2', signature: 's2' }]
+  }, { publicKey, secretKey })
+
+  const res = await request(port, 'POST', '/api/forks/proof', signed)
+  t.is(res.statusCode, 200)
+  t.ok(res.body.ok)
+  t.is(res.body.observer, b4a.toString(publicKey, 'hex'))
+})
+
+test('POST /api/forks/proof rejects tampered signed proof', async (t) => {
+  const { ForkDetector } = await import('p2p-hiverelay/core/fork-detector.js')
+  const { signForkProof } = await import('p2p-hiverelay/core/fork-proof-signing.js')
+  const sodium = (await import('sodium-universal')).default
+  const b4a = (await import('b4a')).default
+
+  const fd = new ForkDetector({})
+  const { port } = await setupApi(t, { forkDetector: fd })
+
+  const publicKey = b4a.alloc(32)
+  const secretKey = b4a.alloc(64)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+
+  const signed = signForkProof({
+    hypercoreKey: 'c'.repeat(64),
+    blockIndex: 7,
+    evidence: [{ fromRelay: 'r1', block: 'b1', signature: 's1' }, { fromRelay: 'r2', block: 'b2', signature: 's2' }]
+  }, { publicKey, secretKey })
+  // Tamper after signing
+  signed.proof.blockIndex = 999
+
+  const res = await request(port, 'POST', '/api/forks/proof', signed)
+  t.is(res.statusCode, 400)
+  t.ok(res.body.error?.includes('invalid signed proof'))
+})
+
+// ─── Per-endpoint rate limit ────────────────────────────────────
+
+test('per-endpoint rate limit triggers on /api/wizard/lnbits brute force', async (t) => {
+  const { port } = await setupApi(t)
+
+  // Send 7 POSTs to /api/wizard/lnbits — limit is 5/min/IP
+  let blockedCount = 0
+  for (let i = 0; i < 7; i++) {
+    const res = await request(port, 'POST', '/api/wizard/lnbits', { adminKey: 'attempt-' + i })
+    if (res.statusCode === 429) blockedCount++
+  }
+  t.ok(blockedCount >= 2, 'at least 2 of 7 requests were rate-limited (5/min cap)')
+})
+
+test('429 response includes machine-readable errorCode', async (t) => {
+  const { port } = await setupApi(t)
+  // Burst past the /api/wizard/lnbits limit
+  for (let i = 0; i < 5; i++) {
+    await request(port, 'POST', '/api/wizard/lnbits', { adminKey: 'x' })
+  }
+  const res = await request(port, 'POST', '/api/wizard/lnbits', { adminKey: 'x' })
+  t.is(res.statusCode, 429)
+  t.is(res.body.errorCode, 'rate-limited')
+  t.ok(res.body.error?.startsWith('rate-limited: '))
+})
+
+test('non-rate-limited endpoints unaffected', async (t) => {
+  const { port } = await setupApi(t)
+  // /health should always work, no per-endpoint cap
+  for (let i = 0; i < 30; i++) {
+    const res = await request(port, 'GET', '/health')
+    t.is(res.statusCode, 200, 'health unaffected by per-endpoint limit')
+    if (res.statusCode !== 200) break
+  }
 })

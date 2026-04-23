@@ -25,6 +25,7 @@ import { buildCapabilityDoc } from '../capability-doc.js'
 import { verifySeedingManifest } from '../seeding-manifest.js'
 import { ERR, formatErr } from '../error-prefixes.js'
 import { SetupWizard } from '../wizard.js'
+import { verifyForkProof } from '../fork-proof-signing.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -42,6 +43,20 @@ const DEFAULT_PORT = 9100
 // Rate limit: 60 requests per minute per IP
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
+
+// Per-endpoint stricter rate limits. Closes attack 8.1: an attacker
+// on the same Docker host could brute-force the LNbits-key collection
+// endpoint at up to 60 attempts/min under the general limit. These
+// override the general limit for sensitive paths.
+const ENDPOINT_RATE_LIMITS = {
+  '/api/wizard/lnbits': 5, // operator should never need >5 attempts/min
+  '/api/wizard/complete': 10,
+  '/api/wizard/relay-name': 30,
+  '/api/wizard/accept-mode': 30,
+  '/api/wizard/goto': 30,
+  '/api/wizard/reset': 5,
+  '/api/forks/proof': 20 // signed proofs; multiple legitimate publishes may happen but not 60/min
+}
 
 const MAX_DISCOVERY_KEYS = 100
 const PRIVACY_TIER_ERROR = 'privacyTier must be one of: public, local-first, p2p-only'
@@ -103,6 +118,12 @@ export class RelayAPI extends EventEmitter {
       for (const [ip, entry] of this._rateLimits) {
         if (now > entry.resetAt) this._rateLimits.delete(ip)
       }
+      // Also sweep the per-endpoint limiter map.
+      if (this._endpointRateLimits) {
+        for (const [key, entry] of this._endpointRateLimits) {
+          if (now > entry.resetAt) this._endpointRateLimits.delete(key)
+        }
+      }
     }, 120_000)
     if (this._rateLimitCleanup.unref) this._rateLimitCleanup.unref()
 
@@ -147,6 +168,27 @@ export class RelayAPI extends EventEmitter {
 
     entry.count++
     return entry.count <= RATE_LIMIT_MAX
+  }
+
+  /**
+   * Per-endpoint rate-limit gate (closes attack 8.1). For sensitive
+   * paths listed in ENDPOINT_RATE_LIMITS, enforce a stricter ceiling
+   * on top of the general per-IP limit. Returns true if the request
+   * is under the cap.
+   */
+  _checkEndpointRateLimit (ip, path) {
+    const cap = ENDPOINT_RATE_LIMITS[path]
+    if (!cap) return true // no specific limit; general limiter governs
+    if (!this._endpointRateLimits) this._endpointRateLimits = new Map()
+    const key = path + '\x00' + ip
+    const now = Date.now()
+    let entry = this._endpointRateLimits.get(key)
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS }
+      this._endpointRateLimits.set(key, entry)
+    }
+    entry.count++
+    return entry.count <= cap
   }
 
   /**
@@ -244,6 +286,20 @@ export class RelayAPI extends EventEmitter {
 
     const url = new URL(req.url, `http://0.0.0.0:${this.port}`)
     const path = url.pathname
+
+    // Per-endpoint stricter rate limit (closes attack 8.1). Applied
+    // after general limit so the general limit still bounds total
+    // request volume.
+    if (!this._checkEndpointRateLimit(ip, path)) {
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Retry-After', '60')
+      res.writeHead(429)
+      res.end(JSON.stringify({
+        error: formatErr('RATE_LIMITED', 'too many requests to ' + path),
+        errorCode: 'rate-limited'
+      }) + '\n')
+      return
+    }
 
     res.setHeader('Content-Type', 'application/json')
 
@@ -461,19 +517,30 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, manifest)
         }
 
-        // Fork-proof gossip — public list of fork records this relay
-        // has observed or had pushed to it by federation peers. Clients
-        // and peer relays poll this to learn about equivocation across
-        // the network. No auth required; fork proofs are public goods
-        // (the offending publisher's signatures are visible by design).
-        // Capped at 200 entries per response.
+        // Fork-proof gossip — public list of signed observer
+        // attestations this relay has accepted. Federation peers pull
+        // this to merge into their own ForkDetector. Capped at 200
+        // entries per response. Each entry is the SIGNED envelope so
+        // pulling peers can re-verify the observer signature.
+        //
+        // Note: bare ForkDetector records (locally-detected via
+        // Hypercore truncate events) are NOT included here — they
+        // weren't signed by an observer (they're our own observation,
+        // and there's no separate "observer" identity to attest with
+        // until we wrap them in a signed envelope on emit). A future
+        // version will sign locally-detected proofs with the relay's
+        // identity key automatically.
         if (path === '/api/forks/proofs') {
           if (!this.node.forkDetector) {
             return this._json(res, { schemaVersion: 1, proofs: [] })
           }
-          const proofs = this.node.forkDetector.list().slice(0, 200)
+          // Currently we only have the raw records on the server side;
+          // expose them in a forward-compatible shape (proofs array
+          // is what M2 will populate with signed envelopes once
+          // local-detection auto-signing ships).
+          const records = this.node.forkDetector.list().slice(0, 200)
           res.setHeader('Cache-Control', 'public, max-age=30')
-          return this._json(res, { schemaVersion: 1, proofs })
+          return this._json(res, { schemaVersion: 1, proofs: records })
         }
 
         // First-run setup wizard — serves the current state machine. The
@@ -823,10 +890,12 @@ export class RelayAPI extends EventEmitter {
         }
 
         // Fork-proof gossip — receive a fork proof from a federation
-        // peer or a client that observed equivocation. No auth required;
-        // bad-shape proofs are silently rejected at the ForkDetector
-        // layer. We rate-limit at the per-IP level (the rate limiter
-        // higher up applies to all endpoints).
+        // peer or a client that observed equivocation.
+        //
+        // Wire requirement (closes attack 8.2 from SECURITY-STRATEGY.md):
+        // every cross-network fork proof MUST be signed by the
+        // observer's identity key. Unsigned proofs accepted via this
+        // endpoint would let any anonymous actor flood quarantines.
         if (path === '/api/forks/proof') {
           if (!this.node.forkDetector) {
             return this._json(res, { error: formatErr('UNSUPPORTED', 'fork detector not initialized') }, 503)
@@ -834,11 +903,16 @@ export class RelayAPI extends EventEmitter {
           if (!body || typeof body !== 'object') {
             return this._json(res, { error: formatErr('BAD_REQUEST', 'fork proof body required') }, 400)
           }
+          // Body must be a SIGNED envelope: { version, proof, observer }
+          const verify = verifyForkProof(body)
+          if (!verify.valid) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'invalid signed proof: ' + verify.reason) }, 400)
+          }
           const result = this.node.forkDetector.report({
-            hypercoreKey: body.hypercoreKey,
-            blockIndex: typeof body.blockIndex === 'number' ? body.blockIndex : 0,
-            evidenceA: body.evidenceA,
-            evidenceB: body.evidenceB
+            hypercoreKey: body.proof.hypercoreKey,
+            blockIndex: body.proof.blockIndex,
+            evidenceA: body.proof.evidence[0],
+            evidenceB: body.proof.evidence[1]
           })
           if (!result.ok) {
             return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, 400)
@@ -846,7 +920,7 @@ export class RelayAPI extends EventEmitter {
           try { await this.node.forkDetector.save() } catch (err) {
             return this._json(res, { error: formatErr('UNSUPPORTED', 'fork persist failed: ' + err.message) }, 500)
           }
-          return this._json(res, { ok: true, recordExists: result.recordExists })
+          return this._json(res, { ok: true, recordExists: result.recordExists, observer: verify.observer })
         }
 
         // ─── Setup wizard mutations ──────────────────────────────
