@@ -24,6 +24,8 @@ import { CONTENT_TYPES, isValidHexKey, normalizeContentType, normalizePrivacyTie
 import { buildCapabilityDoc } from '../capability-doc.js'
 import { verifySeedingManifest } from '../seeding-manifest.js'
 import { ERR, formatErr } from '../error-prefixes.js'
+import { SetupWizard } from '../wizard.js'
+import { verifyForkProof } from '../fork-proof-signing.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +43,20 @@ const DEFAULT_PORT = 9100
 // Rate limit: 60 requests per minute per IP
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
+
+// Per-endpoint stricter rate limits. Closes attack 8.1: an attacker
+// on the same Docker host could brute-force the LNbits-key collection
+// endpoint at up to 60 attempts/min under the general limit. These
+// override the general limit for sensitive paths.
+const ENDPOINT_RATE_LIMITS = {
+  '/api/wizard/lnbits': 5, // operator should never need >5 attempts/min
+  '/api/wizard/complete': 10,
+  '/api/wizard/relay-name': 30,
+  '/api/wizard/accept-mode': 30,
+  '/api/wizard/goto': 30,
+  '/api/wizard/reset': 5,
+  '/api/forks/proof': 20 // signed proofs; multiple legitimate publishes may happen but not 60/min
+}
 
 const MAX_DISCOVERY_KEYS = 100
 const PRIVACY_TIER_ERROR = 'privacyTier must be one of: public, local-first, p2p-only'
@@ -84,7 +100,9 @@ export class RelayAPI extends EventEmitter {
     this._dashboardHtml = null
     this._networkHtml = null
     this._docsHtml = null
+    this._wizardHtml = null
     this._dashboardFeed = null
+    this._wizard = null // lazily constructed by _getWizard() on first /api/wizard hit
     this._gateway = new HyperGateway(relayNode, { store: relayNode.store })
   }
 
@@ -99,6 +117,12 @@ export class RelayAPI extends EventEmitter {
       const now = Date.now()
       for (const [ip, entry] of this._rateLimits) {
         if (now > entry.resetAt) this._rateLimits.delete(ip)
+      }
+      // Also sweep the per-endpoint limiter map.
+      if (this._endpointRateLimits) {
+        for (const [key, entry] of this._endpointRateLimits) {
+          if (now > entry.resetAt) this._endpointRateLimits.delete(key)
+        }
       }
     }, 120_000)
     if (this._rateLimitCleanup.unref) this._rateLimitCleanup.unref()
@@ -144,6 +168,27 @@ export class RelayAPI extends EventEmitter {
 
     entry.count++
     return entry.count <= RATE_LIMIT_MAX
+  }
+
+  /**
+   * Per-endpoint rate-limit gate (closes attack 8.1). For sensitive
+   * paths listed in ENDPOINT_RATE_LIMITS, enforce a stricter ceiling
+   * on top of the general per-IP limit. Returns true if the request
+   * is under the cap.
+   */
+  _checkEndpointRateLimit (ip, path) {
+    const cap = ENDPOINT_RATE_LIMITS[path]
+    if (!cap) return true // no specific limit; general limiter governs
+    if (!this._endpointRateLimits) this._endpointRateLimits = new Map()
+    const key = path + '\x00' + ip
+    const now = Date.now()
+    let entry = this._endpointRateLimits.get(key)
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS }
+      this._endpointRateLimits.set(key, entry)
+    }
+    entry.count++
+    return entry.count <= cap
   }
 
   /**
@@ -241,6 +286,20 @@ export class RelayAPI extends EventEmitter {
 
     const url = new URL(req.url, `http://0.0.0.0:${this.port}`)
     const path = url.pathname
+
+    // Per-endpoint stricter rate limit (closes attack 8.1). Applied
+    // after general limit so the general limit still bounds total
+    // request volume.
+    if (!this._checkEndpointRateLimit(ip, path)) {
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Retry-After', '60')
+      res.writeHead(429)
+      res.end(JSON.stringify({
+        error: formatErr('RATE_LIMITED', 'too many requests to ' + path),
+        errorCode: 'rate-limited'
+      }) + '\n')
+      return
+    }
 
     res.setHeader('Content-Type', 'application/json')
 
@@ -372,6 +431,31 @@ export class RelayAPI extends EventEmitter {
           return this._serveDashboard(res, '_dashboardHtml', 'index.html')
         }
 
+        // First-run setup wizard UI. Localhost-only because the form
+        // collects secrets (LNbits admin key); the JSON endpoints
+        // /api/wizard/* enforce the same restriction.
+        if (path === '/wizard') {
+          if (!this._isLocalRequest(req)) {
+            res.setHeader('Content-Type', 'text/plain')
+            res.writeHead(403)
+            res.end('Wizard is localhost-only.\n')
+            return
+          }
+          return this._serveDashboard(res, '_wizardHtml', 'wizard.html')
+        }
+
+        // Smart root route: send freshly-installed users to the wizard,
+        // returning operators to the dashboard. Uses HTTP 302 so browser
+        // refreshes don't get cached.
+        if (path === '/') {
+          const wizard = await this._getWizard()
+          const target = wizard.isComplete() ? '/dashboard' : '/wizard'
+          res.setHeader('Location', target)
+          res.writeHead(302)
+          res.end()
+          return
+        }
+
         if (path === '/network') {
           return this._serveDashboard(res, '_networkHtml', 'network.html')
         }
@@ -433,6 +517,43 @@ export class RelayAPI extends EventEmitter {
           return this._json(res, manifest)
         }
 
+        // Fork-proof gossip — public list of signed observer
+        // attestations this relay has accepted. Federation peers pull
+        // this to merge into their own ForkDetector. Capped at 200
+        // entries per response. Each entry is the SIGNED envelope so
+        // pulling peers can re-verify the observer signature.
+        //
+        // Note: bare ForkDetector records (locally-detected via
+        // Hypercore truncate events) are NOT included here — they
+        // weren't signed by an observer (they're our own observation,
+        // and there's no separate "observer" identity to attest with
+        // until we wrap them in a signed envelope on emit). A future
+        // version will sign locally-detected proofs with the relay's
+        // identity key automatically.
+        if (path === '/api/forks/proofs') {
+          if (!this.node.forkDetector) {
+            return this._json(res, { schemaVersion: 1, proofs: [] })
+          }
+          // Currently we only have the raw records on the server side;
+          // expose them in a forward-compatible shape (proofs array
+          // is what M2 will populate with signed envelopes once
+          // local-detection auto-signing ships).
+          const records = this.node.forkDetector.list().slice(0, 200)
+          res.setHeader('Cache-Control', 'public, max-age=30')
+          return this._json(res, { schemaVersion: 1, proofs: records })
+        }
+
+        // First-run setup wizard — serves the current state machine. The
+        // dashboard checks `isComplete` on load and either renders the
+        // wizard or the main UI. Localhost-only by design (the wizard
+        // accepts secrets like LNbits admin keys).
+        if (path === '/api/wizard') {
+          if (!this._isLocalRequest(req)) {
+            return this._json(res, { error: formatErr('NOT_ALLOWED', 'wizard is localhost-only') }, 403)
+          }
+          const wizard = await this._getWizard()
+          return this._json(res, wizard.snapshot())
+        }
 
         if (path === '/api/alerts') {
           if (!this.node.alertManager) {
@@ -766,6 +887,98 @@ export class RelayAPI extends EventEmitter {
             return this._json(res, { error: formatErr('UNSUPPORTED', 'manifest persist failed: ' + err.message) }, 500)
           }
           return this._json(res, { ok: true, pubkey: check.pubkey, replaced: result.replaced })
+        }
+
+        // Fork-proof gossip — receive a fork proof from a federation
+        // peer or a client that observed equivocation.
+        //
+        // Wire requirement (closes attack 8.2 from SECURITY-STRATEGY.md):
+        // every cross-network fork proof MUST be signed by the
+        // observer's identity key. Unsigned proofs accepted via this
+        // endpoint would let any anonymous actor flood quarantines.
+        if (path === '/api/forks/proof') {
+          if (!this.node.forkDetector) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'fork detector not initialized') }, 503)
+          }
+          if (!body || typeof body !== 'object') {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'fork proof body required') }, 400)
+          }
+          // Body must be a SIGNED envelope: { version, proof, observer }
+          const verify = verifyForkProof(body)
+          if (!verify.valid) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', 'invalid signed proof: ' + verify.reason) }, 400)
+          }
+          const result = this.node.forkDetector.report({
+            hypercoreKey: body.proof.hypercoreKey,
+            blockIndex: body.proof.blockIndex,
+            evidenceA: body.proof.evidence[0],
+            evidenceB: body.proof.evidence[1]
+          })
+          if (!result.ok) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, 400)
+          }
+          try { await this.node.forkDetector.save() } catch (err) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'fork persist failed: ' + err.message) }, 500)
+          }
+          return this._json(res, { ok: true, recordExists: result.recordExists, observer: verify.observer })
+        }
+
+        // ─── Setup wizard mutations ──────────────────────────────
+        // Five POST endpoints, one per wizard step. All localhost-only —
+        // they accept secrets (LNbits admin key) and configuration
+        // changes. The dashboard front-end calls these in sequence as
+        // the operator clicks through the 5-step flow.
+        if (path.startsWith('/api/wizard/')) {
+          if (!this._isLocalRequest(req)) {
+            return this._json(res, { error: formatErr('NOT_ALLOWED', 'wizard is localhost-only') }, 403)
+          }
+          const wizard = await this._getWizard()
+          const action = path.slice('/api/wizard/'.length)
+          let result
+          switch (action) {
+            case 'goto':
+              result = wizard.goToStep({ step: body && body.step })
+              break
+            case 'relay-name':
+              result = wizard.setRelayName({ relayName: body && body.relayName })
+              break
+            case 'lnbits':
+              // setLNbitsCredentials is async — it encrypts the admin key
+              // before storing. Failures here are reported as bad-request
+              // since the most likely cause is a bad input (missing key)
+              // rather than internal failure.
+              result = await wizard.setLNbitsCredentials({ url: body && body.url, adminKey: body && body.adminKey })
+              break
+            case 'accept-mode':
+              result = wizard.setAcceptMode({ acceptMode: body && body.acceptMode })
+              break
+            case 'complete':
+              result = wizard.complete()
+              // Apply wizard answers to the live config. toConfig() is
+              // async because it decrypts the LNbits admin key.
+              if (result.ok && this.node._applyWizardConfig) {
+                try {
+                  const cfg = await wizard.toConfig()
+                  this.node._applyWizardConfig(cfg)
+                } catch (err) {
+                  return this._json(res, { error: formatErr('UNSUPPORTED', 'failed to apply wizard config: ' + err.message) }, 500)
+                }
+              }
+              break
+            case 'reset':
+              wizard.reset()
+              result = { ok: true, state: wizard.snapshot() }
+              break
+            default:
+              return this._json(res, { error: formatErr('NOT_FOUND', 'unknown wizard action: ' + action) }, 404)
+          }
+          if (!result.ok) {
+            return this._json(res, { error: formatErr('BAD_REQUEST', result.reason) }, 400)
+          }
+          try { await wizard.save() } catch (err) {
+            return this._json(res, { error: formatErr('UNSUPPORTED', 'wizard persist failed: ' + err.message) }, 500)
+          }
+          return this._json(res, { ok: true, state: result.state })
         }
 
         if (path === '/api/alerts/test') {
@@ -1344,6 +1557,29 @@ export class RelayAPI extends EventEmitter {
   _json (res, data, status = 200) {
     res.writeHead(status)
     res.end(JSON.stringify(data) + '\n')
+  }
+
+  /**
+   * Lazily construct + load the SetupWizard. We don't create it eagerly
+   * because relays running in non-interactive mode (CLI flags only,
+   * env-var configs) never need it — wizard.json never gets written
+   * unless the operator actually visits /api/wizard.
+   *
+   * Cached on first use; survives subsequent requests in the same
+   * process. Goes away on container restart, then re-loaded from disk.
+   */
+  async _getWizard () {
+    if (this._wizard) return this._wizard
+    const storageDir = this.node.config && this.node.config.storage
+      ? this.node.config.storage
+      : '/data'
+    this._wizard = new SetupWizard({
+      storagePath: join(storageDir, 'wizard.json')
+    })
+    try { await this._wizard.load() } catch (err) {
+      this.emit('wizard-error', { message: 'wizard load failed', error: err })
+    }
+    return this._wizard
   }
 
   // Lazy-read the package version from the core workspace's package.json.

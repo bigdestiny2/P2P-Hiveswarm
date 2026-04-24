@@ -1,0 +1,86 @@
+manifestVersion: 1
+id: blindspark
+category: bitcoin
+name: Blindspark
+version: "0.6.0"
+tagline: Earn sats for blind seeding P2P apps
+description: >-
+  Blindspark is a blind relay for the Pear/Holepunch decentralized app
+  ecosystem. It seeds encrypted Hyperdrives — content the relay cannot
+  read but can verify and serve — so that P2P apps remain available
+  while their users are offline.
+
+
+  Operators are paid in Lightning sats (via LNbits) for the storage and
+  bandwidth they contribute to the network. The relay does not see, log,
+  or process the content of the data it carries; it only proves the data
+  is well-formed and serves it on demand to authorized peers.
+
+
+  How it works:
+   1. Install Blindspark from the App Store.
+   2. Open the dashboard. Walk through the 5-step setup wizard
+      (~10 minutes). The wizard auto-detects your installed LNbits app
+      and asks for the admin key so the relay can issue invoices and
+      receive payments on your behalf.
+   3. The relay starts in "review" accept-mode by default — every
+      incoming seed request is queued for your approval before any
+      storage or bandwidth is committed. You can switch to allowlist or
+      open mode later from the dashboard.
+
+
+  Honest expectations:
+   - Earnings depend on network demand for paid seeding. Blindspark is
+     new, so the demand-side market is being bootstrapped at the same
+     time as the supply-side. Operators in the early phase should expect
+     modest sats-per-month while the network grows.
+   - The relay is genuinely "blind" — it cannot decrypt the content it
+     stores. This is by design. If you don't want to host content you
+     can't see, this app is not for you.
+   - LNbits is a hard requirement. Without it, the relay can run but
+     cannot earn.
+   - The app is open source (Apache 2.0). Source on GitHub.
+
+
+  Privacy + security:
+   - Content is end-to-end encrypted between publisher and consumer via
+     Hypercore-protocol's Noise XK transport. The relay holds ciphertext
+     blocks and Merkle proofs, not plaintext.
+   - The dashboard binds to localhost only; the Umbrel app proxy fronts
+     it for browser access. No management API is exposed externally.
+   - LNbits credentials are stored in the app's persistent volume and
+     never transmitted to the project's servers (we don't run any).
+developer: Blindspark
+website: https://github.com/bigdestiny2/p2p-hiverelay
+dependencies:
+  - lnbits
+repo: https://github.com/bigdestiny2/p2p-hiverelay
+support: https://github.com/bigdestiny2/p2p-hiverelay/issues
+port: 9100
+gallery:
+  - 1.jpg
+  - 2.jpg
+  - 3.jpg
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+releaseNotes: >-
+  v0.6.0 — first Umbrel App Store release.
+
+
+  Highlights:
+   - One-click install via the Umbrel App Store
+   - Auto-detection of LNbits running on the same Umbrel
+   - 5-step setup wizard (under 10 minutes from install to earning)
+   - Earnings dashboard with daily / weekly / monthly sat counters
+   - Default policy: review every incoming seed request before accepting
+   - Mid-tier pricing pre-filled (10 sats/GB-month storage, 20 sats/GB
+     egress) — adjustable from the dashboard
+
+
+  This app is the user-facing debut of the project's rebrand from
+  HiveRelay to Blindspark. Underlying packages, classes, and the GHCR
+  image name remain prefixed `p2p-hiverelay` for v0.6.0; a future
+  release (v0.7.0) will complete the rename across the codebase.
+submitter: bigdestiny2
+submission: https://github.com/getumbrel/umbrel-apps/pull/PENDING

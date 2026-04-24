@@ -14,7 +14,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Publish under TWO image names during the v0.6.x → v0.7.x rebrand
+  # transition window. Existing automation continues working against
+  # the legacy `p2p-hiverelay` name; new docs (Umbrel app, etc.) use
+  # `blindspark`. Both are the same image content.
   IMAGE_NAME: ${{ github.repository_owner }}/p2p-hiverelay
+  IMAGE_NAME_BLINDSPARK: ${{ github.repository_owner }}/blindspark
 
 jobs:
   build-and-push:
@@ -40,11 +45,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata (tags, labels) — both image names
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Single build, multiple image references. The metadata action
+          # generates the tag matrix (semver + latest + branch + sha)
+          # for every image listed.
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BLINDSPARK }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}

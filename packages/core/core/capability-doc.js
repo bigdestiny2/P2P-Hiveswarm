@@ -18,9 +18,14 @@
  */
 
 import b4a from 'b4a'
+import sodium from 'sodium-universal'
 import { resolveAcceptMode } from './accept-mode.js'
 
 const SCHEMA_VERSION = 1
+// Signature envelope version, bumped independently of schemaVersion.
+// Adding signing in v0.6.0 doesn't change the doc shape — clients that
+// don't verify still parse the doc fine — so we don't bump schemaVersion.
+const SIGNATURE_VERSION = 1
 
 /**
  * Build the capability document from relay state.
@@ -130,7 +135,7 @@ export function buildCapabilityDoc (opts = {}) {
   // Region — operators configure via regions[]. First entry is canonical.
   const region = (Array.isArray(config.regions) && config.regions[0]) || null
 
-  return {
+  const doc = {
     schemaVersion: SCHEMA_VERSION,
     name: opts.name || config.name || null,
     description: opts.description || config.description || null,
@@ -147,8 +152,99 @@ export function buildCapabilityDoc (opts = {}) {
     limitation,
     federation,
     catalog,
-    fees
+    fees,
+    // attestedAt — closes the stale-doc replay attack stub. The
+    // signed payload covers this timestamp, so a relay's old doc
+    // can't be replayed (clients can detect it's stale via the field).
+    // Test override accepted via opts.attestedAt for deterministic tests.
+    attestedAt: typeof opts.attestedAt === 'number' ? opts.attestedAt : Date.now()
   }
+
+  // Sign the doc with the relay's identity secret key, if available.
+  // The signature covers a canonical serialization of all fields above
+  // (sorted keys, no signature field). Clients verify against the
+  // pubkey IN the doc — TOFU model. A future revision should support
+  // operator-pinned pubkey verification (out-of-band trust on first
+  // contact, then verify the SAME pubkey on every subsequent fetch).
+  const secretKey = opts.identitySecretKey ||
+    (relay && relay.identityKeyPair && relay.identityKeyPair.secretKey) ||
+    (relay && relay.swarm && relay.swarm.keyPair && relay.swarm.keyPair.secretKey) ||
+    null
+  if (secretKey && identity) {
+    try {
+      const payload = canonicalSignablePayload(doc)
+      const sig = b4a.alloc(64)
+      sodium.crypto_sign_detached(sig, payload, secretKey)
+      doc.signature = {
+        v: SIGNATURE_VERSION,
+        sig: b4a.toString(sig, 'hex')
+      }
+    } catch (_) {
+      // If signing fails, ship the unsigned doc rather than 500-ing —
+      // unsigned is still better than no doc at all, and the signature
+      // is additive defense.
+    }
+  }
+  return doc
+}
+
+/**
+ * Verify a capability doc's signature against the pubkey contained in
+ * the doc itself (TOFU model). Returns { valid, reason }.
+ *
+ * The verification is over the canonical signable payload — the same
+ * function buildCapabilityDoc uses to construct the signed bytes —
+ * so JSON re-encoding between server and client doesn't break it.
+ *
+ * @param {object} doc
+ * @returns {{valid: boolean, reason?: string}}
+ */
+export function verifyCapabilityDoc (doc) {
+  if (!doc || typeof doc !== 'object') return { valid: false, reason: 'not an object' }
+  if (!doc.signature) return { valid: false, reason: 'no signature on doc' }
+  if (doc.signature.v !== SIGNATURE_VERSION) {
+    return { valid: false, reason: 'unsupported signature version: ' + doc.signature.v }
+  }
+  if (typeof doc.pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(doc.pubkey)) {
+    return { valid: false, reason: 'no valid pubkey on doc' }
+  }
+  if (typeof doc.signature.sig !== 'string' || !/^[0-9a-f]{128}$/i.test(doc.signature.sig)) {
+    return { valid: false, reason: 'malformed signature' }
+  }
+  try {
+    const payload = canonicalSignablePayload(doc)
+    const sig = b4a.from(doc.signature.sig, 'hex')
+    const pub = b4a.from(doc.pubkey, 'hex')
+    const ok = sodium.crypto_sign_verify_detached(sig, payload, pub)
+    return ok ? { valid: true } : { valid: false, reason: 'signature verification failed' }
+  } catch (err) {
+    return { valid: false, reason: 'verify error: ' + err.message }
+  }
+}
+
+/**
+ * Canonical serialization for signing. Excludes the signature field
+ * (chicken-and-egg) and serializes all other fields with sorted keys
+ * so two encoders that differ on key order still produce identical
+ * bytes for the same doc.
+ */
+function canonicalSignablePayload (doc) {
+  const clone = {}
+  for (const k of Object.keys(doc).sort()) {
+    if (k === 'signature') continue
+    clone[k] = sortKeysDeep(doc[k])
+  }
+  return b4a.from(JSON.stringify(clone), 'utf8')
+}
+
+function sortKeysDeep (val) {
+  if (Array.isArray(val)) return val.map(sortKeysDeep)
+  if (val && typeof val === 'object') {
+    const out = {}
+    for (const k of Object.keys(val).sort()) out[k] = sortKeysDeep(val[k])
+    return out
+  }
+  return val
 }
 
 function extractIdentity (relay) {

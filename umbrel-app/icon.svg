@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PLACEHOLDER icon for the Blindspark Umbrel app.
+
+  Per Umbrel App Store spec:
+    - Format: SVG
+    - Size:   256×256
+    - Corners: NO rounded corners (Umbrel rounds them via CSS)
+
+  Before submission this MUST be replaced with a properly-designed icon.
+  Commission via Fiverr / Dribbble / similar ($200-400 budget).
+
+  Brief: "blind spark" - a stylized lightning bolt suggesting the
+  relay carries the spark (Lightning) without seeing the content
+  (blind). Solid square/full-bleed (no rounded corners; Umbrel CSS
+  handles rounding).
+
+  This placeholder is intentionally ugly so it can't accidentally
+  ship to production.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" fill="#1a1a2e"/>
+  <text x="128" y="100" font-family="Arial, sans-serif" font-size="22" font-weight="bold"
+        text-anchor="middle" fill="#f5a623">PLACEHOLDER</text>
+  <text x="128" y="140" font-family="Arial, sans-serif" font-size="32" font-weight="bold"
+        text-anchor="middle" fill="#ffffff">Blindspark</text>
+  <text x="128" y="170" font-family="Arial, sans-serif" font-size="14"
+        text-anchor="middle" fill="#888888">replace before submission</text>
+</svg>

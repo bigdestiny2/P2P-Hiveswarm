@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/core",
     "packages/services",
-    "packages/client"
+    "packages/client",
+    "packages/verifier"
   ],
   "scripts": {
     "start": "node packages/core/cli/index.js start",

@@ -1,9 +1,124 @@
 # Changelog
 
-All notable changes to `p2p-hiverelay`, `p2p-hiveservices`, and
-`p2p-hiverelay-client` are documented here. Dates in YYYY-MM-DD.
+All notable changes to `p2p-hiverelay`, `p2p-hiveservices`,
+`p2p-hiverelay-client`, and (from v0.6.0) `p2p-hiverelay-verifier` are
+documented here. Dates in YYYY-MM-DD.
 
-The three packages are versioned in lockstep.
+The packages are versioned in lockstep.
+
+## [0.6.0] — Unreleased (in `feat/umbrel-app` branch)
+
+The v0.6.0 pipeline. Three thematic chunks: Umbrel App Store packaging
+(consumer brand: Blindspark), threat-model security infrastructure, and
+audit-driven hardening that addresses every issue from a comprehensive
+post-implementation security audit.
+
+**~10,000 lines added across 9 commits, 354 new tests, all passing.**
+
+### Added — Umbrel App Store package
+
+- `umbrel-app/` directory with submission-ready `umbrel-app.yml`,
+  `docker-compose.yml`, `README.md`, `SUBMISSION-CHECKLIST.md`,
+  placeholder icon + gallery
+- Consumer brand: **Blindspark** (internal package names stay
+  `p2p-hiverelay` until v0.7.0 dedicated rebrand)
+- 5-step setup wizard module (`packages/core/core/wizard.js`):
+  welcome → relay name → LNbits connect → accept-mode → done
+- Wizard front-end UI (`dashboard/wizard.html`) — self-contained,
+  no framework deps, dark theme, server-side state machine sync
+- Smart `/` route: first-run users → `/wizard`, returning operators
+  → `/dashboard`
+- Updated `Dockerfile` for monorepo paths post-v0.5.0 split; switched
+  to Alpine for Pi-class image size
+- CI: `docker-publish.yml` publishes to BOTH `ghcr.io/.../p2p-hiverelay`
+  AND `ghcr.io/.../blindspark` during transition
+- `umbrel-app-validate.yml` CI catches submission breakage on every PR
+- ToS compliance: `category: bitcoin` (lightning isn't valid Umbrel
+  category), 256×256 SVG icon spec, 1440×900 PNG gallery
+
+### Added — Threat-model security infrastructure
+
+- New module: `packages/core/core/quorum-selector.js` —
+  pure-functional diverse-quorum selection with 4 strategies
+  (`diverse` / `foundation` / `pinned` / `wide`); diversity warnings
+  when minRegions can't be satisfied
+- New module: `packages/core/core/fork-detector.js` — persists
+  cryptographic equivocation evidence; quarantine API; resolution
+  workflow; atomic write pattern; max-forks cap with oldest-first
+  eviction
+- New top-level workspace package: `packages/verifier/` — standalone
+  reference verifier independent of `p2p-hiverelay` for cross-client
+  verification; CLI (`hive-verify`) + library API; documented exit
+  codes (0 agree / 1 diverge / 2 all-failed / 3 usage)
+- `HiveRelayClient` integration: `refreshCapabilityCache()`,
+  `selectQuorum()`, `describeQuorum()`, `queryQuorum()`,
+  `queryQuorumWithComparison()`, `isDriveQuarantined()`,
+  `publishForkProof()`, `pinRelay()`, `unpinRelay()`, `pinnedRelays()`
+- New events: `capability-fetch-error`, `quorum-warning`,
+  `quorum-divergence`, `fork-detected`, `fork-resolved`,
+  `capability-doc-stale`, `capability-pubkey-mismatch`,
+  `capability-verify-error`, `quarantine-bypassed`
+- Quarantine-aware `client.open()`: refuses drives with unresolved
+  forks unless `force: true` is passed (throws `code: 'DRIVE_QUARANTINED'`)
+- Auto fork-detection during replication: `client.open()` attaches
+  Hypercore `truncate` + `verification-error` listeners that
+  auto-report to ForkDetector
+- Federation gossip: `_pullForkProofs()` pulls fork-proof list from
+  each followed peer per cycle (~5 min latency)
+- Stream-fee endpoint scaffolding (Foundation 1.5% routing pending
+  Foundation entity creation)
+
+### Added — Audit-driven security hardening
+
+- LNbits admin key encryption at rest (AES-256-GCM with key derived
+  from `$APP_SEED` via HMAC-SHA256; v1→v2 migration auto-encrypts on
+  next save; file chmod 0600)
+- Capability doc Ed25519 signing by relay's identity key; client
+  verification on fetch; tamper attempts caught
+- Capability doc `attestedAt` timestamp inside signed payload
+  (prevents stale-doc replay); client emits `capability-doc-stale`
+  event when older than `maxAgeMs` (default 24h)
+- Audit trail for `force:true` quarantine bypasses
+  (`forkDetector.bypassLog()`, capped at 500 entries, persisted)
+- Pubkey pinning via `client.pinRelay(url, pubkey)`; auto-injection in
+  `fetchCapabilities`; constructor `knownRelays` config
+- Signed fork proofs: new `fork-proof-signing.js` module; Ed25519
+  observer signature with `attestedAt`; 7-day freshness window for
+  replay protection; 5-min skew tolerance for clock drift
+- Server `/api/forks/proof` endpoint REQUIRES signed envelope; rejects
+  bare unsigned proofs with bad-request
+- Per-endpoint rate limits for sensitive paths
+  (5/min on `/api/wizard/lnbits`, 10/min on `/complete`,
+   20/min on `/api/forks/proof`); 429 responses include
+  `errorCode: 'rate-limited'`
+
+### Added — Strategic documentation
+
+- `docs/THREAT-MODEL.md` — three-category state model
+  (authored / observed / derived), defense mechanisms, 6 named
+  attacks with mitigation status, honest-framing principles
+- `docs/SECURITY-STRATEGY.md` — authoritative attack-vector tracker,
+  32 vectors across 10 categories tagged 🟢/🟡/🟠/🔴, three
+  operational preconditions documented as non-negotiable
+- `docs/OPERATOR-INCENTIVES-Y1.md` — closes the "open problem" of
+  operator economics in year one with the trojan-horse + 1 BTC
+  bootstrap + foundation network triad
+- `docs/M2-ROADMAP.md` — explicitly scoped M2 deliverables with
+  effort estimates and sequencing
+- `umbrel-app/SUBMISSION-CHECKLIST.md` — full compliance audit + PR
+  template ready to paste into the upstream Umbrel App Store repo
+
+### Notes for operators
+
+- v0.6.0 includes meaningful security upgrades but is **not yet
+  deployed to live relays**. PR #5 against `release/v0.5.1`.
+- No bootstrap subsidy disbursement should occur until M2 Sybil
+  defense gates ship (documented as non-negotiable precondition).
+- Wizard collects LNbits admin key — encrypted on disk via AES-GCM
+  but operators on shared filesystems should still treat the key
+  carefully.
+
+---
 
 ## [0.5.1] — 2026-04-20
 

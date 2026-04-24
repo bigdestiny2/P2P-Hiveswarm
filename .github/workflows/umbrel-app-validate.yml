@@ -1,0 +1,156 @@
+name: Validate Umbrel app package
+
+# Catches breakage in the umbrel-app/ submission directory before it
+# reaches a PR against getumbrel/umbrel-apps.
+#
+# Triggers on any change touching umbrel-app/ — PRs and pushes to main.
+
+on:
+  push:
+    branches: [main]
+    paths: ['umbrel-app/**', '.github/workflows/umbrel-app-validate.yml']
+  pull_request:
+    paths: ['umbrel-app/**', '.github/workflows/umbrel-app-validate.yml']
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          set -euo pipefail
+          required=(
+            umbrel-app/umbrel-app.yml
+            umbrel-app/docker-compose.yml
+            umbrel-app/README.md
+          )
+          for f in "${required[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::Missing required file: $f"
+              exit 1
+            fi
+          done
+          echo "All required files present."
+
+      - name: Verify umbrel-app.yml is valid YAML and has required keys
+        run: |
+          python3 - <<'PY'
+          import sys
+          import yaml
+
+          with open('umbrel-app/umbrel-app.yml') as f:
+              data = yaml.safe_load(f)
+
+          required = [
+              'manifestVersion', 'id', 'category', 'name', 'version',
+              'tagline', 'description', 'developer', 'website',
+              'repo', 'support', 'port', 'gallery'
+          ]
+          missing = [k for k in required if k not in data]
+          if missing:
+              print(f"::error::umbrel-app.yml missing keys: {missing}", file=sys.stderr)
+              sys.exit(1)
+
+          if data['manifestVersion'] not in (1, '1', 1.1, '1.1'):
+              print(f"::error::manifestVersion must be 1 or 1.1, got {data['manifestVersion']}", file=sys.stderr)
+              sys.exit(1)
+
+          # Category must be one of Umbrel's actual valid values, observed
+          # by enumerating categories in the live umbrel-apps repo. Submitting
+          # an unknown category gets the PR rejected immediately.
+          VALID_CATEGORIES = {
+              'ai', 'automation', 'bitcoin', 'crypto', 'developer',
+              'files', 'finance', 'media', 'networking', 'social'
+          }
+          if data['category'] not in VALID_CATEGORIES:
+              print(f"::error::category '{data['category']}' is not in the valid set: {sorted(VALID_CATEGORIES)}", file=sys.stderr)
+              sys.exit(1)
+
+          # App ID must be lowercase + dashes only per Umbrel spec.
+          import re
+          if not re.match(r'^[a-z][a-z0-9\-]*$', data['id']):
+              print(f"::error::id '{data['id']}' must be lowercase letters/digits/dashes, starting with a letter", file=sys.stderr)
+              sys.exit(1)
+
+          if not isinstance(data['port'], int) or data['port'] < 1 or data['port'] > 65535:
+              print(f"::error::port must be 1-65535, got {data['port']}", file=sys.stderr)
+              sys.exit(1)
+
+          if not isinstance(data['gallery'], list) or len(data['gallery']) < 3:
+              print(f"::error::gallery must list at least 3 images, got {len(data.get('gallery', []))}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"umbrel-app.yml validates: id={data['id']} version={data['version']}")
+          PY
+
+      - name: Verify docker-compose.yml is valid Compose v3
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          import yaml
+
+          with open('umbrel-app/docker-compose.yml') as f:
+              compose = yaml.safe_load(f)
+
+          if 'services' not in compose:
+              print("::error::docker-compose.yml has no 'services' block", file=sys.stderr)
+              sys.exit(1)
+
+          # Umbrel apps must declare app_proxy and web services
+          required_services = ['app_proxy', 'web']
+          missing = [s for s in required_services if s not in compose['services']]
+          if missing:
+              print(f"::error::docker-compose.yml missing services: {missing}", file=sys.stderr)
+              sys.exit(1)
+
+          web = compose['services']['web']
+          if 'image' not in web:
+              print("::error::web service must specify an image", file=sys.stderr)
+              sys.exit(1)
+
+          # Spec compliance: persistent volume should mount under APP_DATA_DIR
+          volumes = web.get('volumes', [])
+          has_data_volume = any('${APP_DATA_DIR}' in v for v in volumes)
+          if not has_data_volume:
+              print("::warning::web service should mount a volume under ${APP_DATA_DIR}", file=sys.stderr)
+
+          print(f"docker-compose.yml validates: image={web['image']}")
+          PY
+
+      - name: Verify gallery images are present (or warn if placeholders)
+        run: |
+          set -euo pipefail
+          # Read the actual filenames from umbrel-app.yml — operators may
+          # use .png or .jpg depending on what they captured.
+          mapfile -t gallery < <(python3 -c "import yaml; print('\n'.join(yaml.safe_load(open('umbrel-app/umbrel-app.yml'))['gallery']))")
+          missing=0
+          for name in "${gallery[@]}"; do
+            f="umbrel-app/gallery/$name"
+            if [[ ! -f "$f" ]]; then
+              echo "::warning::Gallery image missing: $f (required before App Store submission)"
+              missing=$((missing + 1))
+            fi
+          done
+          if [[ ! -f umbrel-app/icon.svg ]]; then
+            echo "::warning::Icon missing: umbrel-app/icon.svg (required before App Store submission)"
+          else
+            # Quick sanity check that icon dimensions match Umbrel's 256x256
+            # spec. We grep for viewBox/width/height — not foolproof but
+            # catches the common mistake of submitting an oversized file.
+            if ! grep -qE 'viewBox="0 0 256 256"|width="256"' umbrel-app/icon.svg; then
+              echo "::warning::umbrel-app/icon.svg may not be 256x256 as Umbrel requires (viewBox check failed)"
+            fi
+          fi
+          if [[ "$missing" -gt 0 ]]; then
+            echo "::warning::$missing gallery images missing — OK during dev, MUST be present before submission."
+          fi
+
+      - name: Verify SUBMISSION-CHECKLIST.md exists
+        run: |
+          if [[ ! -f umbrel-app/SUBMISSION-CHECKLIST.md ]]; then
+            echo "::warning::SUBMISSION-CHECKLIST.md missing — recommended for tracking pre-submission work"
+          fi
